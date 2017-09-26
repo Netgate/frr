@@ -20,6 +20,7 @@
 
 #include <zebra.h>
 
+#ifndef HAVE_LIBVPPMGMT
 #ifndef HAVE_NETLINK
 
 #include <net/if_types.h>
@@ -1420,3 +1421,4 @@ void kernel_terminate(struct zebra_ns *zns)
 }
 
 #endif /* !HAVE_NETLINK */
+#endif

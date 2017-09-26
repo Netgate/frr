@@ -27,6 +27,7 @@ zebra_zebra_SOURCES = \
 	zebra/if_ioctl_solaris.c \
 	zebra/if_netlink.c \
 	zebra/if_sysctl.c \
+	zebra/if_vpp.c \
 	zebra/interface.c \
 	zebra/ioctl.c \
 	zebra/ioctl_solaris.c \
@@ -35,16 +36,19 @@ zebra_zebra_SOURCES = \
 	zebra/ipforward_sysctl.c \
 	zebra/kernel_netlink.c \
 	zebra/kernel_socket.c \
+	zebra/kernel_vpp.c \
 	zebra/label_manager.c \
 	zebra/main.c \
 	zebra/redistribute.c \
 	zebra/router-id.c \
 	zebra/rt_netlink.c \
 	zebra/rt_socket.c \
+	zebra/rt_vpp.c \
 	zebra/rtadv.c \
 	zebra/rtread_getmsg.c \
 	zebra/rtread_netlink.c \
 	zebra/rtread_sysctl.c \
+	zebra/rtread_vpp.c \
 	zebra/zebra_l2.c \
 	zebra/zebra_memory.c \
 	zebra/zebra_mpls.c \
@@ -52,6 +56,7 @@ zebra_zebra_SOURCES = \
 	zebra/zebra_mpls_openbsd.c \
 	zebra/zebra_mpls_null.c \
 	zebra/zebra_mpls_vty.c \
+	zebra/zebra_mpls_vpp.c \
 	zebra/zebra_mroute.c \
 	zebra/zebra_ns.c \
 	zebra/zebra_ptm.c \

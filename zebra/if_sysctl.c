@@ -21,7 +21,7 @@
 
 #include <zebra.h>
 
-#if !defined(GNU_LINUX) && !defined(OPEN_BSD) && !defined(SUNOS_5)
+#if !defined(GNU_LINUX) && !defined(OPEN_BSD) && !defined(SUNOS_5) && !defined(HAVE_LIBVPPMGMT)
 
 #include "if.h"
 #include "sockunion.h"

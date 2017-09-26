@@ -146,7 +146,7 @@ int is_zebra_valid_kernel_table(u_int32_t table_id)
 	if ((table_id > ZEBRA_KERNEL_TABLE_MAX))
 		return 0;
 
-#ifdef linux
+#ifdef HAVE_NETLINK
 	if ((table_id == RT_TABLE_UNSPEC) || (table_id == RT_TABLE_LOCAL)
 	    || (table_id == RT_TABLE_COMPAT))
 		return 0;

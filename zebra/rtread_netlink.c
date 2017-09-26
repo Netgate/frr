@@ -21,6 +21,7 @@
 
 #include <zebra.h>
 
+#ifdef HAVE_NETLINK
 #ifdef GNU_LINUX
 
 #include "vty.h"
@@ -54,3 +55,4 @@ void neigh_read_for_vlan(struct zebra_ns *zns, struct interface *vlan_if)
 }
 
 #endif /* GNU_LINUX */
+#endif

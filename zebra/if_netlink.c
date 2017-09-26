@@ -21,6 +21,7 @@
 
 #include <zebra.h>
 
+#ifdef HAVE_NETLINK
 #ifdef GNU_LINUX
 
 /* The following definition is to workaround an issue in the Linux kernel
@@ -1258,3 +1259,4 @@ void interface_list(struct zebra_ns *zns)
 }
 
 #endif /* GNU_LINUX */
+#endif

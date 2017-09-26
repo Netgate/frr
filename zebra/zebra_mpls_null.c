@@ -22,7 +22,7 @@
 #include "zebra/rt.h"
 #include "zebra/zebra_mpls.h"
 
-#if !defined(HAVE_NETLINK) && !defined(OPEN_BSD)
+#if !defined(HAVE_NETLINK) && !defined(OPEN_BSD) && !defined(HAVE_LIBVPPMGMT)
 
 int kernel_add_lsp(zebra_lsp_t *lsp)
 {

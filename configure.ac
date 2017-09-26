@@ -845,7 +845,7 @@ case "$host_os" in
     AC_MSG_RESULT([Linux])
 
     AC_DEFINE(GNU_LINUX,,GNU Linux)
-    AC_DEFINE(HAVE_NETLINK,,netlink)
+    AC_DEFINE(HAVE_LIBVPPMGMT,,libvppmgmt)
     AC_DEFINE(LINUX_IPV6,1,Linux IPv6 stack)
 
     dnl Linux has a compilation problem with mixing
