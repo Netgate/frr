@@ -20,7 +20,7 @@
 #include "zebra/interface.h"
 #include "zebra/debug.h"
 
-#include "rt_vpp.h"
+#include "zebra/rt_vpp.h"
 
 
 void kernel_init(struct zebra_ns *zns)

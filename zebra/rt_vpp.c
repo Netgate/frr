@@ -20,7 +20,7 @@
 #include "zebra/interface.h"
 #include "zebra/debug.h"
 
-#include "rt_vpp.h"
+#include "zebra/rt_vpp.h"
 
 
 void vpp_neigh_read_for_vlan(struct zebra_ns *zns, struct interface *vlan_if)

@@ -12,7 +12,7 @@
 #include "zebra/interface.h"
 #include "zebra/ioctl.h"
 
-#include "rt_vpp.h"
+#include "zebra/rt_vpp.h"
 
 
 int interface_lookup_vpp(struct zebra_ns *zns)
