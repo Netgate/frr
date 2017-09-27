@@ -92,6 +92,7 @@ noinst_HEADERS += \
 	zebra/router-id.h \
 	zebra/rt.h \
 	zebra/rt_netlink.h \
+	zebra/rt_vpp.h \
 	zebra/rtadv.h \
 	zebra/zebra_fpm_private.h \
 	zebra/zebra_l2.h \
