@@ -22,14 +22,28 @@
 
 #include "zebra/rt_vpp.h"
 
+#include <vppmgmt/vpp_mgmt_api.h>
+
+unsigned int debug;		/* FIXME -- remove form libvppmgmt */
+
 
 void kernel_init(struct zebra_ns *zns)
 {
+	int ret;
+
+	ret = vmgmt_init((char *) "route_daemon", 1);
+	if (ret < 0) {
+		zlog_err("vmgmt_init failed with status %d", ret);
+	} else {
+		zlog_info("vmgmt_init success");
+	}
 }
 
 
 void kernel_terminate(struct zebra_ns *zns)
 {
+	vmgmt_disconnect();
+	zlog_info("vmgmt_disconnect success");
 }
 
 #endif

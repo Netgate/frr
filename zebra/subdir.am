@@ -19,7 +19,15 @@ endif
 ## endif ZEBRA
 endif
 
+LIBVPPMGMT_INCLUDE_DIR	= ${LIBVPPMGMT_DIR}/usr/include
+LIBVPPMGMT_LIB_DIR	= ${LIBVPPMGMT_DIR}/usr/lib64
+
+AM_CFLAGS	+= -I${LIBVPPMGMT_INCLUDE_DIR}
+
 zebra_zebra_LDADD = lib/libfrr.la $(LIBCAP)
+zebra_zebra_LDADD	+= -L${LIBVPPMGMT_LIB_DIR}
+zebra_zebra_LDADD	+= -lvppmgmt -lpthread  -lm -lrt
+
 zebra_zebra_SOURCES = \
 	zebra/connected.c \
 	zebra/debug.c \

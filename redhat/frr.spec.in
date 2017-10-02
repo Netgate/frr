@@ -26,6 +26,7 @@
 %{!?with_watchfrr:      %global  with_watchfrr      1 }
 %{!?with_bgp_vnc:       %global  with_bgp_vnc       0 }
 %{!?with_pimd:          %global  with_pimd          1 }
+%{!?libvppmgmtdir:	%global  libvppmgmtdir      / }
 
 # path defines
 %define     _sysconfdir   /etc/frr
@@ -296,6 +297,9 @@ developing OSPF-API and frr applications.
     --enable-isisd=yes \
 %if "%{initsystem}" == "systemd"
     --enable-systemd=yes \
+%endif
+%if "%{libvppmgmtdir}" != "/"
+    --with-libvppmgmtdir=%libvppmgmtdir \
 %endif
     --enable-poll=yes
 

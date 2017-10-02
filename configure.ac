@@ -91,6 +91,12 @@ AC_ARG_WITH([moduledir], [AS_HELP_STRING([--with-moduledir=DIR], [module directo
 ])
 AC_SUBST([moduledir], [$moduledir])
 
+AC_ARG_WITH([libvppmgmtdir], [AS_HELP_STRING([--with-libvppmgmtdir=DIR], [use libvppmgmt in DIR for build])], [
+   LIBVPPMGMT_DIR="$withval"
+])
+AC_SUBST(LIBVPPMGMT_DIR)
+
+
 AC_ARG_ENABLE(tcmalloc,
 	AS_HELP_STRING([--enable-tcmalloc], [Turn on tcmalloc]),
 [case "${enableval}" in
