@@ -96,6 +96,11 @@ AC_ARG_WITH([libvppmgmtdir], [AS_HELP_STRING([--with-libvppmgmtdir=DIR], [use li
 ])
 AC_SUBST(LIBVPPMGMT_DIR)
 
+AC_ARG_WITH([vppdir], [AS_HELP_STRING([--with-vppdir=DIR], [use VPP in DIR for build])], [
+   VPP_DIR="$withval"
+])
+AC_SUBST(VPP_DIR)
+
 
 AC_ARG_ENABLE(tcmalloc,
 	AS_HELP_STRING([--enable-tcmalloc], [Turn on tcmalloc]),

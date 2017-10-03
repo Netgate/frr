@@ -27,6 +27,7 @@
 %{!?with_bgp_vnc:       %global  with_bgp_vnc       0 }
 %{!?with_pimd:          %global  with_pimd          1 }
 %{!?libvppmgmtdir:	%global  libvppmgmtdir      / }
+%{!?vppdir:		%global  vppdir             / }
 
 # path defines
 %define     _sysconfdir   /etc/frr
@@ -300,6 +301,9 @@ developing OSPF-API and frr applications.
 %endif
 %if "%{libvppmgmtdir}" != "/"
     --with-libvppmgmtdir=%libvppmgmtdir \
+%endif
+%if "%{vppdir}" != "/"
+    --with-vppdir=%vppdir \
 %endif
     --enable-poll=yes
 
