@@ -22,6 +22,8 @@
 
 #include "zebra/rt_vpp.h"
 
+#include <vppmgmt/vpp_mgmt_api.h>
+
 
 void vpp_neigh_read_for_vlan(struct zebra_ns *zns, struct interface *vlan_if)
 {
@@ -116,13 +118,23 @@ int kernel_route_rib(struct prefix *p, struct prefix *src_p,
 
 int kernel_address_add_ipv4(struct interface *ifp, struct connected *ifc)
 {
-	return -1;
+	return vmgmt_intf_add_del_address(ifp->ifindex,
+					  1 /* add */,
+					  0 /* ipv6 */,
+					  0 /* delete all */,
+					  ifc->address->prefixlen,
+					  &ifc->address->u.prefix);
 }
 
 
 int kernel_address_delete_ipv4(struct interface *ifp, struct connected *ifc)
 {
-	return -1;
+	return vmgmt_intf_add_del_address(ifp->ifindex,
+					  0 /* delete */,
+					  0 /* ipv6 */,
+					  0 /* delete all */,
+					  ifc->address->prefixlen,
+					  &ifc->address->u.prefix);
 }
 
 
