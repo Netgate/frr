@@ -12,7 +12,7 @@
 #include "table.h"
 #include "memory.h"
 #include "rib.h"
-#include "privs.h"
+#include "nexthop.h"
 
 #include "zebra/zserv.h"
 #include "zebra/rt.h"
@@ -109,10 +109,98 @@ int kernel_del_mac(struct interface *ifp, vlanid_t vid,
 }
 
 
-int kernel_route_rib(struct prefix *p, struct prefix *src_p,
-		     struct route_entry *old, struct route_entry *new)
+static int route_multipath(u_int8_t is_add,
+			   struct prefix *p,
+			   struct route_entry *re)
 {
+	char *rt_table_name;
+	u_int8_t is_ipv6;
+	u_int8_t drop;
+	u_int8_t unreachable;
+	u_int8_t multipath;
+	u_int8_t notlast;
+	struct nexthop *nh;
+
+	multipath = 0;
+	is_ipv6 = PREFIX_FAMILY(p) == AF_INET6;
+        
+	/*
+	 * FIXME: Need to call vmgmt_route_add_del_table() first.
+	 * FIXME: needs to come from re->vrf_id.
+	 */
+	rt_table_name = strdup("zebra_routes");
+
+	for (nh = re->nexthop; nh; nh = nh->next) {
+		u_int8_t *nhaddr;
+		struct route_add_del_args rada;
+		int ret;
+
+		if (nh->next) {
+			multipath = 1;
+			notlast = 1;
+		} else {
+			notlast = 0;
+		}
+
+		nhaddr = (u_int8_t *)&nh->gate;
+		if ((nh->flags & NEXTHOP_FLAG_RECURSIVE) && nh->resolved) {
+			nhaddr = (u_int8_t *)&nh->resolved->gate;
+		}
+		if (!nhaddr) {
+			continue;
+		}
+
+		drop = !!(nh->type == NEXTHOP_TYPE_BLACKHOLE
+			  && nh->bh_type == BLACKHOLE_NULL);
+
+		unreachable = !!(nh->type == NEXTHOP_TYPE_BLACKHOLE
+				 && nh->bh_type == BLACKHOLE_REJECT);
+
+		memset(&rada, 0, sizeof(rada));
+
+		rada.route_table_name = rt_table_name;
+
+		rada.is_add = is_add;
+		rada.is_drop = drop;
+		rada.is_unreachable = unreachable;
+		rada.is_multipath = multipath;
+		rada.is_not_last = notlast;
+		rada.is_ipv6 = is_ipv6;
+		rada.dest_mask_len = p->prefixlen;
+		rada.nh_ifi = ~0;
+		memcpy(rada.dest_prefix, &p->u.prefix, is_ipv6 ? 16 : 4);
+		memcpy(rada.nh_addr, nhaddr, is_ipv6 ? 16 : 4);
+
+		ret = vmgmt_add_del_route_args(&rada);
+		
+		if (ret < 0) {
+			free(rt_table_name);
+			return ret;
+		}
+	}
+
+	free(rt_table_name);
+
 	return 0;
+}
+
+
+int kernel_route_rib(struct prefix *p,
+		     struct prefix *src_p,
+		     struct route_entry *re_old,
+		     struct route_entry *re_new)
+{
+	int ret;
+
+	ret = 0;
+	if (re_old) {
+		ret = route_multipath(0, p, re_old);
+	}
+	if (re_new && !ret) {
+		ret = route_multipath(1, p, re_new);
+	}
+
+	return ret;
 }
 
 
