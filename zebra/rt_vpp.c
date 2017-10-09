@@ -158,7 +158,8 @@ static int route_multipath(u_int8_t is_add,
 
 		memset(&rada, 0, sizeof(rada));
 
-		rada.route_table_name = rt_table_name;
+		strncpy(rada.route_table_name, rt_table_name,
+			sizeof(rada.route_table_name) - 1);
 
 		rada.is_add = is_add;
 		rada.is_drop = drop;
@@ -171,7 +172,7 @@ static int route_multipath(u_int8_t is_add,
 		memcpy(rada.dest_prefix, &p->u.prefix, is_ipv6 ? 16 : 4);
 		memcpy(rada.nh_addr, nhaddr, is_ipv6 ? 16 : 4);
 
-		ret = vmgmt_add_del_route_args(&rada);
+		ret = vmgmt_route_add_del_args(&rada);
 		
 		if (ret < 0) {
 			free(rt_table_name);
