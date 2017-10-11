@@ -113,7 +113,7 @@ static int route_multipath(u_int8_t is_add,
 			   struct prefix *p,
 			   struct route_entry *re)
 {
-	char *rt_table_name;
+	const char *rt_table_name;
 	u_int8_t is_ipv6;
 	u_int8_t drop;
 	u_int8_t unreachable;
@@ -125,10 +125,15 @@ static int route_multipath(u_int8_t is_add,
 	is_ipv6 = PREFIX_FAMILY(p) == AF_INET6;
         
 	/*
+	 * These are the hard-coded default VPP route table names.
 	 * FIXME: Need to call vmgmt_route_add_del_table() first.
 	 * FIXME: needs to come from re->vrf_id.
 	 */
-	rt_table_name = strdup("zebra_routes");
+	if (is_ipv6) {
+		rt_table_name = "IPv6-VRF:0";
+	} else {
+		rt_table_name = "IPv4-VRF:0";
+	}
 
 	for (nh = re->nexthop; nh; nh = nh->next) {
 		u_int8_t *nhaddr;
@@ -175,12 +180,9 @@ static int route_multipath(u_int8_t is_add,
 		ret = vmgmt_route_add_del_args(&rada);
 		
 		if (ret < 0) {
-			free(rt_table_name);
 			return ret;
 		}
 	}
-
-	free(rt_table_name);
 
 	return 0;
 }
