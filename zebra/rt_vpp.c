@@ -118,7 +118,6 @@ static int route_multipath(u_int8_t is_add,
 	u_int8_t drop;
 	u_int8_t unreachable;
 	u_int8_t multipath;
-	u_int8_t notlast;
 	struct nexthop *nh;
 
 	multipath = 0;
@@ -142,9 +141,6 @@ static int route_multipath(u_int8_t is_add,
 
 		if (nh->next) {
 			multipath = 1;
-			notlast = 1;
-		} else {
-			notlast = 0;
 		}
 
 		nhaddr = (u_int8_t *)&nh->gate;
@@ -170,7 +166,6 @@ static int route_multipath(u_int8_t is_add,
 		rada.is_drop = drop;
 		rada.is_unreachable = unreachable;
 		rada.is_multipath = multipath;
-		rada.is_not_last = notlast;
 		rada.is_ipv6 = is_ipv6;
 		rada.dest_mask_len = p->prefixlen;
 		rada.nh_ifi = ~0;
