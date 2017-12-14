@@ -224,6 +224,10 @@ static int bgp_interface_delete(int command, struct zclient *zclient,
 	struct interface *ifp;
 	struct bgp *bgp;
 
+	bgp = bgp_lookup_by_vrf_id(vrf_id);
+	if (!bgp)
+		return 0;
+
 	s = zclient->ibuf;
 	ifp = zebra_interface_state_read(s, vrf_id);
 	if (!ifp) /* This may happen if we've just unregistered for a VRF. */
@@ -232,13 +236,9 @@ static int bgp_interface_delete(int command, struct zclient *zclient,
 	if (BGP_DEBUG(zebra, ZEBRA))
 		zlog_debug("Rx Intf del VRF %u IF %s", vrf_id, ifp->name);
 
-	bgp = bgp_lookup_by_vrf_id(vrf_id);
-	if (!bgp)
-		return 0;
-
 	bgp_update_interface_nbrs(bgp, ifp, NULL);
 
-	ifp->ifindex = IFINDEX_DELETED;
+	if_set_index(ifp, IFINDEX_INTERNAL);
 	return 0;
 }
 
@@ -252,6 +252,10 @@ static int bgp_interface_up(int command, struct zclient *zclient,
 	struct listnode *node, *nnode;
 	struct bgp *bgp;
 
+	bgp = bgp_lookup_by_vrf_id(vrf_id);
+	if (!bgp)
+		return 0;
+
 	s = zclient->ibuf;
 	ifp = zebra_interface_state_read(s, vrf_id);
 
@@ -260,10 +264,6 @@ static int bgp_interface_up(int command, struct zclient *zclient,
 
 	if (BGP_DEBUG(zebra, ZEBRA))
 		zlog_debug("Rx Intf up VRF %u IF %s", vrf_id, ifp->name);
-
-	bgp = bgp_lookup_by_vrf_id(vrf_id);
-	if (!bgp)
-		return 0;
 
 	for (ALL_LIST_ELEMENTS(ifp->connected, node, nnode, c))
 		bgp_connected_add(bgp, c);
@@ -284,6 +284,10 @@ static int bgp_interface_down(int command, struct zclient *zclient,
 	struct listnode *node, *nnode;
 	struct bgp *bgp;
 
+	bgp = bgp_lookup_by_vrf_id(vrf_id);
+	if (!bgp)
+		return 0;
+
 	s = zclient->ibuf;
 	ifp = zebra_interface_state_read(s, vrf_id);
 	if (!ifp)
@@ -291,10 +295,6 @@ static int bgp_interface_down(int command, struct zclient *zclient,
 
 	if (BGP_DEBUG(zebra, ZEBRA))
 		zlog_debug("Rx Intf down VRF %u IF %s", vrf_id, ifp->name);
-
-	bgp = bgp_lookup_by_vrf_id(vrf_id);
-	if (!bgp)
-		return 0;
 
 	for (ALL_LIST_ELEMENTS(ifp->connected, node, nnode, c))
 		bgp_connected_delete(bgp, c);
@@ -338,6 +338,11 @@ static int bgp_interface_address_add(int command, struct zclient *zclient,
 				     zebra_size_t length, vrf_id_t vrf_id)
 {
 	struct connected *ifc;
+	struct bgp *bgp;
+
+	bgp = bgp_lookup_by_vrf_id(vrf_id);
+	if (!bgp)
+		return 0;
 
 	ifc = zebra_interface_address_read(command, zclient->ibuf, vrf_id);
 
@@ -352,13 +357,8 @@ static int bgp_interface_address_add(int command, struct zclient *zclient,
 	}
 
 	if (if_is_operative(ifc->ifp)) {
-		struct bgp *bgp;
-
-		bgp = bgp_lookup_by_vrf_id(vrf_id);
-		if (!bgp)
-			return 0;
-
 		bgp_connected_add(bgp, ifc);
+
 		/* If we have learnt of any neighbors on this interface,
 		 * check to kick off any BGP interface-based neighbors,
 		 * but only if this is a link-local address.
@@ -377,6 +377,10 @@ static int bgp_interface_address_delete(int command, struct zclient *zclient,
 	struct connected *ifc;
 	struct bgp *bgp;
 
+	bgp = bgp_lookup_by_vrf_id(vrf_id);
+	if (!bgp)
+		return 0;
+
 	ifc = zebra_interface_address_read(command, zclient->ibuf, vrf_id);
 
 	if (ifc == NULL)
@@ -390,9 +394,7 @@ static int bgp_interface_address_delete(int command, struct zclient *zclient,
 	}
 
 	if (if_is_operative(ifc->ifp)) {
-		bgp = bgp_lookup_by_vrf_id(vrf_id);
-		if (bgp)
-			bgp_connected_delete(bgp, ifc);
+		bgp_connected_delete(bgp, ifc);
 	}
 
 	connected_free(ifc);
@@ -522,9 +524,10 @@ static int bgp_interface_vrf_update(int command, struct zclient *zclient,
 static int zebra_read_route(int command, struct zclient *zclient,
 			    zebra_size_t length, vrf_id_t vrf_id)
 {
+	enum nexthop_types_t nhtype;
 	struct zapi_route api;
 	union g_addr nexthop;
-	unsigned int ifindex;
+	ifindex_t ifindex;
 	int add, i;
 	struct bgp *bgp;
 
@@ -546,6 +549,7 @@ static int zebra_read_route(int command, struct zclient *zclient,
 
 	nexthop = api.nexthops[0].gate;
 	ifindex = api.nexthops[0].ifindex;
+	nhtype = api.nexthops[0].type;
 
 	add = (command == ZEBRA_REDISTRIBUTE_ROUTE_ADD);
 	if (add) {
@@ -566,8 +570,8 @@ static int zebra_read_route(int command, struct zclient *zclient,
 
 		/* Now perform the add/update. */
 		bgp_redistribute_add(bgp, &api.prefix, &nexthop, ifindex,
-				     api.metric, api.type, api.instance,
-				     api.tag);
+				     nhtype, api.metric, api.type,
+				     api.instance, api.tag);
 	} else {
 		bgp_redistribute_delete(bgp, &api.prefix, api.type,
 					api.instance);
@@ -591,18 +595,22 @@ static int zebra_read_route(int command, struct zclient *zclient,
 
 struct interface *if_lookup_by_ipv4(struct in_addr *addr, vrf_id_t vrf_id)
 {
-	struct listnode *ifnode;
+	struct vrf *vrf;
 	struct listnode *cnode;
 	struct interface *ifp;
 	struct connected *connected;
 	struct prefix_ipv4 p;
 	struct prefix *cp;
 
+	vrf = vrf_lookup_by_id(vrf_id);
+	if (!vrf)
+		return NULL;
+
 	p.family = AF_INET;
 	p.prefix = *addr;
 	p.prefixlen = IPV4_MAX_BITLEN;
 
-	for (ALL_LIST_ELEMENTS_RO(vrf_iflist(vrf_id), ifnode, ifp)) {
+	FOR_ALL_INTERFACES (vrf, ifp) {
 		for (ALL_LIST_ELEMENTS_RO(ifp->connected, cnode, connected)) {
 			cp = connected->address;
 
@@ -616,13 +624,17 @@ struct interface *if_lookup_by_ipv4(struct in_addr *addr, vrf_id_t vrf_id)
 
 struct interface *if_lookup_by_ipv4_exact(struct in_addr *addr, vrf_id_t vrf_id)
 {
-	struct listnode *ifnode;
+	struct vrf *vrf;
 	struct listnode *cnode;
 	struct interface *ifp;
 	struct connected *connected;
 	struct prefix *cp;
 
-	for (ALL_LIST_ELEMENTS_RO(vrf_iflist(vrf_id), ifnode, ifp)) {
+	vrf = vrf_lookup_by_id(vrf_id);
+	if (!vrf)
+		return NULL;
+
+	FOR_ALL_INTERFACES (vrf, ifp) {
 		for (ALL_LIST_ELEMENTS_RO(ifp->connected, cnode, connected)) {
 			cp = connected->address;
 
@@ -637,18 +649,22 @@ struct interface *if_lookup_by_ipv4_exact(struct in_addr *addr, vrf_id_t vrf_id)
 struct interface *if_lookup_by_ipv6(struct in6_addr *addr, ifindex_t ifindex,
 				    vrf_id_t vrf_id)
 {
-	struct listnode *ifnode;
+	struct vrf *vrf;
 	struct listnode *cnode;
 	struct interface *ifp;
 	struct connected *connected;
 	struct prefix_ipv6 p;
 	struct prefix *cp;
 
+	vrf = vrf_lookup_by_id(vrf_id);
+	if (!vrf)
+		return NULL;
+
 	p.family = AF_INET6;
 	p.prefix = *addr;
 	p.prefixlen = IPV6_MAX_BITLEN;
 
-	for (ALL_LIST_ELEMENTS_RO(vrf_iflist(vrf_id), ifnode, ifp)) {
+	FOR_ALL_INTERFACES (vrf, ifp) {
 		for (ALL_LIST_ELEMENTS_RO(ifp->connected, cnode, connected)) {
 			cp = connected->address;
 
@@ -669,13 +685,17 @@ struct interface *if_lookup_by_ipv6(struct in6_addr *addr, ifindex_t ifindex,
 struct interface *if_lookup_by_ipv6_exact(struct in6_addr *addr,
 					  ifindex_t ifindex, vrf_id_t vrf_id)
 {
-	struct listnode *ifnode;
+	struct vrf *vrf;
 	struct listnode *cnode;
 	struct interface *ifp;
 	struct connected *connected;
 	struct prefix *cp;
 
-	for (ALL_LIST_ELEMENTS_RO(vrf_iflist(vrf_id), ifnode, ifp)) {
+	vrf = vrf_lookup_by_id(vrf_id);
+	if (!vrf)
+		return NULL;
+
+	FOR_ALL_INTERFACES (vrf, ifp) {
 		for (ALL_LIST_ELEMENTS_RO(ifp->connected, cnode, connected)) {
 			cp = connected->address;
 
@@ -1087,12 +1107,11 @@ void bgp_zebra_announce(struct bgp_node *rn, struct prefix *p,
 							  ->ifindex;
 
 			if (!ifindex) {
-				if (mpinfo->peer->conf_if
-				    || mpinfo->peer->ifname)
+				if (mpinfo->peer->conf_if)
+					ifindex = mpinfo->peer->ifp->ifindex;
+				else if (mpinfo->peer->ifname)
 					ifindex = ifname2ifindex(
-						mpinfo->peer->conf_if
-							? mpinfo->peer->conf_if
-							: mpinfo->peer->ifname,
+						mpinfo->peer->ifname,
 						bgp->vrf_id);
 				else if (mpinfo->peer->nexthop.ifp)
 					ifindex = mpinfo->peer->nexthop.ifp
@@ -1290,10 +1309,8 @@ static void bgp_redist_del(struct bgp *bgp, afi_t afi, u_char type,
 	if (red) {
 		listnode_delete(bgp->redist[afi][type], red);
 		XFREE(MTYPE_BGP_REDIST, red);
-		if (!bgp->redist[afi][type]->count) {
-			list_free(bgp->redist[afi][type]);
-			bgp->redist[afi][type] = NULL;
-		}
+		if (!bgp->redist[afi][type]->count)
+			list_delete_and_null(&bgp->redist[afi][type]);
 	}
 }
 
@@ -1323,12 +1340,14 @@ int bgp_redistribute_set(struct bgp *bgp, afi_t afi, int type, u_short instance)
 		vrf_bitmap_set(zclient->redist[afi][type], bgp->vrf_id);
 	}
 
-	/* Don't try to register if we're not connected to Zebra or Zebra
-	 * doesn't
-	 * know of this instance.
+	/*
+	 * Don't try to register if we're not connected to Zebra or Zebra
+	 * doesn't know of this instance.
+	 *
+	 * When we come up later well resend if needed.
 	 */
 	if (!bgp_install_info_to_zebra(bgp))
-		return CMD_WARNING_CONFIG_FAILED;
+		return CMD_SUCCESS;
 
 	if (BGP_DEBUG(zebra, ZEBRA))
 		zlog_debug("Tx redistribute add VRF %u afi %d %s %d",
@@ -1733,13 +1752,15 @@ static int bgp_zebra_process_local_macip(int command, struct zclient *zclient,
 		return bgp_evpn_local_macip_del(bgp, vni, &mac, &ip);
 }
 
+extern struct zebra_privs_t bgpd_privs;
+
 void bgp_zebra_init(struct thread_master *master)
 {
 	zclient_num_connects = 0;
 
 	/* Set default values. */
-	zclient = zclient_new(master);
-	zclient_init(zclient, ZEBRA_ROUTE_BGP, 0);
+	zclient = zclient_new_notify(master, &zclient_options_default);
+	zclient_init(zclient, ZEBRA_ROUTE_BGP, 0, &bgpd_privs);
 	zclient->zebra_connected = bgp_zebra_connected;
 	zclient->router_id_update = bgp_router_id_update;
 	zclient->interface_add = bgp_interface_add;

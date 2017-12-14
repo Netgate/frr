@@ -330,10 +330,10 @@ static int pim_zebra_if_address_add(int command, struct zclient *zclient,
 		pim_rp_check_on_if_add(pim_ifp);
 
 	if (if_is_loopback(c->ifp)) {
-		struct listnode *ifnode;
+		struct vrf *vrf = vrf_lookup_by_id(VRF_DEFAULT);
 		struct interface *ifp;
 
-		for (ALL_LIST_ELEMENTS_RO(vrf_iflist(vrf_id), ifnode, ifp)) {
+		FOR_ALL_INTERFACES (vrf, ifp) {
 			if (!if_is_loopback(ifp) && if_is_operative(ifp))
 				pim_if_addr_add_all(ifp);
 		}
@@ -348,7 +348,11 @@ static int pim_zebra_if_address_del(int command, struct zclient *client,
 	struct connected *c;
 	struct prefix *p;
 	struct vrf *vrf = vrf_lookup_by_id(vrf_id);
-	struct pim_instance *pim = vrf->info;
+	struct pim_instance *pim;
+
+	if (!vrf)
+		return 0;
+	pim = vrf->info;
 
 	/*
 	  zebra api notifies address adds/dels events by using the same call
@@ -392,7 +396,6 @@ static int pim_zebra_if_address_del(int command, struct zclient *client,
 static void scan_upstream_rpf_cache()
 {
 	struct listnode *up_node;
-	struct listnode *ifnode;
 	struct listnode *up_nextnode;
 	struct listnode *node;
 	struct pim_upstream *up;
@@ -501,7 +504,7 @@ static void scan_upstream_rpf_cache()
 		if (!pim)
 			continue;
 
-		for (ALL_LIST_ELEMENTS_RO(vrf_iflist(pim->vrf_id), ifnode, ifp))
+		FOR_ALL_INTERFACES (pim->vrf, ifp)
 			if (ifp->info) {
 				struct pim_interface *pim_ifp = ifp->info;
 				struct pim_iface_upstream_switch *us;
@@ -596,7 +599,9 @@ void pim_scan_individual_oil(struct channel_oil *c_oil, int in_vif_index)
 		zlog_debug(
 			"%s %s: (S,G)=(%s,%s) input interface changed from %s vif_index=%d to %s vif_index=%d",
 			__FILE__, __PRETTY_FUNCTION__, source_str, group_str,
-			old_iif->name, c_oil->oil.mfcc_parent, new_iif->name,
+			(old_iif) ? old_iif->name : "<old_iif?>",
+			c_oil->oil.mfcc_parent,
+			(new_iif) ? new_iif->name : "<new_iif?>",
 			input_iface_vif_index);
 	}
 
@@ -615,7 +620,8 @@ void pim_scan_individual_oil(struct channel_oil *c_oil, int in_vif_index)
 			zlog_debug(
 				"%s %s: (S,G)=(%s,%s) new iif loops to existing oif: %s vif_index=%d",
 				__FILE__, __PRETTY_FUNCTION__, source_str,
-				group_str, new_iif->name,
+				group_str,
+				(new_iif) ? new_iif->name : "<new_iif?>",
 				input_iface_vif_index);
 		}
 	}
@@ -742,7 +748,7 @@ void pim_zebra_init(void)
 	int i;
 
 	/* Socket for receiving updates from Zebra daemon */
-	zclient = zclient_new(master);
+	zclient = zclient_new_notify(master, &zclient_options_default);
 
 	zclient->zebra_connected = pim_zebra_connected;
 	zclient->router_id_update = pim_router_id_update_zebra;
@@ -754,7 +760,7 @@ void pim_zebra_init(void)
 	zclient->interface_address_delete = pim_zebra_if_address_del;
 	zclient->nexthop_update = pim_parse_nexthop_update;
 
-	zclient_init(zclient, ZEBRA_ROUTE_PIM, 0);
+	zclient_init(zclient, ZEBRA_ROUTE_PIM, 0, &pimd_privs);
 	if (PIM_DEBUG_PIM_TRACE) {
 		zlog_info("zclient_init cleared redistribution request");
 	}
@@ -861,7 +867,6 @@ static void igmp_source_forward_reevaluate_one(struct pim_instance *pim,
 
 void igmp_source_forward_reevaluate_all(void)
 {
-	struct listnode *ifnode;
 	struct interface *ifp;
 	struct vrf *vrf;
 	struct pim_instance *pim;
@@ -871,8 +876,7 @@ void igmp_source_forward_reevaluate_all(void)
 		if (!pim)
 			continue;
 
-		for (ALL_LIST_ELEMENTS_RO(vrf_iflist(pim->vrf_id), ifnode,
-					  ifp)) {
+		FOR_ALL_INTERFACES (pim->vrf, ifp) {
 			struct pim_interface *pim_ifp = ifp->info;
 			struct listnode *sock_node;
 			struct igmp_sock *igmp;

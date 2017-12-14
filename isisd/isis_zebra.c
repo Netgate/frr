@@ -128,7 +128,7 @@ static int isis_zebra_if_del(int command, struct zclient *zclient,
 	   in case there is configuration info attached to it. */
 	if_delete_retain(ifp);
 
-	ifp->ifindex = IFINDEX_DELETED;
+	if_set_index(ifp, IFINDEX_INTERNAL);
 
 	return 0;
 }
@@ -411,8 +411,8 @@ static void isis_zebra_connected(struct zclient *zclient)
 
 void isis_zebra_init(struct thread_master *master)
 {
-	zclient = zclient_new(master);
-	zclient_init(zclient, ZEBRA_ROUTE_ISIS, 0);
+	zclient = zclient_new_notify(master, &zclient_options_default);
+	zclient_init(zclient, ZEBRA_ROUTE_ISIS, 0, &isisd_privs);
 	zclient->zebra_connected = isis_zebra_connected;
 	zclient->router_id_update = isis_router_id_update_zebra;
 	zclient->interface_add = isis_zebra_if_add;

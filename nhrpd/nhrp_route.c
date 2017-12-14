@@ -314,7 +314,7 @@ void nhrp_zebra_init(void)
 	zebra_rib[AFI_IP] = route_table_init();
 	zebra_rib[AFI_IP6] = route_table_init();
 
-	zclient = zclient_new(master);
+	zclient = zclient_new_notify(master, &zclient_options_default);
 	zclient->zebra_connected = nhrp_zebra_connected;
 	zclient->interface_add = nhrp_interface_add;
 	zclient->interface_delete = nhrp_interface_delete;
@@ -325,7 +325,7 @@ void nhrp_zebra_init(void)
 	zclient->redistribute_route_add = nhrp_route_read;
 	zclient->redistribute_route_del = nhrp_route_read;
 
-	zclient_init(zclient, ZEBRA_ROUTE_NHRP, 0);
+	zclient_init(zclient, ZEBRA_ROUTE_NHRP, 0, &nhrpd_privs);
 }
 
 void nhrp_zebra_terminate(void)

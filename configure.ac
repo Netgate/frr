@@ -196,13 +196,23 @@ CC="${CC% -std=c99}"
 
 AC_C_FLAG([-std=gnu11], [CC="$ac_cc"], [CC="$CC -std=gnu11"])
 
-dnl if the user specified any CFLAGS, we don't add "-g -Os/-O2" here
-if test "z$orig_cflags" = "z"; then
-  AC_C_FLAG([-g])
-  AC_C_FLAG([-Os], [
-    AC_C_FLAG([-O2])
-  ])
+dnl if the user has specified any CFLAGS, override our settings
+if test "x${enable_dev_build}" = "xyes"; then
+   AC_DEFINE(DEV_BUILD,,Build for development)
+   if test "z$orig_cflags" = "z"; then
+      AC_C_FLAG([-g3])
+      AC_C_FLAG([-O0])
+   fi
+else
+   if test "z$orig_cflags" = "z"; then
+      AC_C_FLAG([-g])
+      AC_C_FLAG([-Os], [
+        AC_C_FLAG([-O2])
+      ])
+   fi
 fi
+AM_CONDITIONAL([DEV_BUILD], [test "x$enable_dev_build" = "xyes"])
+AM_CONDITIONAL([SHARPD], [test "x$enable_dev_build" = "xyes"])
 
 dnl always want these CFLAGS
 AC_C_FLAG([-fno-omit-frame-pointer])
@@ -383,12 +393,16 @@ AC_ARG_ENABLE(cumulus,
   AS_HELP_STRING([--enable-cumulus], [enable Cumulus Switch Special Extensions]))
 AC_ARG_ENABLE(datacenter,
   AS_HELP_STRING([--enable-datacenter], [enable Compilation for Data Center Extensions]))
+AC_ARG_ENABLE(fuzzing,
+  AS_HELP_STRING([--enable-fuzzing], [enable ability to fuzz various parts of FRR]))
 AC_ARG_ENABLE(rr-semantics,
   AS_HELP_STRING([--disable-rr-semantics], [disable the v6 Route Replace semantics]))
 AC_ARG_ENABLE([protobuf],
   AS_HELP_STRING([--enable-protobuf], [Enable experimental protobuf support]))
 AC_ARG_ENABLE([oldvpn_commands],
   AS_HELP_STRING([--enable-oldvpn-commands], [Keep old vpn commands]))
+AC_ARG_ENABLE(rpki,
+  AS_HELP_STRING([--enable-rpki], [enable RPKI prefix validation support]))
 
 AC_CHECK_HEADERS(json-c/json.h)
 AC_CHECK_LIB(json-c, json_object_get, LIBS="$LIBS -ljson-c", [], [-lm])
@@ -434,6 +448,10 @@ else
   DFLT_NAME="traditional"
 fi
 
+if test "${enable_fuzzing}" = "yes" ; then
+  AC_DEFINE(HANDLE_ZAPI_FUZZING,,Compile extensions to use with a fuzzer)
+fi
+
 if test "${enable_cumulus}" = "yes" ; then
   AC_DEFINE(HAVE_CUMULUS,,Compile Special Cumulus Code in)
 fi
@@ -446,11 +464,6 @@ if test "${enable_shell_access}" = "yes"; then
 fi
 
 AM_CONDITIONAL([FPM], [test "x$enable_fpm" = "xyes"])
-
-if test "x${enable_dev_build}" = "xyes"; then
-   AC_DEFINE(DEV_BUILD,,Build for development)
-fi
-AM_CONDITIONAL([DEV_BUILD], [test "x$enable_dev_build" = "xyes"])
 
 #
 # Python for clippy
@@ -1803,6 +1816,30 @@ AC_SUBST(CFG_STATE)
 AC_SUBST(CFG_MODULE)
 AC_DEFINE_UNQUOTED(MODULE_PATH, "$CFG_MODULE", path to modules)
 
+dnl ------------------------------------
+dnl Enable RPKI and add librtr to libs
+dnl ------------------------------------
+if test "${enable_rpki}" = "yes"; then
+  PKG_CHECK_MODULES(RTRLIB,[rtrlib >= 0.5.0],
+      [AC_DEFINE(HAVE_RPKI,1,Enable RPKI prefix validation for BGP)
+      RPKI=true],
+      [RPKI=false
+      AC_MSG_ERROR([rtrlib was not found on your system or is too old.])]
+  )
+fi
+AM_CONDITIONAL([RPKI], test "x$RPKI" = "xtrue")
+
+dnl ------------------------------------------
+dnl Check whether rtrlib was build with ssh support
+dnl ------------------------------------------
+AC_MSG_CHECKING([whether the RTR Library is compiled with SSH])
+AC_LINK_IFELSE([AC_LANG_PROGRAM([[#include "rtrlib/rtrlib.h"]],
+			[[struct tr_ssh_config config;]])],
+	[AC_MSG_RESULT(yes)
+	AC_DEFINE(FOUND_SSH,,found_ssh)],
+	AC_MSG_RESULT(no)
+)
+
 dnl ---------------------------
 dnl Check htonl works correctly
 dnl ---------------------------
@@ -1820,6 +1857,8 @@ AC_CONFIG_FILES([Makefile
 	  doc/Makefile tests/Makefile
 	  bgpd/rfp-example/rfptest/Makefile bgpd/rfp-example/librfp/Makefile
 	  redhat/frr.spec
+	  debianpkg/Makefile
+	  debianpkg/changelog
 	  snapcraft/snapcraft.yaml
 	  lib/version.h
 	  tests/lib/cli/test_cli.refout

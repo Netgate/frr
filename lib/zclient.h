@@ -61,6 +61,7 @@ typedef enum {
 	ZEBRA_INTERFACE_SET_MASTER,
 	ZEBRA_ROUTE_ADD,
 	ZEBRA_ROUTE_DELETE,
+	ZEBRA_ROUTE_NOTIFY_OWNER,
 	ZEBRA_IPV4_ROUTE_ADD,
 	ZEBRA_IPV4_ROUTE_DELETE,
 	ZEBRA_IPV6_ROUTE_ADD,
@@ -134,6 +135,12 @@ struct zclient {
 	/* The thread master we schedule ourselves on */
 	struct thread_master *master;
 
+	/* Priviledges to change socket values */
+	struct zebra_privs_t *privs;
+
+	/* Do we care about failure events for route install? */
+	bool receive_notify;
+
 	/* Socket to zebra daemon. */
 	int sock;
 
@@ -196,6 +203,8 @@ struct zclient {
 	int (*local_macip_add)(int, struct zclient *, uint16_t, vrf_id_t);
 	int (*local_macip_del)(int, struct zclient *, uint16_t, vrf_id_t);
 	int (*pw_status_update)(int, struct zclient *, uint16_t, vrf_id_t);
+	int (*notify_owner)(int command, struct zclient *zclient,
+			    uint16_t length, vrf_id_t vrf_id);
 };
 
 /* Zebra API message flag. */
@@ -232,6 +241,13 @@ struct zapi_nexthop {
 	mpls_label_t labels[MPLS_MAX_LABELS];
 };
 
+/*
+ * Some of these data structures do not map easily to
+ * a actual data structure size giving different compilers
+ * and systems.  For those data structures we need
+ * to use the smallest available stream_getX/putX functions
+ * to encode/decode.
+ */
 struct zapi_route {
 	u_char type;
 	u_short instance;
@@ -240,6 +256,10 @@ struct zapi_route {
 
 	u_char message;
 
+	/*
+	 * This is an enum but we are going to treat it as a uint8_t
+	 * for purpose of encoding/decoding
+	 */
 	safi_t safi;
 
 	struct prefix prefix;
@@ -309,13 +329,36 @@ struct zapi_pw_status {
 	uint32_t status;
 };
 
+enum zapi_route_notify_owner {
+	ZAPI_ROUTE_FAIL_INSTALL,
+	ZAPI_ROUTE_BETTER_ADMIN_WON,
+	ZAPI_ROUTE_INSTALLED,
+};
+
 /* Zebra MAC types */
 #define ZEBRA_MAC_TYPE_STICKY                0x01 /* Sticky MAC*/
 #define ZEBRA_MAC_TYPE_GW                    0x02 /* gateway (SVI) mac*/
 
+struct zclient_options {
+	bool receive_notify;
+};
+
 /* Prototypes of zebra client service functions. */
 extern struct zclient *zclient_new(struct thread_master *);
-extern void zclient_init(struct zclient *, int, u_short);
+
+#if CONFDATE > 20181101
+CPP_NOTICE("zclient_new_notify can take over or zclient_new now");
+#endif
+
+extern struct zclient_options zclient_options_default;
+
+extern struct zclient *zclient_new_notify(struct thread_master *m,
+					  struct zclient_options *opt);
+
+#define zclient_new(A) zclient_new_notify((A), &zclient_options_default); \
+	CPP_WARN("Please transition to using zclient_new_notify");
+
+extern void zclient_init(struct zclient *, int, u_short, struct zebra_privs_t *privs);
 extern int zclient_start(struct zclient *);
 extern void zclient_stop(struct zclient *);
 extern void zclient_reset(struct zclient *);
@@ -431,6 +474,8 @@ extern int zapi_ipv4_route_ipv6_nexthop(u_char, struct zclient *,
 extern int zclient_route_send(u_char, struct zclient *, struct zapi_route *);
 extern int zapi_route_encode(u_char, struct stream *, struct zapi_route *);
 extern int zapi_route_decode(struct stream *, struct zapi_route *);
+bool zapi_route_notify_decode(struct stream *s, struct prefix *p,
+			      enum zapi_route_notify_owner *note);
 
 static inline void zapi_route_set_blackhole(struct zapi_route *api,
 					    enum blackhole_type bh_type)

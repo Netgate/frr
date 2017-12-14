@@ -214,6 +214,7 @@ static enum matcher_rv command_match_r(struct graph_node *start, vector vline,
 	fprintf(stdout, "\"%-20s\" matches \"%-30s\" ? ", input_token,
 		token->text);
 	enum match_type mt = match_token(token, input_token);
+	fprintf(stdout, "type: %d ", token->type);
 	fprintf(stdout, "min: %d - ", minmatch);
 	switch (mt) {
 	case trivial_match:
@@ -332,7 +333,7 @@ static enum matcher_rv command_match_r(struct graph_node *start, vector vline,
 		status = MATCHER_INCOMPLETE;
 
 	// cleanup
-	list_delete(next);
+	list_delete_and_null(&next);
 
 	return status;
 }
@@ -365,7 +366,7 @@ enum matcher_rv command_complete(struct graph *graph, vector vline,
 
 	unsigned int idx;
 	for (idx = 0; idx < vector_active(vline) && next->count > 0; idx++) {
-		list_delete(current);
+		list_delete_and_null(&current);
 		current = next;
 		next = list_new();
 		next->del = stack_del;
@@ -456,8 +457,8 @@ enum matcher_rv command_complete(struct graph *graph, vector vline,
 		}
 	}
 
-	list_delete(current);
-	list_delete(next);
+	list_delete_and_null(&current);
+	list_delete_and_null(&next);
 
 	return mrv;
 }
@@ -647,7 +648,7 @@ static void del_arglist(struct list *list)
 	list_delete_node(list, tail);
 
 	// delete the rest of the list as usual
-	list_delete(list);
+	list_delete_and_null(&list);
 }
 
 /*---------- token level matching functions ----------*/

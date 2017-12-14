@@ -243,6 +243,11 @@ struct ospf_interface *ospf_if_new(struct ospf *ospf, struct interface *ifp,
 	oi->ospf = ospf;
 	QOBJ_REG(oi, ospf_interface);
 
+	if (IS_DEBUG_OSPF_EVENT)
+		zlog_debug("%s: ospf interface %s vrf %s id %u created",
+			   __PRETTY_FUNCTION__, ifp->name,
+			   ospf_vrf_id_to_name(ospf->vrf_id), ospf->vrf_id);
+
 	return oi;
 }
 
@@ -308,10 +313,16 @@ void ospf_if_free(struct ospf_interface *oi)
 	route_table_finish(oi->ls_upd_queue);
 
 	/* Free any lists that should be freed */
-	list_free(oi->nbr_nbma);
+	list_delete_and_null(&oi->nbr_nbma);
 
-	list_free(oi->ls_ack);
-	list_free(oi->ls_ack_direct.ls_ack);
+	list_delete_and_null(&oi->ls_ack);
+	list_delete_and_null(&oi->ls_ack_direct.ls_ack);
+
+	if (IS_DEBUG_OSPF_EVENT)
+		zlog_debug("%s: ospf interface %s vrf %s id %u deleted",
+			   __PRETTY_FUNCTION__, oi->ifp->name,
+			   ospf_vrf_id_to_name(oi->ifp->vrf_id),
+			   oi->ifp->vrf_id);
 
 	ospf_delete_from_if(oi->ifp, oi);
 
@@ -335,7 +346,11 @@ struct ospf_interface *ospf_if_exists(struct ospf_interface *oic)
 	struct ospf *ospf;
 	struct ospf_interface *oi;
 
-	if ((ospf = ospf_lookup()) == NULL)
+	if (!oic)
+		return NULL;
+
+	ospf = oic->ospf;
+	if (ospf == NULL)
 		return NULL;
 
 	for (ALL_LIST_ELEMENTS_RO(ospf->oiflist, node, oi))
@@ -438,6 +453,15 @@ struct ospf_interface *ospf_if_lookup_recv_if(struct ospf *ospf,
 	return match;
 }
 
+static void ospf_if_reset_stats(struct ospf_interface *oi)
+{
+	oi->hello_in = oi->hello_out = 0;
+	oi->db_desc_in = oi->db_desc_out = 0;
+	oi->ls_req_in = oi->ls_req_out = 0;
+	oi->ls_upd_in = oi->ls_upd_out = 0;
+	oi->ls_ack_in = oi->ls_ack_out = 0;
+}
+
 void ospf_if_stream_set(struct ospf_interface *oi)
 {
 	/* set output fifo queue. */
@@ -452,6 +476,9 @@ void ospf_if_stream_unset(struct ospf_interface *oi)
 	if (oi->obuf) {
 		ospf_fifo_free(oi->obuf);
 		oi->obuf = NULL;
+
+		/*reset protocol stats */
+		ospf_if_reset_stats(oi);
 
 		if (oi->on_write_q) {
 			listnode_delete(ospf->oi_write_q, oi);
@@ -494,7 +521,7 @@ static struct ospf_if_params *ospf_new_if_params(void)
 
 void ospf_del_if_params(struct ospf_if_params *oip)
 {
-	list_delete(oip->auth_crypt);
+	list_delete_and_null(&oip->auth_crypt);
 	bfd_info_free(&(oip->bfd_info));
 	XFREE(MTYPE_OSPF_IF_PARAMS, oip);
 }
@@ -783,7 +810,7 @@ struct ospf_interface *ospf_vl_new(struct ospf *ospf,
 {
 	struct ospf_interface *voi;
 	struct interface *vi;
-	char ifname[INTERFACE_NAMSIZ + 1];
+	char ifname[INTERFACE_NAMSIZ];
 	struct ospf_area *area;
 	struct in_addr area_id;
 	struct connected *co;
@@ -800,10 +827,11 @@ struct ospf_interface *ospf_vl_new(struct ospf *ospf,
 	}
 
 	if (IS_DEBUG_OSPF_EVENT)
-		zlog_debug("ospf_vl_new(): creating pseudo zebra interface");
+		zlog_debug("ospf_vl_new(): creating pseudo zebra interface vrf id %u",
+			   ospf->vrf_id);
 
 	snprintf(ifname, sizeof(ifname), "VLINK%d", vlink_count);
-	vi = if_create(ifname, strnlen(ifname, sizeof(ifname)), VRF_DEFAULT);
+	vi = if_create(ifname, ospf->vrf_id);
 	/*
 	 * if_create sets ZEBRA_INTERFACE_LINKDETECTION
 	 * virtual links don't need this.
@@ -1164,7 +1192,6 @@ u_char ospf_default_iftype(struct interface *ifp)
 void ospf_if_init()
 {
 	/* Initialize Zebra interface data structure. */
-	om->iflist = vrf_iflist(VRF_DEFAULT);
 	hook_register_prio(if_add, 0, ospf_if_new_hook);
 	hook_register_prio(if_del, 0, ospf_if_delete_hook);
 }

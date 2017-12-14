@@ -32,6 +32,7 @@
 #include "bgpd/bgp_route.h"
 #include "bgpd/bgp_mplsvpn.h"
 
+#include "bgpd/bgp_vty.h"
 #include "bgpd/bgp_ecommunity.h"
 #include "bgpd/rfapi/rfapi.h"
 #include "bgpd/rfapi/bgp_rfapi_cfg.h"
@@ -169,12 +170,12 @@ struct rfapi_nve_group_cfg *bgp_rfapi_cfg_match_group(struct rfapi_cfg *hc,
 
 #if BGP_VNC_DEBUG_MATCH_GROUP
 	{
-		char buf[BUFSIZ];
+		char buf[PREFIX_STRLEN];
 
-		prefix2str(vn, buf, BUFSIZ);
+		prefix2str(vn, buf, sizeof(buf));
 		vnc_zlog_debug_verbose("%s: vn prefix: %s", __func__, buf);
 
-		prefix2str(un, buf, BUFSIZ);
+		prefix2str(un, buf, sizeof(buf));
 		vnc_zlog_debug_verbose("%s: un prefix: %s", __func__, buf);
 
 		vnc_zlog_debug_verbose(
@@ -231,7 +232,7 @@ void *rfapi_get_rfp_start_val(void *bgpv)
 /*------------------------------------------
  * bgp_rfapi_is_vnc_configured
  *
- * Returns if VNC (BGP VPN messaging /VPN & encap SAFIs) are configured
+ * Returns if VNC is configured
  *
  * input:
  *    bgp        NULL (=use default instance)
@@ -240,6 +241,7 @@ void *rfapi_get_rfp_start_val(void *bgpv)
  *
  * return value: If VNC is configured for the bgpd instance
  *	0		Success
+ *      EPERM		Not Default instance (VNC operations not allowed)
  *	ENXIO		VNC not configured
  --------------------------------------------*/
 int bgp_rfapi_is_vnc_configured(struct bgp *bgp)
@@ -247,29 +249,32 @@ int bgp_rfapi_is_vnc_configured(struct bgp *bgp)
 	if (bgp == NULL)
 		bgp = bgp_get_default();
 
-	if (bgp && bgp->rfapi_cfg) {
-		struct peer *peer;
-		struct peer_group *group;
-		struct listnode *node, *nnode;
-		/* if have configured VPN neighbors, assume running VNC */
-		for (ALL_LIST_ELEMENTS(bgp->group, node, nnode, group)) {
-			if (group->conf->afc[AFI_IP][SAFI_MPLS_VPN]
-			    || group->conf->afc[AFI_IP6][SAFI_MPLS_VPN])
-				return 0;
-		}
-		for (ALL_LIST_ELEMENTS(bgp->peer, node, nnode, peer)) {
-			if (peer->afc[AFI_IP][SAFI_MPLS_VPN]
-			    || peer->afc[AFI_IP6][SAFI_MPLS_VPN])
-				return 0;
-		}
-	}
+	if (bgp && bgp->inst_type != BGP_INSTANCE_TYPE_DEFAULT)
+		return EPERM;
+
+	if (bgp && bgp->rfapi_cfg)
+		return 0;
 	return ENXIO;
 }
 
 /***********************************************************************
  *			VNC Configuration/CLI
  ***********************************************************************/
-
+#define VNC_VTY_CONFIG_CHECK(bgp)					\
+	{								\
+		switch (bgp_rfapi_is_vnc_configured(bgp)) {		\
+		case EPERM:						\
+			vty_out(vty, "VNC operations only permitted on default BGP instance.\n"); \
+			return CMD_WARNING_CONFIG_FAILED;		\
+			break;						\
+		case ENXIO:						\
+			vty_out(vty, "VNC not configured.\n");		\
+			return CMD_WARNING_CONFIG_FAILED;		\
+			break;						\
+		default:						\
+			break;						\
+		}							\
+	}
 
 DEFUN (vnc_advertise_un_method,
        vnc_advertise_un_method_cmd,
@@ -279,12 +284,7 @@ DEFUN (vnc_advertise_un_method,
        "Via Tunnel Encap attribute (in VPN SAFI)\n")
 {
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
-
-	if (!bgp->rfapi_cfg) {
-		vty_out(vty, "VNC not configured\n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
-
+	VNC_VTY_CONFIG_CHECK(bgp);
 
 	if (!strncmp(argv[2]->arg, "encap-safi", 7)) {
 		bgp->rfapi_cfg->flags |= BGP_VNC_CONFIG_ADV_UN_METHOD_ENCAP;
@@ -301,9 +301,15 @@ DEFUN (vnc_advertise_un_method,
 
 
 DEFUN_NOSH (vnc_defaults,
-       vnc_defaults_cmd,
-       "vnc defaults", VNC_CONFIG_STR "Configure default NVE group\n")
+	    vnc_defaults_cmd,
+	    "vnc defaults", VNC_CONFIG_STR "Configure default NVE group\n")
 {
+	VTY_DECLVAR_CONTEXT(bgp, bgp);
+	VNC_VTY_CONFIG_CHECK(bgp);
+	if (bgp->inst_type != BGP_INSTANCE_TYPE_DEFAULT) {
+		vty_out(vty, "Malformed community-list value\n");
+		return CMD_WARNING_CONFIG_FAILED;
+	}
 	vty->node = BGP_VNC_DEFAULTS_NODE;
 	return CMD_SUCCESS;
 }
@@ -385,7 +391,7 @@ DEFUN (vnc_defaults_rt_both,
 
 DEFUN (vnc_defaults_rd,
        vnc_defaults_rd_cmd,
-       "rd ASN:nn_or_IP-address:nn",
+       "rd ASN:NN_OR_IP-ADDRESS:NN",
        "Specify default route distinguisher\n"
        "Route Distinguisher (<as-number>:<number> | <ip-address>:<number> | auto:vn:<number> )\n")
 {
@@ -736,10 +742,7 @@ DEFUN (vnc_redistribute_rh_roo_localadmin,
 	uint32_t localadmin;
 	char *endptr;
 
-	if (!bgp->rfapi_cfg) {
-		vty_out(vty, "RFAPI not configured\n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
+	VNC_VTY_CONFIG_CHECK(bgp);
 
 	localadmin = strtoul(argv[4]->arg, &endptr, 0);
 	if (!argv[4]->arg[0] || *endptr) {
@@ -787,11 +790,7 @@ DEFUN (vnc_redistribute_mode,
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
 	vnc_redist_mode_t newmode;
 
-	if (!bgp->rfapi_cfg) {
-		vty_out(vty, "RFAPI not configured\n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
-
+	VNC_VTY_CONFIG_CHECK(bgp);
 
 	switch (argv[3]->arg[0]) {
 	case 'n':
@@ -839,10 +838,7 @@ DEFUN (vnc_redistribute_protocol,
 	int type = ZEBRA_ROUTE_MAX; /* init to bogus value */
 	afi_t afi;
 
-	if (!bgp->rfapi_cfg) {
-		vty_out(vty, "RFAPI not configured\n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
+	VNC_VTY_CONFIG_CHECK(bgp);
 
 	if (rfapi_str2route_type(argv[2]->arg, argv[3]->arg, &afi, &type)) {
 		vty_out(vty, "%% Invalid route type\n");
@@ -884,10 +880,7 @@ DEFUN (vnc_no_redistribute_protocol,
 	int type;
 	afi_t afi;
 
-	if (!bgp->rfapi_cfg) {
-		vty_out(vty, "RFAPI not configured\n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
+	VNC_VTY_CONFIG_CHECK(bgp);
 
 	if (rfapi_str2route_type(argv[3]->arg, argv[4]->arg, &afi, &type)) {
 		vty_out(vty, "%% Invalid route type\n");
@@ -921,10 +914,7 @@ DEFUN (vnc_redistribute_bgp_exterior,
 	int type;
 	afi_t afi;
 
-	if (!bgp->rfapi_cfg) {
-		vty_out(vty, "RFAPI not configured\n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
+	VNC_VTY_CONFIG_CHECK(bgp);
 
 	if (rfapi_str2route_type(argv[2]->arg, "bgp-direct-to-nve-groups", &afi,
 				 &type)) {
@@ -952,11 +942,7 @@ DEFUN (vnc_redistribute_nvegroup,
        "NVE group\n" "Group name\n")
 {
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
-
-	if (!bgp->rfapi_cfg) {
-		vty_out(vty, "rfapi not configured\n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
+	VNC_VTY_CONFIG_CHECK(bgp);
 
 	vnc_redistribute_prechange(bgp);
 
@@ -985,10 +971,7 @@ DEFUN (vnc_redistribute_no_nvegroup,
 {
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
 
-	if (!bgp->rfapi_cfg) {
-		vty_out(vty, "rfapi not configured\n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
+	VNC_VTY_CONFIG_CHECK(bgp);
 
 	vnc_redistribute_prechange(bgp);
 
@@ -1013,11 +996,7 @@ DEFUN (vnc_redistribute_lifetime,
        "Allow lifetime to never expire\n")
 {
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
-
-	if (!bgp->rfapi_cfg) {
-		vty_out(vty, "rfapi not configured\n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
+	VNC_VTY_CONFIG_CHECK(bgp);
 
 	vnc_redistribute_prechange(bgp);
 
@@ -1051,10 +1030,8 @@ DEFUN (vnc_redist_bgpdirect_no_prefixlist,
 	struct rfapi_cfg *hc;
 	uint8_t route_type = 0;
 
-	if (!(hc = bgp->rfapi_cfg)) {
-		vty_out(vty, "rfapi not configured\n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
+	VNC_VTY_CONFIG_CHECK(bgp);
+	hc = bgp->rfapi_cfg;
 
 	if (strmatch(argv[3]->text, "bgp-direct")) {
 		route_type = ZEBRA_ROUTE_BGP_DIRECT;
@@ -1097,10 +1074,8 @@ DEFUN (vnc_redist_bgpdirect_prefixlist,
 	afi_t afi;
 	uint8_t route_type = 0;
 
-	if (!(hc = bgp->rfapi_cfg)) {
-		vty_out(vty, "rfapi not configured\n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
+	VNC_VTY_CONFIG_CHECK(bgp);
+	hc = bgp->rfapi_cfg;
 
 	if (strmatch(argv[2]->text, "bgp-direct")) {
 		route_type = ZEBRA_ROUTE_BGP_DIRECT;
@@ -1141,10 +1116,8 @@ DEFUN (vnc_redist_bgpdirect_no_routemap,
 	struct rfapi_cfg *hc;
 	uint8_t route_type = 0;
 
-	if (!(hc = bgp->rfapi_cfg)) {
-		vty_out(vty, "rfapi not configured\n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
+	VNC_VTY_CONFIG_CHECK(bgp);
+	hc = bgp->rfapi_cfg;
 
 	if (strmatch(argv[3]->text, "bgp-direct")) {
 		route_type = ZEBRA_ROUTE_BGP_DIRECT;
@@ -1177,10 +1150,8 @@ DEFUN (vnc_redist_bgpdirect_routemap,
 	struct rfapi_cfg *hc;
 	uint8_t route_type = 0;
 
-	if (!(hc = bgp->rfapi_cfg)) {
-		vty_out(vty, "rfapi not configured\n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
+	VNC_VTY_CONFIG_CHECK(bgp);
+	hc = bgp->rfapi_cfg;
 
 	if (strmatch(argv[2]->text, "bgp-direct")) {
 		route_type = ZEBRA_ROUTE_BGP_DIRECT;
@@ -1219,10 +1190,7 @@ DEFUN (vnc_nve_group_redist_bgpdirect_no_prefixlist,
 	VTY_DECLVAR_CONTEXT_SUB(rfapi_nve_group_cfg, rfg)
 	afi_t afi;
 
-	if (!bgp->rfapi_cfg) {
-		vty_out(vty, "rfapi not configured\n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
+	VNC_VTY_CONFIG_CHECK(bgp);
 
 	/* make sure it's still in list */
 	if (!listnode_lookup(bgp->rfapi_cfg->nve_groups_sequential, rfg)) {
@@ -1263,10 +1231,7 @@ DEFUN (vnc_nve_group_redist_bgpdirect_prefixlist,
 	VTY_DECLVAR_CONTEXT_SUB(rfapi_nve_group_cfg, rfg);
 	afi_t afi;
 
-	if (!bgp->rfapi_cfg) {
-		vty_out(vty, "rfapi not configured\n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
+	VNC_VTY_CONFIG_CHECK(bgp);
 
 	/* make sure it's still in list */
 	if (!listnode_lookup(bgp->rfapi_cfg->nve_groups_sequential, rfg)) {
@@ -1306,10 +1271,7 @@ DEFUN (vnc_nve_group_redist_bgpdirect_no_routemap,
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
 	VTY_DECLVAR_CONTEXT_SUB(rfapi_nve_group_cfg, rfg);
 
-	if (!bgp->rfapi_cfg) {
-		vty_out(vty, "rfapi not configured\n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
+	VNC_VTY_CONFIG_CHECK(bgp);
 
 	/* make sure it's still in list */
 	if (!listnode_lookup(bgp->rfapi_cfg->nve_groups_sequential, rfg)) {
@@ -1340,10 +1302,7 @@ DEFUN (vnc_nve_group_redist_bgpdirect_routemap,
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
 	VTY_DECLVAR_CONTEXT_SUB(rfapi_nve_group_cfg, rfg);
 
-	if (!bgp->rfapi_cfg) {
-		vty_out(vty, "rfapi not configured\n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
+	VNC_VTY_CONFIG_CHECK(bgp);
 
 	/* make sure it's still in list */
 	if (!listnode_lookup(bgp->rfapi_cfg->nve_groups_sequential, rfg)) {
@@ -1388,10 +1347,7 @@ DEFUN (vnc_export_mode,
 	uint32_t oldmode = 0;
 	uint32_t newmode = 0;
 
-	if (!bgp->rfapi_cfg) {
-		vty_out(vty, "VNC not configured\n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
+	VNC_VTY_CONFIG_CHECK(bgp);
 
 	if (argv[2]->arg[0] == 'b') {
 		oldmode = bgp->rfapi_cfg->flags
@@ -1499,13 +1455,20 @@ DEFUN (vnc_export_nvegroup,
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
 	struct rfapi_nve_group_cfg *rfg_new;
 
-	if (!bgp->rfapi_cfg) {
-		vty_out(vty, "rfapi not configured\n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
+	VNC_VTY_CONFIG_CHECK(bgp);
 
 	rfg_new = bgp_rfapi_cfg_match_byname(bgp, argv[5]->arg,
 					     RFAPI_GROUP_CFG_NVE);
+	if (rfg_new == NULL) {
+		rfg_new = bgp_rfapi_cfg_match_byname(bgp, argv[5]->arg,
+						     RFAPI_GROUP_CFG_VRF);
+		vnc_add_vrf_opener(bgp, rfg_new);
+	}
+
+	if (rfg_new == NULL) {
+		vty_out(vty, "Can't find group named \"%s\".\n", argv[5]->arg);
+		return CMD_WARNING_CONFIG_FAILED;
+	}
 
 	if (argv[2]->arg[0] == 'b') {
 
@@ -1596,10 +1559,7 @@ DEFUN (vnc_no_export_nvegroup,
 	struct listnode *node, *nnode;
 	struct rfapi_rfg_name *rfgn;
 
-	if (!bgp->rfapi_cfg) {
-		vty_out(vty, "rfapi not configured\n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
+	VNC_VTY_CONFIG_CHECK(bgp);
 
 	if (argv[2]->arg[0] == 'b') {
 		for (ALL_LIST_ELEMENTS(bgp->rfapi_cfg->rfg_export_direct_bgp_l,
@@ -1653,12 +1613,11 @@ DEFUN (vnc_nve_group_export_no_prefixlist,
 {
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
 	VTY_DECLVAR_CONTEXT_SUB(rfapi_nve_group_cfg, rfg);
+	int idx = 0;
+	int is_bgp = 1;
 	afi_t afi;
 
-	if (!bgp->rfapi_cfg) {
-		vty_out(vty, "rfapi not configured\n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
+	VNC_VTY_CONFIG_CHECK(bgp);
 
 	/* make sure it's still in list */
 	if (!listnode_lookup(bgp->rfapi_cfg->nve_groups_sequential, rfg)) {
@@ -1667,17 +1626,15 @@ DEFUN (vnc_nve_group_export_no_prefixlist,
 		return CMD_WARNING_CONFIG_FAILED;
 	}
 
-	if (strmatch(argv[3]->text, "ipv4")) {
-		afi = AFI_IP;
-	} else {
-		afi = AFI_IP6;
-	}
+	argv_find_and_parse_afi(argv, argc, &idx, &afi);
+	if (argv[idx-1]->text[0] == 'z')
+		is_bgp = 0;
+	idx += 2;		/* skip afi and keyword */
 
-	if (argv[2]->arg[0] == 'b') {
-		if (((argc > 5) && strmatch(argv[5]->text,
-					    rfg->plist_export_bgp_name[afi]))
-		    || (argc <= 5)) {
-
+	if (is_bgp) {
+		if (idx == argc ||
+		    strmatch(argv[idx]->arg,
+			     rfg->plist_export_bgp_name[afi])) {
 			if (rfg->plist_export_bgp_name[afi])
 				free(rfg->plist_export_bgp_name[afi]);
 			rfg->plist_export_bgp_name[afi] = NULL;
@@ -1686,9 +1643,9 @@ DEFUN (vnc_nve_group_export_no_prefixlist,
 			vnc_direct_bgp_reexport_group_afi(bgp, rfg, afi);
 		}
 	} else {
-		if (((argc > 5) && strmatch(argv[5]->text,
-					    rfg->plist_export_zebra_name[afi]))
-		    || (argc <= 5)) {
+		if (idx == argc ||
+		    strmatch(argv[idx]->arg,
+			     rfg->plist_export_zebra_name[afi])) {
 			if (rfg->plist_export_zebra_name[afi])
 				free(rfg->plist_export_zebra_name[afi]);
 			rfg->plist_export_zebra_name[afi] = NULL;
@@ -1699,6 +1656,15 @@ DEFUN (vnc_nve_group_export_no_prefixlist,
 	}
 	return CMD_SUCCESS;
 }
+
+ALIAS (vnc_nve_group_export_no_prefixlist,
+       vnc_vrf_policy_export_no_prefixlist_cmd,
+       "no export <ipv4|ipv6> prefix-list [NAME]",
+       NO_STR
+       "Export to VRF\n"
+       "IPv4 routes\n"
+       "IPv6 routes\n"
+       "Prefix-list for filtering exported routes\n" "prefix list name\n")
 
 DEFUN (vnc_nve_group_export_prefixlist,
        vnc_nve_group_export_prefixlist_cmd,
@@ -1712,12 +1678,11 @@ DEFUN (vnc_nve_group_export_prefixlist,
 {
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
 	VTY_DECLVAR_CONTEXT_SUB(rfapi_nve_group_cfg, rfg);
+	int idx = 0;
+	int is_bgp = 1;
 	afi_t afi;
 
-	if (!bgp->rfapi_cfg) {
-		vty_out(vty, "rfapi not configured\n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
+	VNC_VTY_CONFIG_CHECK(bgp);
 
 	/* make sure it's still in list */
 	if (!listnode_lookup(bgp->rfapi_cfg->nve_groups_sequential, rfg)) {
@@ -1726,32 +1691,39 @@ DEFUN (vnc_nve_group_export_prefixlist,
 		return CMD_WARNING_CONFIG_FAILED;
 	}
 
-	if (strmatch(argv[2]->text, "ipv4")) {
-		afi = AFI_IP;
-	} else {
-		afi = AFI_IP6;
-	}
+	argv_find_and_parse_afi(argv, argc, &idx, &afi);
+	if (argv[idx-1]->text[0] == 'z')
+		is_bgp = 0;
+	idx = argc - 1;
 
-	if (argv[1]->arg[0] == 'b') {
+	if (is_bgp) {
 		if (rfg->plist_export_bgp_name[afi])
 			free(rfg->plist_export_bgp_name[afi]);
-		rfg->plist_export_bgp_name[afi] = strdup(argv[4]->arg);
+		rfg->plist_export_bgp_name[afi] = strdup(argv[idx]->arg);
 		rfg->plist_export_bgp[afi] =
-			prefix_list_lookup(afi, argv[4]->arg);
+			prefix_list_lookup(afi, argv[idx]->arg);
 
 		vnc_direct_bgp_reexport_group_afi(bgp, rfg, afi);
 
 	} else {
 		if (rfg->plist_export_zebra_name[afi])
 			free(rfg->plist_export_zebra_name[afi]);
-		rfg->plist_export_zebra_name[afi] = strdup(argv[4]->arg);
+		rfg->plist_export_zebra_name[afi] = strdup(argv[idx]->arg);
 		rfg->plist_export_zebra[afi] =
-			prefix_list_lookup(afi, argv[4]->arg);
+			prefix_list_lookup(afi, argv[idx]->arg);
 
 		vnc_zebra_reexport_group_afi(bgp, rfg, afi);
 	}
 	return CMD_SUCCESS;
 }
+
+ALIAS (vnc_nve_group_export_prefixlist,
+       vnc_vrf_policy_export_prefixlist_cmd,
+       "export <ipv4|ipv6> prefix-list NAME",
+       "Export to VRF\n"
+       "IPv4 routes\n"
+       "IPv6 routes\n"
+       "Prefix-list for filtering exported routes\n" "prefix list name\n")
 
 DEFUN (vnc_nve_group_export_no_routemap,
        vnc_nve_group_export_no_routemap_cmd,
@@ -1764,11 +1736,10 @@ DEFUN (vnc_nve_group_export_no_routemap,
 {
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
 	VTY_DECLVAR_CONTEXT_SUB(rfapi_nve_group_cfg, rfg);
+	int idx = 2;
+	int is_bgp = 1;
 
-	if (!bgp->rfapi_cfg) {
-		vty_out(vty, "rfapi not configured\n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
+	VNC_VTY_CONFIG_CHECK(bgp);
 
 	/* make sure it's still in list */
 	if (!listnode_lookup(bgp->rfapi_cfg->nve_groups_sequential, rfg)) {
@@ -1776,12 +1747,21 @@ DEFUN (vnc_nve_group_export_no_routemap,
 		vty_out(vty, "Current NVE group no longer exists\n");
 		return CMD_WARNING_CONFIG_FAILED;
 	}
+	switch (argv[idx]->text[0]) {
+	case 'z':
+		is_bgp = 0;
+		/* fall thru */
+	case 'b':
+		idx += 2;
+		break;
+	default:		/* route-map */
+		idx++;
+		break;
+	}
 
-	if (argv[2]->arg[0] == 'b') {
-		if (((argc > 4)
-		     && strmatch(argv[4]->text, rfg->routemap_export_bgp_name))
-		    || (argc <= 4)) {
-
+	if (is_bgp) {
+		if (idx == argc ||
+		    strmatch(argv[idx]->arg, rfg->routemap_export_bgp_name)) {
 			if (rfg->routemap_export_bgp_name)
 				free(rfg->routemap_export_bgp_name);
 			rfg->routemap_export_bgp_name = NULL;
@@ -1791,9 +1771,9 @@ DEFUN (vnc_nve_group_export_no_routemap,
 			vnc_direct_bgp_reexport_group_afi(bgp, rfg, AFI_IP6);
 		}
 	} else {
-		if (((argc > 4) && strmatch(argv[4]->text,
-					    rfg->routemap_export_zebra_name))
-		    || (argc <= 4)) {
+		if (idx == argc ||
+		    strmatch(argv[idx]->arg,
+			     rfg->routemap_export_zebra_name)) {
 			if (rfg->routemap_export_zebra_name)
 				free(rfg->routemap_export_zebra_name);
 			rfg->routemap_export_zebra_name = NULL;
@@ -1806,6 +1786,13 @@ DEFUN (vnc_nve_group_export_no_routemap,
 	return CMD_SUCCESS;
 }
 
+ALIAS (vnc_nve_group_export_no_routemap,
+       vnc_vrf_policy_export_no_routemap_cmd,
+       "no export route-map [NAME]",
+       NO_STR
+       "Export to VRF\n"
+       "Route-map for filtering exported routes\n" "route map name\n")
+
 DEFUN (vnc_nve_group_export_routemap,
        vnc_nve_group_export_routemap_cmd,
        "export <bgp|zebra> route-map NAME",
@@ -1816,11 +1803,10 @@ DEFUN (vnc_nve_group_export_routemap,
 {
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
 	VTY_DECLVAR_CONTEXT_SUB(rfapi_nve_group_cfg, rfg);
+	int idx = 0;
+	int is_bgp = 1;
 
-	if (!bgp->rfapi_cfg) {
-		vty_out(vty, "rfapi not configured\n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
+	VNC_VTY_CONFIG_CHECK(bgp);
 
 	/* make sure it's still in list */
 	if (!listnode_lookup(bgp->rfapi_cfg->nve_groups_sequential, rfg)) {
@@ -1829,25 +1815,35 @@ DEFUN (vnc_nve_group_export_routemap,
 		return CMD_WARNING_CONFIG_FAILED;
 	}
 
-	if (argv[1]->arg[0] == 'b') {
+	if (argv[1]->text[0] == 'z')
+		is_bgp = 0;
+	idx = argc - 1;
+
+	if (is_bgp) {
 		if (rfg->routemap_export_bgp_name)
 			free(rfg->routemap_export_bgp_name);
-		rfg->routemap_export_bgp_name = strdup(argv[3]->arg);
+		rfg->routemap_export_bgp_name = strdup(argv[idx]->arg);
 		rfg->routemap_export_bgp =
-			route_map_lookup_by_name(argv[3]->arg);
+			route_map_lookup_by_name(argv[idx]->arg);
 		vnc_direct_bgp_reexport_group_afi(bgp, rfg, AFI_IP);
 		vnc_direct_bgp_reexport_group_afi(bgp, rfg, AFI_IP6);
 	} else {
 		if (rfg->routemap_export_zebra_name)
 			free(rfg->routemap_export_zebra_name);
-		rfg->routemap_export_zebra_name = strdup(argv[3]->arg);
+		rfg->routemap_export_zebra_name = strdup(argv[idx]->arg);
 		rfg->routemap_export_zebra =
-			route_map_lookup_by_name(argv[3]->arg);
+			route_map_lookup_by_name(argv[idx]->arg);
 		vnc_zebra_reexport_group_afi(bgp, rfg, AFI_IP);
 		vnc_zebra_reexport_group_afi(bgp, rfg, AFI_IP6);
 	}
 	return CMD_SUCCESS;
 }
+
+ALIAS (vnc_nve_group_export_routemap,
+       vnc_vrf_policy_export_routemap_cmd,
+       "export route-map NAME",
+       "Export to VRF\n"
+       "Route-map for filtering exported routes\n" "route map name\n")
 
 DEFUN (vnc_nve_export_no_prefixlist,
        vnc_nve_export_no_prefixlist_cmd,
@@ -1865,10 +1861,8 @@ DEFUN (vnc_nve_export_no_prefixlist,
 	struct rfapi_cfg *hc;
 	afi_t afi;
 
-	if (!(hc = bgp->rfapi_cfg)) {
-		vty_out(vty, "rfapi not configured\n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
+	VNC_VTY_CONFIG_CHECK(bgp);
+	hc = bgp->rfapi_cfg;
 
 	if (strmatch(argv[4]->text, "ipv4")) {
 		afi = AFI_IP;
@@ -1916,10 +1910,8 @@ DEFUN (vnc_nve_export_prefixlist,
 	struct rfapi_cfg *hc;
 	afi_t afi;
 
-	if (!(hc = bgp->rfapi_cfg)) {
-		vty_out(vty, "rfapi not configured\n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
+	VNC_VTY_CONFIG_CHECK(bgp);
+	hc = bgp->rfapi_cfg;
 
 	if (strmatch(argv[3]->text, "ipv4")) {
 		afi = AFI_IP;
@@ -1958,10 +1950,8 @@ DEFUN (vnc_nve_export_no_routemap,
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
 	struct rfapi_cfg *hc;
 
-	if (!(hc = bgp->rfapi_cfg)) {
-		vty_out(vty, "rfapi not configured\n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
+	VNC_VTY_CONFIG_CHECK(bgp);
+	hc = bgp->rfapi_cfg;
 
 	if (argv[3]->arg[0] == 'b') {
 		if (((argc > 5) && hc->routemap_export_bgp_name
@@ -2001,10 +1991,8 @@ DEFUN (vnc_nve_export_routemap,
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
 	struct rfapi_cfg *hc;
 
-	if (!(hc = bgp->rfapi_cfg)) {
-		vty_out(vty, "rfapi not configured\n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
+	VNC_VTY_CONFIG_CHECK(bgp);
+	hc = bgp->rfapi_cfg;
 
 	if (argv[2]->arg[0] == 'b') {
 		if (hc->routemap_export_bgp_name)
@@ -2219,6 +2207,8 @@ DEFUN_NOSH (vnc_nve_group,
 	struct listnode *node, *nnode;
 	struct rfapi_rfg_name *rfgn;
 
+	VNC_VTY_CONFIG_CHECK(bgp);
+
 	/* Search for name */
 	rfg = bgp_rfapi_cfg_match_byname(bgp, argv[2]->arg,
 					 RFAPI_GROUP_CFG_NVE);
@@ -2327,8 +2317,7 @@ static void bgp_rfapi_delete_nve_group(struct vty *vty, /* NULL = no output */
 			listnode_delete(rfg->nves, rfd);
 			listnode_add(orphaned_nves, rfd);
 		}
-		list_delete(rfg->nves);
-		rfg->nves = NULL;
+		list_delete_and_null(&rfg->nves);
 	}
 
 	/* delete it */
@@ -2405,7 +2394,7 @@ static void bgp_rfapi_delete_nve_group(struct vty *vty, /* NULL = no output */
 			if (vty)
 				vty_out(vty, "\n");
 		}
-		list_delete(orphaned_nves);
+		list_delete_and_null(&orphaned_nves);
 	}
 }
 
@@ -2445,8 +2434,7 @@ bgp_rfapi_delete_named_nve_group(struct vty *vty, /* NULL = no output */
 	 */
 	for (ALL_LIST_ELEMENTS_RO(bgp->rfapi_cfg->rfg_export_direct_bgp_l, node,
 				  rfgn)) {
-		if (rfg_name == NULL || (type == RFAPI_GROUP_CFG_NVE
-					 && !strcmp(rfgn->name, rfg_name))) {
+		if (rfgn->rfg == rfg) {
 			rfgn->rfg = NULL;
 			/* remove exported routes from this group */
 			vnc_direct_bgp_del_group(bgp, rfg);
@@ -2459,21 +2447,25 @@ bgp_rfapi_delete_named_nve_group(struct vty *vty, /* NULL = no output */
 	 */
 	for (ALL_LIST_ELEMENTS_RO(bgp->rfapi_cfg->rfg_export_zebra_l, node,
 				  rfgn)) {
-
-		if (rfg_name == NULL || (type == RFAPI_GROUP_CFG_NVE
-					 && !strcmp(rfgn->name, rfg_name))) {
+		if (rfgn->rfg == rfg) {
 			rfgn->rfg = NULL;
 			/* remove exported routes from this group */
 			vnc_zebra_del_group(bgp, rfg);
 			break;
 		}
 	}
-	if (rfg)
+	if (rfg) {
+		if (rfg->rfd)
+			clear_vnc_vrf_closer(rfg);
 		bgp_rfapi_delete_nve_group(vty, bgp, rfg);
+	}
 	else /* must be delete all */
 		for (ALL_LIST_ELEMENTS(bgp->rfapi_cfg->nve_groups_sequential,
-				       node, nnode, rfg))
+				       node, nnode, rfg)) {
+			if (rfg->rfd)
+				clear_vnc_vrf_closer(rfg);
 			bgp_rfapi_delete_nve_group(vty, bgp, rfg);
+		}
 	return CMD_SUCCESS;
 }
 
@@ -2841,7 +2833,7 @@ DEFUN (vnc_nve_group_no_l2rd,
 
 DEFUN (vnc_nve_group_rd,
        vnc_nve_group_rd_cmd,
-       "rd ASN:nn_or_IP-address:nn",
+       "rd ASN:NN_OR_IP-ADDRESS:NN",
        "Specify route distinguisher\n"
        "Route Distinguisher (<as-number>:<number> | <ip-address>:<number> | auto:vn:<number> )\n")
 {
@@ -3295,7 +3287,7 @@ DEFUN (vnc_vrf_policy_rt_both,
 
 DEFUN (vnc_vrf_policy_rd,
        vnc_vrf_policy_rd_cmd,
-       "rd ASN:nn_or_IP-address:nn",
+       "rd ASN:NN_OR_IP-ADDRESS:NN",
        "Specify default VRF route distinguisher\n"
        "Route Distinguisher (<as-number>:<number> | <ip-address>:<number> | auto:nh:<number> )\n")
 {
@@ -3385,6 +3377,7 @@ DEFUN_NOSH (vnc_l2_group,
 {
 	struct rfapi_l2_group_cfg *rfg;
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
+	VNC_VTY_CONFIG_CHECK(bgp);
 
 	/* Search for name */
 	rfg = rfapi_l2_group_lookup_byname(bgp, argv[2]->arg);
@@ -3420,7 +3413,7 @@ static void bgp_rfapi_delete_l2_group(struct vty *vty, /* NULL = no output */
 	if (rfg->rt_export_list)
 		ecommunity_free(&rfg->rt_export_list);
 	if (rfg->labels)
-		list_delete(rfg->labels);
+		list_delete_and_null(&rfg->labels);
 	if (rfg->rfp_cfg)
 		XFREE(MTYPE_RFAPI_RFP_GROUP_CFG, rfg->rfp_cfg);
 	listnode_delete(bgp->rfapi_cfg->l2_groups, rfg);
@@ -3562,7 +3555,7 @@ DEFUN (vnc_l2_group_no_labels,
 
 DEFUN (vnc_l2_group_rt,
        vnc_l2_group_rt_cmd,
-       "rt <both|export|import> ASN:nn_or_IP-address:nn",
+       "rt <both|export|import> ASN:NN_OR_IP-ADDRESS:NN",
        "Specify route targets\n"
        "Export+import filters\n"
        "Export filters\n"
@@ -3756,6 +3749,14 @@ void bgp_rfapi_cfg_init(void)
 	install_element(BGP_VRF_POLICY_NODE, &vnc_vrf_policy_rt_export_cmd);
 	install_element(BGP_VRF_POLICY_NODE, &vnc_vrf_policy_rt_both_cmd);
 	install_element(BGP_VRF_POLICY_NODE, &vnc_vrf_policy_rd_cmd);
+	install_element(BGP_VRF_POLICY_NODE,
+			&vnc_vrf_policy_export_prefixlist_cmd);
+	install_element(BGP_VRF_POLICY_NODE,
+			&vnc_vrf_policy_export_routemap_cmd);
+	install_element(BGP_VRF_POLICY_NODE,
+			&vnc_vrf_policy_export_no_prefixlist_cmd);
+	install_element(BGP_VRF_POLICY_NODE,
+			&vnc_vrf_policy_export_no_routemap_cmd);
 	install_element(BGP_VRF_POLICY_NODE, &exit_vrf_policy_cmd);
 
 	install_element(BGP_VNC_L2_GROUP_NODE, &vnc_l2_group_lni_cmd);
@@ -3825,10 +3826,10 @@ void bgp_rfapi_cfg_destroy(struct bgp *bgp, struct rfapi_cfg *h)
 	bgp_rfapi_delete_named_nve_group(NULL, bgp, NULL, RFAPI_GROUP_CFG_MAX);
 	bgp_rfapi_delete_named_l2_group(NULL, bgp, NULL);
 	if (h->l2_groups != NULL)
-		list_delete(h->l2_groups);
-	list_delete(h->nve_groups_sequential);
-	list_delete(h->rfg_export_direct_bgp_l);
-	list_delete(h->rfg_export_zebra_l);
+		list_delete_and_null(&h->l2_groups);
+	list_delete_and_null(&h->nve_groups_sequential);
+	list_delete_and_null(&h->rfg_export_direct_bgp_l);
+	list_delete_and_null(&h->rfg_export_zebra_l);
 	if (h->default_rt_export_list)
 		ecommunity_free(&h->default_rt_export_list);
 	if (h->default_rt_import_list)
@@ -3883,8 +3884,7 @@ int bgp_rfapi_cfg_write(struct vty *vty, struct bgp *bgp)
 			}
 
 			if (rfg->rd.prefixlen) {
-				char buf[BUFSIZ];
-				buf[0] = buf[BUFSIZ - 1] = 0;
+				char buf[RD_ADDRSTRLEN];
 
 				if (AF_UNIX == rfg->rd.family) {
 
@@ -3897,18 +3897,10 @@ int bgp_rfapi_cfg_write(struct vty *vty, struct bgp *bgp)
 					vty_out(vty, "  rd auto:nh:%d\n",
 						value);
 
-				} else {
-
-					if (!prefix_rd2str(&rfg->rd, buf,
-							   BUFSIZ)
-					    || !buf[0] || buf[BUFSIZ - 1]) {
-
-						vty_out(vty,
-							"!Error: Can't convert rd\n");
-					} else {
-						vty_out(vty, "  rd %s\n", buf);
-					}
-				}
+				} else
+					vty_out(vty, "  rd %s\n",
+						prefix_rd2str(&rfg->rd, buf,
+							      sizeof(buf)));
 			}
 
 			if (rfg->rt_import_list && rfg->rt_export_list
@@ -3949,14 +3941,16 @@ int bgp_rfapi_cfg_write(struct vty *vty, struct bgp *bgp)
 
 				if (rfg->plist_export_bgp_name[afi]) {
 					vty_out(vty,
-						"  export bgp %s prefix-list %s\n",
+						"  export %s%s prefix-list %s\n",
+						(rfg->type == RFAPI_GROUP_CFG_VRF ? "" : "bgp "),
 						afistr,
 						rfg->plist_export_bgp_name
 							[afi]);
 				}
 				if (rfg->plist_export_zebra_name[afi]) {
 					vty_out(vty,
-						"  export zebra %s prefix-list %s\n",
+						"  export %s%s prefix-list %s\n",
+						(rfg->type == RFAPI_GROUP_CFG_VRF ? "" : "zebra "),
 						afistr,
 						rfg->plist_export_zebra_name
 							[afi]);
@@ -3990,11 +3984,13 @@ int bgp_rfapi_cfg_write(struct vty *vty, struct bgp *bgp)
 			}
 
 			if (rfg->routemap_export_bgp_name) {
-				vty_out(vty, "  export bgp route-map %s\n",
+				vty_out(vty, "  export %sroute-map %s\n",
+					(rfg->type == RFAPI_GROUP_CFG_VRF ? "" : "bgp "),
 					rfg->routemap_export_bgp_name);
 			}
 			if (rfg->routemap_export_zebra_name) {
-				vty_out(vty, "  export zebra route-map %s\n",
+				vty_out(vty, "  export %sroute-map %s\n",
+					(rfg->type == RFAPI_GROUP_CFG_VRF ? "" : "zebra "),
 					rfg->routemap_export_zebra_name);
 			}
 			if (rfg->routemap_redist_name[ZEBRA_ROUTE_BGP_DIRECT]) {
@@ -4102,8 +4098,7 @@ int bgp_rfapi_cfg_write(struct vty *vty, struct bgp *bgp)
 			vty_out(vty, " vnc defaults\n");
 
 			if (hc->default_rd.prefixlen) {
-				char buf[BUFSIZ];
-				buf[0] = buf[BUFSIZ - 1] = 0;
+				char buf[RD_ADDRSTRLEN];
 
 				if (AF_UNIX == hc->default_rd.family) {
 					uint16_t value = 0;
@@ -4116,18 +4111,11 @@ int bgp_rfapi_cfg_write(struct vty *vty, struct bgp *bgp)
 					vty_out(vty, "  rd auto:vn:%d\n",
 						value);
 
-				} else {
-
-					if (!prefix_rd2str(&hc->default_rd, buf,
-							   BUFSIZ)
-					    || !buf[0] || buf[BUFSIZ - 1]) {
-
-						vty_out(vty,
-							"!Error: Can't convert rd\n");
-					} else {
-						vty_out(vty, "  rd %s\n", buf);
-					}
-				}
+				} else
+					vty_out(vty, "  rd %s\n",
+						prefix_rd2str(&hc->default_rd,
+							      buf,
+							      sizeof(buf)));
 			}
 			if (hc->default_response_lifetime) {
 				vty_out(vty, "  response-lifetime ");
@@ -4182,38 +4170,26 @@ int bgp_rfapi_cfg_write(struct vty *vty, struct bgp *bgp)
 				vty_out(vty, " vnc nve-group %s\n", rfg->name);
 
 				if (rfg->vn_prefix.family && rfg->vn_node) {
-					char buf[BUFSIZ];
-					buf[0] = buf[BUFSIZ - 1] = 0;
+					char buf[PREFIX_STRLEN];
 
 					prefix2str(&rfg->vn_prefix, buf,
-						   BUFSIZ);
-					if (!buf[0] || buf[BUFSIZ - 1]) {
-						vty_out(vty,
-							"!Error: Can't convert prefix\n");
-					} else {
-						vty_out(vty, "  prefix %s %s\n",
-							"vn", buf);
-					}
+						   sizeof(buf));
+					vty_out(vty, "  prefix %s %s\n",
+						"vn", buf);
 				}
 
 				if (rfg->un_prefix.family && rfg->un_node) {
-					char buf[BUFSIZ];
-					buf[0] = buf[BUFSIZ - 1] = 0;
+					char buf[PREFIX_STRLEN];
+
 					prefix2str(&rfg->un_prefix, buf,
-						   BUFSIZ);
-					if (!buf[0] || buf[BUFSIZ - 1]) {
-						vty_out(vty,
-							"!Error: Can't convert prefix\n");
-					} else {
-						vty_out(vty, "  prefix %s %s\n",
-							"un", buf);
-					}
+						   sizeof(buf));
+					vty_out(vty, "  prefix %s %s\n",
+						"un", buf);
 				}
 
 
 				if (rfg->rd.prefixlen) {
-					char buf[BUFSIZ];
-					buf[0] = buf[BUFSIZ - 1] = 0;
+					char buf[RD_ADDRSTRLEN];
 
 					if (AF_UNIX == rfg->rd.family) {
 
@@ -4228,21 +4204,12 @@ int bgp_rfapi_cfg_write(struct vty *vty, struct bgp *bgp)
 							"  rd auto:vn:%d\n",
 							value);
 
-					} else {
-
-						if (!prefix_rd2str(&rfg->rd,
-								   buf, BUFSIZ)
-						    || !buf[0]
-						    || buf[BUFSIZ - 1]) {
-
-							vty_out(vty,
-								"!Error: Can't convert rd\n");
-						} else {
-							vty_out(vty,
-								"  rd %s\n",
-								buf);
-						}
-					}
+					} else
+						vty_out(vty,
+							"  rd %s\n",
+							prefix_rd2str(&rfg->rd,
+								      buf,
+								      sizeof(buf)));
 				}
 				if (rfg->flags & RFAPI_RFG_RESPONSE_LIFETIME) {
 					vty_out(vty, "  response-lifetime ");

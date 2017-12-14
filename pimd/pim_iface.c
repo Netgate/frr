@@ -71,19 +71,19 @@ static void *if_list_clean(struct pim_interface *pim_ifp)
 	struct pim_ifchannel *ch;
 
 	if (pim_ifp->igmp_join_list)
-		list_delete(pim_ifp->igmp_join_list);
+		list_delete_and_null(&pim_ifp->igmp_join_list);
 
 	if (pim_ifp->igmp_socket_list)
-		list_delete(pim_ifp->igmp_socket_list);
+		list_delete_and_null(&pim_ifp->igmp_socket_list);
 
 	if (pim_ifp->pim_neighbor_list)
-		list_delete(pim_ifp->pim_neighbor_list);
+		list_delete_and_null(&pim_ifp->pim_neighbor_list);
 
 	if (pim_ifp->upstream_switch_list)
-		list_delete(pim_ifp->upstream_switch_list);
+		list_delete_and_null(&pim_ifp->upstream_switch_list);
 
 	if (pim_ifp->sec_addr_list)
-		list_delete(pim_ifp->sec_addr_list);
+		list_delete_and_null(&pim_ifp->sec_addr_list);
 
 	while ((ch = RB_ROOT(pim_ifchannel_rb,
 			     &pim_ifp->ifchannel_rb)) != NULL)
@@ -241,10 +241,13 @@ void pim_if_delete(struct interface *ifp)
 
 	pim_if_del_vif(ifp);
 
-	list_delete(pim_ifp->igmp_socket_list);
-	list_delete(pim_ifp->pim_neighbor_list);
-	list_delete(pim_ifp->upstream_switch_list);
-	list_delete(pim_ifp->sec_addr_list);
+	list_delete_and_null(&pim_ifp->igmp_socket_list);
+	list_delete_and_null(&pim_ifp->pim_neighbor_list);
+	list_delete_and_null(&pim_ifp->upstream_switch_list);
+	list_delete_and_null(&pim_ifp->sec_addr_list);
+
+	if (pim_ifp->boundary_oil_plist)
+		XFREE(MTYPE_PIM_INTERFACE, pim_ifp->boundary_oil_plist);
 
 	while ((ch = RB_ROOT(pim_ifchannel_rb,
 			     &pim_ifp->ifchannel_rb)) != NULL)
@@ -794,7 +797,11 @@ void pim_if_addr_del_all(struct interface *ifp)
 	struct listnode *node;
 	struct listnode *nextnode;
 	struct vrf *vrf = vrf_lookup_by_id(ifp->vrf_id);
-	struct pim_instance *pim = vrf->info;
+	struct pim_instance *pim;
+
+	if (!vrf)
+		return;
+	pim = vrf->info;
 
 	/* PIM/IGMP enabled ? */
 	if (!ifp->info)
@@ -857,11 +864,14 @@ struct in_addr pim_find_primary_addr(struct interface *ifp)
 {
 	struct connected *ifc;
 	struct listnode *node;
-	struct in_addr addr;
+	struct in_addr addr = {0};
 	int v4_addrs = 0;
 	int v6_addrs = 0;
 	struct pim_interface *pim_ifp = ifp->info;
 	struct vrf *vrf = vrf_lookup_by_id(ifp->vrf_id);
+
+	if (!vrf)
+		return addr;
 
 	if (pim_ifp && PIM_INADDR_ISNOT_ANY(pim_ifp->update_source)) {
 		return pim_ifp->update_source;
@@ -1020,10 +1030,9 @@ int pim_if_del_vif(struct interface *ifp)
 struct interface *pim_if_find_by_vif_index(struct pim_instance *pim,
 					   ifindex_t vif_index)
 {
-	struct listnode *ifnode;
 	struct interface *ifp;
 
-	for (ALL_LIST_ELEMENTS_RO(vrf_iflist(pim->vrf_id), ifnode, ifp)) {
+	FOR_ALL_INTERFACES (pim->vrf, ifp) {
 		if (ifp->info) {
 			struct pim_interface *pim_ifp;
 			pim_ifp = ifp->info;
@@ -1370,7 +1379,7 @@ int pim_if_igmp_join_del(struct interface *ifp, struct in_addr group_addr,
 	listnode_delete(pim_ifp->igmp_join_list, ij);
 	igmp_join_free(ij);
 	if (listcount(pim_ifp->igmp_join_list) < 1) {
-		list_delete(pim_ifp->igmp_join_list);
+		list_delete_and_null(&pim_ifp->igmp_join_list);
 		pim_ifp->igmp_join_list = 0;
 	}
 
@@ -1477,17 +1486,16 @@ void pim_if_update_assert_tracking_desired(struct interface *ifp)
  */
 void pim_if_create_pimreg(struct pim_instance *pim)
 {
-	char pimreg_name[100];
+	char pimreg_name[INTERFACE_NAMSIZ];
 
 	if (!pim->regiface) {
 		if (pim->vrf_id == VRF_DEFAULT)
-			strcpy(pimreg_name, "pimreg");
+			strlcpy(pimreg_name, "pimreg", sizeof(pimreg_name));
 		else
-			sprintf(pimreg_name, "pimreg%d",
-				pim->vrf->data.l.table_id);
+			snprintf(pimreg_name, sizeof(pimreg_name), "pimreg%u",
+				 pim->vrf->data.l.table_id);
 
-		pim->regiface = if_create(pimreg_name, strlen(pimreg_name),
-					  pim->vrf_id);
+		pim->regiface = if_create(pimreg_name, pim->vrf_id);
 		pim->regiface->ifindex = PIM_OIF_PIM_REGISTER_VIF;
 
 		pim_if_new(pim->regiface, 0, 0);

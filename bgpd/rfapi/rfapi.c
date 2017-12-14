@@ -122,7 +122,7 @@ int rfapi_get_response_lifetime_default(void *rfp_start_val)
 /*------------------------------------------
  * rfapi_is_vnc_configured
  *
- * Returns if VNC (BGP VPN messaging /VPN & encap SAFIs) are configured
+ * Returns if VNC is configured
  *
  * input:
  *    rfp_start_val     value returned by rfp_start or
@@ -137,7 +137,9 @@ int rfapi_get_response_lifetime_default(void *rfp_start_val)
 int rfapi_is_vnc_configured(void *rfp_start_val)
 {
 	struct bgp *bgp = rfapi_bgp_lookup_by_rfp(rfp_start_val);
-	return bgp_rfapi_is_vnc_configured(bgp);
+	if (bgp_rfapi_is_vnc_configured(bgp) == 0)
+		return 0;
+	return ENXIO;
 }
 
 
@@ -361,15 +363,11 @@ void del_vnc_route(struct rfapi_descriptor *rfd,
 	afi_t afi; /* of the VN address */
 	struct bgp_node *bn;
 	struct bgp_info *bi;
-	char buf[BUFSIZ];
-	char buf2[BUFSIZ];
+	char buf[PREFIX_STRLEN];
+	char buf2[RD_ADDRSTRLEN];
 	struct prefix_rd prd0;
 
-	prefix2str(p, buf, BUFSIZ);
-	buf[BUFSIZ - 1] = 0; /* guarantee NUL-terminated */
-
-	prefix_rd2str(prd, buf2, BUFSIZ);
-	buf2[BUFSIZ - 1] = 0;
+	prefix2str(p, buf, sizeof(buf));
 
 	afi = family2afi(p->family);
 	assert(afi == AFI_IP || afi == AFI_IP6);
@@ -384,7 +382,8 @@ void del_vnc_route(struct rfapi_descriptor *rfd,
 
 	vnc_zlog_debug_verbose(
 		"%s: peer=%p, prefix=%s, prd=%s afi=%d, safi=%d bn=%p, bn->info=%p",
-		__func__, peer, buf, buf2, afi, safi, bn,
+		__func__, peer, buf,
+		prefix_rd2str(prd, buf2, sizeof(buf2)), afi, safi, bn,
 		(bn ? bn->info : NULL));
 
 	for (bi = (bn ? bn->info : NULL); bi; bi = bi->next) {
@@ -462,11 +461,9 @@ void del_vnc_route(struct rfapi_descriptor *rfd,
 	rfapiProcessWithdraw(peer, rfd, p, prd, NULL, afi, safi, type, kill);
 
 	if (bi) {
-		char buf[BUFSIZ];
+		char buf[PREFIX_STRLEN];
 
-		prefix2str(p, buf, BUFSIZ);
-		buf[BUFSIZ - 1] = 0; /* guarantee NUL-terminated */
-
+		prefix2str(p, buf, sizeof(buf));
 		vnc_zlog_debug_verbose(
 			"%s: Found route (safi=%d) to delete at prefix %s",
 			__func__, safi, buf);
@@ -490,7 +487,8 @@ void del_vnc_route(struct rfapi_descriptor *rfd,
 		 * Delete local_nexthops list
 		 */
 		if (bi->extra && bi->extra->vnc.export.local_nexthops) {
-			list_delete(bi->extra->vnc.export.local_nexthops);
+			list_delete_and_null(
+				&bi->extra->vnc.export.local_nexthops);
 		}
 
 		bgp_aggregate_decrement(bgp, p, bi, afi, safi);
@@ -590,8 +588,8 @@ void add_vnc_route(struct rfapi_descriptor *rfd, /* cookie, VPN UN addr, peer */
 	uint32_t label_val;
 
 	struct bgp_attr_encap_subtlv *encaptlv;
-	char buf[BUFSIZ];
-	char buf2[BUFSIZ];
+	char buf[PREFIX_STRLEN];
+	char buf2[RD_ADDRSTRLEN];
 #if 0 /* unused? */
   struct prefix pfx_buf;
 #endif
@@ -647,9 +645,7 @@ void add_vnc_route(struct rfapi_descriptor *rfd, /* cookie, VPN UN addr, peer */
 	else
 		label_val = MPLS_LABEL_IMPLICIT_NULL;
 
-	prefix_rd2str(prd, buf2, BUFSIZ);
-	buf2[BUFSIZ - 1] = 0;
-
+	prefix_rd2str(prd, buf2, sizeof(buf2));
 
 	afi = family2afi(p->family);
 	assert(afi == AFI_IP || afi == AFI_IP6);
@@ -754,7 +750,7 @@ void add_vnc_route(struct rfapi_descriptor *rfd, /* cookie, VPN UN addr, peer */
 
 		encaptlv =
 			XCALLOC(MTYPE_ENCAP_TLV,
-				sizeof(struct bgp_attr_encap_subtlv) - 1 + 4);
+				sizeof(struct bgp_attr_encap_subtlv) + 4);
 		assert(encaptlv);
 		encaptlv->type =
 			BGP_VNC_SUBTLV_TYPE_LIFETIME; /* prefix lifetime */
@@ -798,8 +794,8 @@ void add_vnc_route(struct rfapi_descriptor *rfd, /* cookie, VPN UN addr, peer */
 				 */
 				encaptlv = XCALLOC(
 					MTYPE_ENCAP_TLV,
-					sizeof(struct bgp_attr_encap_subtlv) - 1
-						+ 2 + hop->length);
+					sizeof(struct bgp_attr_encap_subtlv)
+					+ 2 + hop->length);
 				assert(encaptlv);
 				encaptlv->type =
 					BGP_VNC_SUBTLV_TYPE_RFPOPTION; /* RFP
@@ -904,8 +900,7 @@ void add_vnc_route(struct rfapi_descriptor *rfd, /* cookie, VPN UN addr, peer */
 	}
 
 
-	prefix2str(p, buf, BUFSIZ);
-	buf[BUFSIZ - 1] = 0; /* guarantee NUL-terminated */
+	prefix2str(p, buf, sizeof(buf));
 
 	/*
 	 * At this point:
@@ -1301,18 +1296,31 @@ static int rfapi_open_inner(struct rfapi_descriptor *rfd, struct bgp *bgp,
 	rfd->peer = peer_new(bgp);
 	rfd->peer->status = Established; /* keep bgp core happy */
 	bgp_sync_delete(rfd->peer);      /* don't need these */
-	if (rfd->peer->ibuf) {
-		stream_free(rfd->peer->ibuf); /* don't need it */
+
+	/*
+	 * since this peer is not on the I/O thread, this lock is not strictly
+	 * necessary, but serves as a reminder to those who may meddle...
+	 */
+	pthread_mutex_lock(&rfd->peer->io_mtx);
+	{
+		// we don't need any I/O related facilities
+		if (rfd->peer->ibuf)
+			stream_fifo_free(rfd->peer->ibuf);
+		if (rfd->peer->obuf)
+			stream_fifo_free(rfd->peer->obuf);
+
+		if (rfd->peer->ibuf_work)
+			stream_free(rfd->peer->ibuf_work);
+		if (rfd->peer->obuf_work)
+			stream_free(rfd->peer->obuf_work);
+
 		rfd->peer->ibuf = NULL;
-	}
-	if (rfd->peer->obuf) {
-		stream_fifo_free(rfd->peer->obuf); /* don't need it */
 		rfd->peer->obuf = NULL;
+		rfd->peer->obuf_work = NULL;
+		rfd->peer->ibuf_work = NULL;
 	}
-	if (rfd->peer->work) {
-		stream_free(rfd->peer->work); /* don't need it */
-		rfd->peer->work = NULL;
-	}
+	pthread_mutex_unlock(&rfd->peer->io_mtx);
+
 	{ /* base code assumes have valid host pointer */
 		char buf[BUFSIZ];
 		buf[0] = 0;
@@ -1595,11 +1603,10 @@ rfapi_query_inner(void *handle, struct rfapi_ip_addr *target,
 	}
 
 	{
-		char buf[BUFSIZ];
+		char buf[PREFIX_STRLEN];
 		char *s;
 
-		prefix2str(&p, buf, BUFSIZ);
-		buf[BUFSIZ - 1] = 0; /* guarantee NUL-terminated */
+		prefix2str(&p, buf, sizeof(buf));
 		vnc_zlog_debug_verbose("%s(rfd=%p, target=%s, ppNextHop=%p)",
 				       __func__, rfd, buf, ppNextHopEntry);
 
@@ -2418,10 +2425,9 @@ int rfapi_register(void *handle, struct rfapi_ip_prefix *prefix,
 
 
 	{
-		char buf[BUFSIZ];
+		char buf[PREFIX_STRLEN];
 
-		prefix2str(&p, buf, BUFSIZ);
-		buf[BUFSIZ - 1] = 0; /* guarantee NUL-terminated */
+		prefix2str(&p, buf, sizeof(buf));
 		vnc_zlog_debug_verbose(
 			"%s(rfd=%p, pfx=%s, lifetime=%d, opts_un=%p, opts_vn=%p, action=%s)",
 			__func__, rfd, buf, lifetime, options_un, options_vn,
@@ -3825,12 +3831,10 @@ int rfapi_set_autord_from_vn(struct prefix_rd *rd, struct rfapi_ip_addr *vn)
 		       4); /* low order 4 bytes */
 	}
 	{
-		char buf[BUFSIZ];
-		buf[0] = 0;
-		prefix_rd2str(rd, buf, BUFSIZ);
-		buf[BUFSIZ - 1] = 0;
+		char buf[RD_ADDRSTRLEN];
+
 		vnc_zlog_debug_verbose("%s: auto-RD is set to %s", __func__,
-				       buf);
+				       prefix_rd2str(rd, buf, sizeof(buf)));
 	}
 	return 0;
 }

@@ -550,6 +550,8 @@ static int bgp_update_source(struct peer *peer)
 /* BGP try to connect to the peer.  */
 int bgp_connect(struct peer *peer)
 {
+	assert(!CHECK_FLAG(peer->thread_flags, PEER_THREAD_WRITES_ON));
+	assert(!CHECK_FLAG(peer->thread_flags, PEER_THREAD_READS_ON));
 	ifindex_t ifindex = 0;
 
 	if (peer->conf_if && BGP_PEER_SU_UNSPEC(peer)) {
@@ -675,7 +677,7 @@ static int bgp_listener(int sock, struct sockaddr *sa, socklen_t salen)
 		return ret;
 	}
 
-	ret = listen(sock, 3);
+	ret = listen(sock, SOMAXCONN);
 	if (ret < 0) {
 		zlog_err("listen: %s", safe_strerror(errno));
 		return ret;
@@ -740,8 +742,10 @@ int bgp_socket(unsigned short port, const char *address)
 	}
 	freeaddrinfo(ainfo_save);
 	if (count == 0) {
-		zlog_err("%s: no usable addresses", __func__);
-		return -1;
+		zlog_err("%s: no usable addresses please check other programs usage of specified port %d",
+			 __func__, port);
+		zlog_err("%s: Program cannot continue", __func__);
+		exit(-1);
 	}
 
 	return 0;

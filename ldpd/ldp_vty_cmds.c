@@ -25,7 +25,9 @@
 
 #include "ldpd/ldpd.h"
 #include "ldpd/ldp_vty.h"
+#ifndef VTYSH_EXTRACT_PL
 #include "ldpd/ldp_vty_cmds_clippy.c"
+#endif
 
 DEFUN_NOSH(ldp_mpls_ldp,
 	ldp_mpls_ldp_cmd,
@@ -112,30 +114,52 @@ DEFUN_NOSH(ldp_exit_address_family,
 	return CMD_SUCCESS;
 }
 
-DEFPY  (ldp_discovery_holdtime,
-	ldp_discovery_holdtime_cmd,
-	"[no] discovery <hello|targeted-hello>$hello_type holdtime (1-65535)$holdtime",
+DEFPY  (ldp_discovery_link_holdtime,
+	ldp_discovery_link_holdtime_cmd,
+	"[no] discovery hello holdtime (1-65535)$holdtime",
 	NO_STR
 	"Configure discovery parameters\n"
 	"LDP Link Hellos\n"
+	"Hello holdtime\n"
+	"Time (seconds) - 65535 implies infinite\n")
+{
+	return (ldp_vty_disc_holdtime(vty, no, HELLO_LINK, holdtime));
+}
+
+DEFPY  (ldp_discovery_targeted_holdtime,
+	ldp_discovery_targeted_holdtime_cmd,
+	"[no] discovery targeted-hello holdtime (1-65535)$holdtime",
+	NO_STR
+	"Configure discovery parameters\n"
 	"LDP Targeted Hellos\n"
 	"Hello holdtime\n"
 	"Time (seconds) - 65535 implies infinite\n")
 {
-	return (ldp_vty_disc_holdtime(vty, no, hello_type, holdtime));
+	return (ldp_vty_disc_holdtime(vty, no, HELLO_TARGETED, holdtime));
 }
 
-DEFPY  (ldp_discovery_interval,
-	ldp_discovery_interval_cmd,
-	"[no] discovery <hello|targeted-hello>$hello_type interval (1-65535)$interval",
+DEFPY  (ldp_discovery_link_interval,
+	ldp_discovery_link_interval_cmd,
+	"[no] discovery hello interval (1-65535)$interval",
 	NO_STR
 	"Configure discovery parameters\n"
 	"LDP Link Hellos\n"
+	"Hello interval\n"
+	"Time (seconds)\n")
+{
+	return (ldp_vty_disc_interval(vty, no, HELLO_LINK, interval));
+}
+
+DEFPY  (ldp_discovery_targeted_interval,
+	ldp_discovery_targeted_interval_cmd,
+	"[no] discovery targeted-hello interval (1-65535)$interval",
+	NO_STR
+	"Configure discovery parameters\n"
 	"LDP Targeted Hellos\n"
 	"Hello interval\n"
 	"Time (seconds)\n")
 {
-	return (ldp_vty_disc_interval(vty, no, hello_type, interval));
+	return (ldp_vty_disc_interval(vty, no, HELLO_TARGETED, interval));
 }
 
 DEFPY  (ldp_dual_stack_transport_connection_prefer_ipv4,
@@ -581,17 +605,38 @@ DEFPY  (ldp_debug_mpls_ldp_messages_sent,
 
 DEFPY  (ldp_show_mpls_ldp_binding,
 	ldp_show_mpls_ldp_binding_cmd,
-	"show mpls ldp [<ipv4|ipv6>]$af binding [detail]$detail [json]$json",
+	"show mpls ldp [<ipv4|ipv6>]$af binding\
+	  [<A.B.C.D/M|X:X::X:X/M>$prefix [longer-prefixes$longer_prefixes]]\
+	  [{\
+	    neighbor A.B.C.D$nbr\
+	    |local-label (0-1048575)$local_label\
+	    |remote-label (0-1048575)$remote_label\
+	  }]\
+	 [detail]$detail [json]$json",
 	"Show running system information\n"
 	"MPLS information\n"
 	"Label Distribution Protocol\n"
 	"IPv4 Address Family\n"
 	"IPv6 Address Family\n"
 	"Label Information Base (LIB) information\n"
+	"Destination prefix (IPv4)\n"
+	"Destination prefix (IPv6)\n"
+	"Include longer matches\n"
+	"Display labels from LDP neighbor\n"
+	"Neighbor LSR-ID\n"
+	"Match locally assigned label values\n"
+	"Locally assigned label value\n"
+	"Match remotely assigned label values\n"
+	"Remotely assigned label value\n"
 	"Show detailed information\n"
 	JSON_STR)
 {
-	return (ldp_vty_show_binding(vty, af, detail, json));
+	if (!local_label_str)
+		local_label = NO_LABEL;
+	if (!remote_label_str)
+		remote_label = NO_LABEL;
+	return (ldp_vty_show_binding(vty, af, prefix_str, !!longer_prefixes,
+	    nbr_str, local_label, remote_label, detail, json));
 }
 
 DEFPY  (ldp_show_mpls_ldp_discovery,
@@ -637,52 +682,81 @@ DEFPY  (ldp_show_mpls_ldp_capabilities,
 
 DEFPY  (ldp_show_mpls_ldp_neighbor,
 	ldp_show_mpls_ldp_neighbor_cmd,
-	"show mpls ldp neighbor [detail]$detail [json]$json",
+	"show mpls ldp neighbor [A.B.C.D]$lsr_id [detail]$detail [json]$json",
 	"Show running system information\n"
 	"MPLS information\n"
 	"Label Distribution Protocol\n"
 	"Neighbor information\n"
+	"Neighbor LSR-ID\n"
 	"Show detailed information\n"
 	JSON_STR)
 {
-	return (ldp_vty_show_neighbor(vty, 0, detail, json));
+	return (ldp_vty_show_neighbor(vty, lsr_id_str, 0, detail, json));
 }
 
 DEFPY  (ldp_show_mpls_ldp_neighbor_capabilities,
 	ldp_show_mpls_ldp_neighbor_capabilities_cmd,
-	"show mpls ldp neighbor capabilities [json]$json",
+	"show mpls ldp neighbor [A.B.C.D]$lsr_id capabilities [json]$json",
 	"Show running system information\n"
 	"MPLS information\n"
 	"Label Distribution Protocol\n"
 	"Neighbor information\n"
+	"Neighbor LSR-ID\n"
 	"Display neighbor capability information\n"
 	JSON_STR)
 {
-	return (ldp_vty_show_neighbor(vty, 1, NULL, json));
+	return (ldp_vty_show_neighbor(vty, lsr_id_str, 1, NULL, json));
 }
 
 DEFPY  (ldp_show_l2vpn_atom_binding,
 	ldp_show_l2vpn_atom_binding_cmd,
-	"show l2vpn atom binding [json]$json",
+	"show l2vpn atom binding\
+	  [{\
+	    A.B.C.D$peer\
+	    |local-label (16-1048575)$local_label\
+	    |remote-label (16-1048575)$remote_label\
+	  }]\
+	 [json]$json",
 	"Show running system information\n"
 	"Show information about Layer2 VPN\n"
 	"Show Any Transport over MPLS information\n"
 	"Show AToM label binding information\n"
+	"Destination address of the VC\n"
+	"Match locally assigned label values\n"
+	"Locally assigned label value\n"
+	"Match remotely assigned label values\n"
+	"Remotely assigned label value\n"
 	JSON_STR)
 {
-	return (ldp_vty_show_atom_binding(vty, json));
+	if (!local_label_str)
+		local_label = NO_LABEL;
+	if (!remote_label_str)
+		remote_label = NO_LABEL;
+	return (ldp_vty_show_atom_binding(vty, peer_str, local_label,
+	    remote_label, json));
 }
 
 DEFPY  (ldp_show_l2vpn_atom_vc,
 	ldp_show_l2vpn_atom_vc_cmd,
-	"show l2vpn atom vc [json]$json",
+	"show l2vpn atom vc\
+	  [{\
+	    A.B.C.D$peer\
+	    |interface IFNAME$ifname\
+	    |vc-id (1-4294967295)$vcid\
+	  }]\
+	 [json]$json",
 	"Show running system information\n"
 	"Show information about Layer2 VPN\n"
 	"Show Any Transport over MPLS information\n"
 	"Show AToM virtual circuit information\n"
+	"Destination address of the VC\n"
+	"Local interface of the pseudowire\n"
+	"Interface's name\n"
+	"VC ID\n"
+	"VC ID\n"
 	JSON_STR)
 {
-	return (ldp_vty_show_atom_vc(vty, json));
+	return (ldp_vty_show_atom_vc(vty, peer_str, ifname, vcid_str, json));
 }
 
 DEFUN_NOSH (ldp_show_debugging_mpls_ldp,
@@ -747,8 +821,10 @@ ldp_vty_init (void)
 
 	install_element(LDP_NODE, &ldp_address_family_cmd);
 	install_element(LDP_NODE, &no_ldp_address_family_cmd);
-	install_element(LDP_NODE, &ldp_discovery_holdtime_cmd);
-	install_element(LDP_NODE, &ldp_discovery_interval_cmd);
+	install_element(LDP_NODE, &ldp_discovery_link_holdtime_cmd);
+	install_element(LDP_NODE, &ldp_discovery_targeted_holdtime_cmd);
+	install_element(LDP_NODE, &ldp_discovery_link_interval_cmd);
+	install_element(LDP_NODE, &ldp_discovery_targeted_interval_cmd);
 	install_element(LDP_NODE, &ldp_dual_stack_transport_connection_prefer_ipv4_cmd);
 	install_element(LDP_NODE, &ldp_dual_stack_cisco_interop_cmd);
 	install_element(LDP_NODE, &ldp_neighbor_password_cmd);
@@ -756,8 +832,10 @@ ldp_vty_init (void)
 	install_element(LDP_NODE, &ldp_neighbor_ttl_security_cmd);
 	install_element(LDP_NODE, &ldp_router_id_cmd);
 
-	install_element(LDP_IPV4_NODE, &ldp_discovery_holdtime_cmd);
-	install_element(LDP_IPV4_NODE, &ldp_discovery_interval_cmd);
+	install_element(LDP_IPV4_NODE, &ldp_discovery_link_holdtime_cmd);
+	install_element(LDP_IPV4_NODE, &ldp_discovery_targeted_holdtime_cmd);
+	install_element(LDP_IPV4_NODE, &ldp_discovery_link_interval_cmd);
+	install_element(LDP_IPV4_NODE, &ldp_discovery_targeted_interval_cmd);
 	install_element(LDP_IPV4_NODE, &ldp_discovery_targeted_hello_accept_cmd);
 	install_element(LDP_IPV4_NODE, &ldp_discovery_transport_address_ipv4_cmd);
 	install_element(LDP_IPV4_NODE, &ldp_label_local_advertise_cmd);
@@ -771,8 +849,10 @@ ldp_vty_init (void)
 	install_element(LDP_IPV4_NODE, &ldp_neighbor_ipv4_targeted_cmd);
 	install_element(LDP_IPV4_NODE, &ldp_exit_address_family_cmd);
 
-	install_element(LDP_IPV6_NODE, &ldp_discovery_holdtime_cmd);
-	install_element(LDP_IPV6_NODE, &ldp_discovery_interval_cmd);
+	install_element(LDP_IPV6_NODE, &ldp_discovery_link_holdtime_cmd);
+	install_element(LDP_IPV6_NODE, &ldp_discovery_targeted_holdtime_cmd);
+	install_element(LDP_IPV6_NODE, &ldp_discovery_link_interval_cmd);
+	install_element(LDP_IPV6_NODE, &ldp_discovery_targeted_interval_cmd);
 	install_element(LDP_IPV6_NODE, &ldp_discovery_targeted_hello_accept_cmd);
 	install_element(LDP_IPV6_NODE, &ldp_discovery_transport_address_ipv6_cmd);
 	install_element(LDP_IPV6_NODE, &ldp_label_local_advertise_cmd);
@@ -785,11 +865,11 @@ ldp_vty_init (void)
 	install_element(LDP_IPV6_NODE, &ldp_neighbor_ipv6_targeted_cmd);
 	install_element(LDP_IPV6_NODE, &ldp_exit_address_family_cmd);
 
-	install_element(LDP_IPV4_IFACE_NODE, &ldp_discovery_holdtime_cmd);
-	install_element(LDP_IPV4_IFACE_NODE, &ldp_discovery_interval_cmd);
+	install_element(LDP_IPV4_IFACE_NODE, &ldp_discovery_link_holdtime_cmd);
+	install_element(LDP_IPV4_IFACE_NODE, &ldp_discovery_link_interval_cmd);
 
-	install_element(LDP_IPV6_IFACE_NODE, &ldp_discovery_holdtime_cmd);
-	install_element(LDP_IPV6_IFACE_NODE, &ldp_discovery_interval_cmd);
+	install_element(LDP_IPV6_IFACE_NODE, &ldp_discovery_link_holdtime_cmd);
+	install_element(LDP_IPV6_IFACE_NODE, &ldp_discovery_link_interval_cmd);
 
 	install_element(LDP_L2VPN_NODE, &ldp_bridge_cmd);
 	install_element(LDP_L2VPN_NODE, &ldp_mtu_cmd);

@@ -212,13 +212,14 @@ kmpw_unset(struct zapi_pw *zpw)
 void
 kif_redistribute(const char *ifname)
 {
-	struct listnode		*node, *cnode;
+	struct vrf		*vrf = vrf_lookup_by_id(VRF_DEFAULT);
+	struct listnode		*cnode;
 	struct interface	*ifp;
 	struct connected	*ifc;
 	struct kif		 kif;
 	struct kaddr		 ka;
 
-	for (ALL_LIST_ELEMENTS_RO(vrf_iflist(VRF_DEFAULT), node, ifp)) {
+	FOR_ALL_INTERFACES (vrf, ifp) {
 		if (ifname && strcmp(ifname, ifp->name) != 0)
 			continue;
 
@@ -287,7 +288,7 @@ ldp_interface_delete(int command, struct zclient *zclient, zebra_size_t length,
 
 	/* To support pseudo interface do not free interface structure.  */
 	/* if_delete(ifp); */
-	ifp->ifindex = IFINDEX_DELETED;
+	if_set_index(ifp, IFINDEX_INTERNAL);
 
 	ifp2kif(ifp, &kif);
 	main_imsg_compose_both(IMSG_IFSTATUS, &kif, sizeof(kif));
@@ -449,18 +450,38 @@ ldp_zebra_read_route(int command, struct zclient *zclient, zebra_size_t length,
 	/* loop through all the nexthops */
 	for (i = 0; i < api.nexthop_num; i++) {
 		api_nh = &api.nexthops[i];
-
-		switch (kr.af) {
-		case AF_INET:
+		switch (api_nh->type) {
+		case NEXTHOP_TYPE_IPV4:
+			if (kr.af != AF_INET)
+				continue;
 			kr.nexthop.v4 = api_nh->gate.ipv4;
+			kr.ifindex = 0;
 			break;
-		case AF_INET6:
+		case NEXTHOP_TYPE_IPV4_IFINDEX:
+			if (kr.af != AF_INET)
+				continue;
+			kr.nexthop.v4 = api_nh->gate.ipv4;
+			kr.ifindex = api_nh->ifindex;
+			break;
+		case NEXTHOP_TYPE_IPV6:
+			if (kr.af != AF_INET6)
+				continue;
 			kr.nexthop.v6 = api_nh->gate.ipv6;
+			kr.ifindex = 0;
+			break;
+		case NEXTHOP_TYPE_IPV6_IFINDEX:
+			if (kr.af != AF_INET6)
+				continue;
+			kr.nexthop.v6 = api_nh->gate.ipv6;
+			kr.ifindex = api_nh->ifindex;
+			break;
+		case NEXTHOP_TYPE_IFINDEX:
+			if (!(kr.flags & F_CONNECTED))
+				continue;
 			break;
 		default:
-			break;
+			continue;
 		}
-		kr.ifindex = api_nh->ifindex;;
 
 		debug_zebra_in("route %s %s/%d nexthop %s ifindex %u (%s)",
 		    (add) ? "add" : "delete", log_addr(kr.af, &kr.prefix),
@@ -506,12 +527,14 @@ ldp_zebra_connected(struct zclient *zclient)
 	    ZEBRA_ROUTE_ALL, 0, VRF_DEFAULT);
 }
 
+extern struct zebra_privs_t ldpd_privs;
+
 void
 ldp_zebra_init(struct thread_master *master)
 {
 	/* Set default values. */
-	zclient = zclient_new(master);
-	zclient_init(zclient, ZEBRA_ROUTE_LDP, 0);
+	zclient = zclient_new_notify(master, &zclient_options_default);
+	zclient_init(zclient, ZEBRA_ROUTE_LDP, 0, &ldpd_privs);
 
 	/* set callbacks */
 	zclient->zebra_connected = ldp_zebra_connected;

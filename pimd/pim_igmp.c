@@ -299,22 +299,19 @@ static int igmp_recv_query(struct igmp_sock *igmp, int query_version,
 		return -1;
 	}
 
-	/* RFC 3376 defines some guidelines on operating in backwards
-	 * compatibility
-	 * with older versions of IGMP but there are some gaps in the logic:
+	/*
+	 * RFC 3376 defines some guidelines on operating in backwards
+	 * compatibility with older versions of IGMP but there are some gaps in
+	 * the logic:
 	 *
 	 * - once we drop from say version 3 to version 2 we will never go back
-	 * to
-	 *   version 3 even if the node that TXed an IGMP v2 query upgrades to
-	 * v3
+	 *   to version 3 even if the node that TXed an IGMP v2 query upgrades
+	 *   to v3
 	 *
 	 * - The node with the lowest IP is the querier so we will only know to
-	 * drop
-	 *   from v3 to v2 if the node that is the querier is also the one that
-	 * is
-	 *   running igmp v2.  If a non-querier only supports igmp v2 we will
-	 * have
-	 *   no way of knowing.
+	 *   drop from v3 to v2 if the node that is the querier is also the one
+	 *   that is running igmp v2.  If a non-querier only supports igmp v2
+	 *   we will have no way of knowing.
 	 *
 	 * For now we will simplify things and inform the user that they need to
 	 * configure all PIM routers to use the same version of IGMP.
@@ -402,6 +399,9 @@ static int igmp_v1_recv_report(struct igmp_sock *igmp, struct in_addr from,
 	}
 
 	memcpy(&group_addr, igmp_msg + 4, sizeof(struct in_addr));
+
+	if (pim_is_group_filtered(ifp->info, &group_addr))
+		return -1;
 
 	/* non-existant group is created as INCLUDE {empty} */
 	group = igmp_add_group_by_addr(igmp, group_addr);
@@ -696,7 +696,7 @@ void igmp_startup_mode_on(struct igmp_sock *igmp)
 
 static void igmp_group_free(struct igmp_group *group)
 {
-	list_delete(group->group_source_list);
+	list_delete_and_null(&group->group_source_list);
 
 	XFREE(MTYPE_PIM_IGMP_GROUP, group);
 }
@@ -748,7 +748,7 @@ void igmp_sock_free(struct igmp_sock *igmp)
 	zassert(igmp->igmp_group_list);
 	zassert(!listcount(igmp->igmp_group_list));
 
-	list_delete(igmp->igmp_group_list);
+	list_delete_and_null(&igmp->igmp_group_list);
 	hash_free(igmp->igmp_group_hash);
 
 	XFREE(MTYPE_PIM_IGMP_SOCKET, igmp);

@@ -20,6 +20,7 @@
 
 #include <zebra.h>
 
+#include <pthread.h>
 #include "vector.h"
 #include "command.h"
 #include "getopt.h"
@@ -54,6 +55,8 @@
 #include "bgpd/bgp_debug.h"
 #include "bgpd/bgp_filter.h"
 #include "bgpd/bgp_zebra.h"
+#include "bgpd/bgp_packet.h"
+#include "bgpd/bgp_keepalives.h"
 
 #ifdef ENABLE_BGP_VNC
 #include "bgpd/rfapi/rfapi_backend.h"
@@ -191,6 +194,9 @@ static __attribute__((__noreturn__)) void bgp_exit(int status)
 	/* reverse bgp_attr_init */
 	bgp_attr_finish();
 
+	/* stop pthreads */
+	bgp_pthreads_finish();
+
 	/* reverse access_list_init */
 	access_list_add_hook(NULL);
 	access_list_delete_hook(NULL);
@@ -215,7 +221,7 @@ static __attribute__((__noreturn__)) void bgp_exit(int status)
 #endif
 	bgp_zebra_destroy();
 
-	list_delete(bm->bgp);
+	list_delete_and_null(&bm->bgp);
 	memset(bm, 0, sizeof(*bm));
 
 	frr_fini();
@@ -393,6 +399,8 @@ int main(int argc, char **argv)
 		 (bm->address ? bm->address : "<all>"), bm->port);
 
 	frr_config_fork();
+	/* must be called after fork() */
+	bgp_pthreads_run();
 	frr_run(bm->master);
 
 	/* Not reached. */

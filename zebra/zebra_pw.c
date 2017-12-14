@@ -73,7 +73,7 @@ struct zebra_pw *zebra_pw_add(struct zebra_vrf *zvrf, const char *ifname,
 	pw->protocol = protocol;
 	pw->vrf_id = zvrf_id(zvrf);
 	pw->client = client;
-	pw->status = PW_STATUS_UP;
+	pw->status = PW_STATUS_DOWN;
 	pw->local_label = MPLS_NO_LABEL;
 	pw->remote_label = MPLS_NO_LABEL;
 	pw->flags = F_PSEUDOWIRE_CWORD;
@@ -436,7 +436,7 @@ DEFUN (show_pseudowires,
        "show mpls pseudowires",
        SHOW_STR
        MPLS_STR
-       "Pseudowires")
+       "Pseudowires\n")
 {
 	struct zebra_vrf *zvrf;
 	struct zebra_pw *pw;

@@ -154,7 +154,12 @@ void bgp_reg_dereg_for_label(struct bgp_node *rn, struct bgp_info *ri, int reg)
 
 	/* Set length and flags */
 	stream_putw_at(s, 0, stream_get_endp(s));
-	stream_putw_at(s, flags_pos, flags);
+
+	/*
+	 * We only need to write new flags if this is a register
+	 */
+	if (reg)
+		stream_putw_at(s, flags_pos, flags);
 
 	zclient_send_message(zclient);
 }
@@ -225,7 +230,6 @@ int bgp_nlri_parse_label(struct peer *peer, struct attr *attr,
 	for (; pnt < lim; pnt += psize) {
 		/* Clear prefix structure. */
 		memset(&p, 0, sizeof(struct prefix));
-		llen = 0;
 
 		if (addpath_encoded) {
 

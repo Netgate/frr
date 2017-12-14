@@ -190,15 +190,16 @@ ldpe_shutdown(void)
 
 	/* close pipes */
 	if (iev_lde) {
-		msgbuf_write(&iev_lde->ibuf.w);
 		msgbuf_clear(&iev_lde->ibuf.w);
 		close(iev_lde->ibuf.fd);
+		iev_lde->ibuf.fd = -1;
 	}
-	msgbuf_write(&iev_main->ibuf.w);
 	msgbuf_clear(&iev_main->ibuf.w);
 	close(iev_main->ibuf.fd);
+	iev_main->ibuf.fd = -1;
 	msgbuf_clear(&iev_main_sync->ibuf.w);
 	close(iev_main_sync->ibuf.fd);
+	iev_main_sync->ibuf.fd = -1;
 
 	control_cleanup(ctl_sock_path);
 	config_clear(leconf);
@@ -215,6 +216,7 @@ ldpe_shutdown(void)
 	/* remove addresses from global list */
 	while ((if_addr = LIST_FIRST(&global.addr_list)) != NULL) {
 		LIST_REMOVE(if_addr, entry);
+		assert(if_addr != LIST_FIRST(&global.addr_list));
 		free(if_addr);
 	}
 	while ((adj = RB_ROOT(global_adj_head, &global.adj_tree)) != NULL)
@@ -235,12 +237,16 @@ ldpe_shutdown(void)
 int
 ldpe_imsg_compose_parent(int type, pid_t pid, void *data, uint16_t datalen)
 {
+	if (iev_main->ibuf.fd == -1)
+		return (0);
 	return (imsg_compose_event(iev_main, type, 0, pid, -1, data, datalen));
 }
 
 void
 ldpe_imsg_compose_parent_sync(int type, pid_t pid, void *data, uint16_t datalen)
 {
+	if (iev_main_sync->ibuf.fd == -1)
+		return;
 	imsg_compose_event(iev_main_sync, type, 0, pid, -1, data, datalen);
 	imsg_flush(&iev_main_sync->ibuf);
 }
@@ -249,6 +255,8 @@ int
 ldpe_imsg_compose_lde(int type, uint32_t peerid, pid_t pid, void *data,
     uint16_t datalen)
 {
+	if (iev_lde->ibuf.fd == -1)
+		return (0);
 	return (imsg_compose_event(iev_lde, type, peerid, pid, -1,
 	    data, datalen));
 }
@@ -265,7 +273,7 @@ ldpe_dispatch_main(struct thread *thread)
 	struct l2vpn_if		*lif, *nlif;
 	struct l2vpn_pw		*pw, *npw;
 	struct imsg		 imsg;
-	int			 fd = THREAD_FD(thread);
+	int			 fd;
 	struct imsgev		*iev = THREAD_ARG(thread);
 	struct imsgbuf		*ibuf = &iev->ibuf;
 	struct iface		*iface = NULL;
@@ -964,6 +972,7 @@ mapping_list_clr(struct mapping_head *mh)
 
 	while ((me = TAILQ_FIRST(mh)) != NULL) {
 		TAILQ_REMOVE(mh, me, entry);
+		assert(me != TAILQ_FIRST(mh));
 		free(me);
 	}
 }

@@ -222,7 +222,12 @@ static void route_aspath_free(void *rule)
 	aspath_free(aspath);
 }
 
-/* 'match peer (A.B.C.D|X:X::X:X)' */
+struct bgp_match_peer_compiled {
+	char *interface;
+	union sockunion su;
+};
+
+/* 'match peer (A.B.C.D|X:X::X:X|WORD)' */
 
 /* Compares the peer specified in the 'match peer' clause with the peer
     received in bgp_info->peer. If it is the same, or if the peer structure
@@ -231,6 +236,7 @@ static route_map_result_t route_match_peer(void *rule, struct prefix *prefix,
 					   route_map_object_t type,
 					   void *object)
 {
+	struct bgp_match_peer_compiled *pc;
 	union sockunion *su;
 	union sockunion su_def = {
 		.sin = {.sin_family = AF_INET, .sin_addr.s_addr = INADDR_ANY}};
@@ -239,12 +245,19 @@ static route_map_result_t route_match_peer(void *rule, struct prefix *prefix,
 	struct listnode *node, *nnode;
 
 	if (type == RMAP_BGP) {
-		su = rule;
+		pc = rule;
+		su = &pc->su;
 		peer = ((struct bgp_info *)object)->peer;
 
-		if (!CHECK_FLAG(peer->rmap_type, PEER_RMAP_TYPE_IMPORT)
-		    && !CHECK_FLAG(peer->rmap_type, PEER_RMAP_TYPE_EXPORT))
+		if (pc->interface) {
+			if (!peer->conf_if)
+				return RMAP_NOMATCH;
+
+			if (strcmp(peer->conf_if, pc->interface) == 0)
+				return RMAP_MATCH;
+
 			return RMAP_NOMATCH;
+		}
 
 		/* If su='0.0.0.0' (command 'match peer local'), and it's a
 		   NETWORK,
@@ -283,23 +296,29 @@ static route_map_result_t route_match_peer(void *rule, struct prefix *prefix,
 
 static void *route_match_peer_compile(const char *arg)
 {
-	union sockunion *su;
+	struct bgp_match_peer_compiled *pc;
 	int ret;
 
-	su = XMALLOC(MTYPE_ROUTE_MAP_COMPILED, sizeof(union sockunion));
+	pc = XCALLOC(MTYPE_ROUTE_MAP_COMPILED,
+		     sizeof(struct bgp_match_peer_compiled));
 
-	ret = str2sockunion(strcmp(arg, "local") ? arg : "0.0.0.0", su);
+	ret = str2sockunion(strcmp(arg, "local") ? arg : "0.0.0.0", &pc->su);
 	if (ret < 0) {
-		XFREE(MTYPE_ROUTE_MAP_COMPILED, su);
-		return NULL;
+		pc->interface = XSTRDUP(MTYPE_ROUTE_MAP_COMPILED, arg);
+		return pc;
 	}
 
-	return su;
+	return pc;
 }
 
 /* Free route map's compiled `ip address' value. */
 static void route_match_peer_free(void *rule)
 {
+	struct bgp_match_peer_compiled *pc = rule;
+
+	if (pc->interface)
+		XFREE(MTYPE_ROUTE_MAP_COMPILED, pc->interface);
+
 	XFREE(MTYPE_ROUTE_MAP_COMPILED, rule);
 }
 
@@ -2063,7 +2082,10 @@ static void *route_set_aggregator_as_compile(const char *arg)
 
 	aggregator =
 		XCALLOC(MTYPE_ROUTE_MAP_COMPILED, sizeof(struct aggregator));
-	sscanf(arg, "%s %s", as, address);
+	if (sscanf(arg, "%s %s", as, address) != 2) {
+		XFREE(MTYPE_ROUTE_MAP_COMPILED, aggregator);
+		return NULL;
+	}
 
 	aggregator->as = strtoul(as, NULL, 10);
 	ret = inet_aton(address, &aggregator->address);
@@ -2862,25 +2884,23 @@ static void bgp_route_map_update_peer_group(const char *rmap_name,
 	/* All the peers have been updated correctly already. This is
 	 * just updating the placeholder data. No real update required.
 	 */
-	for (ALL_LIST_ELEMENTS(bgp->group, node, nnode, group))
-		for (afi = AFI_IP; afi < AFI_MAX; afi++)
-			for (safi = SAFI_UNICAST; safi < SAFI_MAX; safi++) {
-				filter = &group->conf->filter[afi][safi];
+	for (ALL_LIST_ELEMENTS(bgp->group, node, nnode, group)) {
+		FOREACH_AFI_SAFI (afi, safi) {
+			filter = &group->conf->filter[afi][safi];
 
-				for (direct = RMAP_IN; direct < RMAP_MAX;
-				     direct++) {
-					if ((filter->map[direct].name)
-					    && (strcmp(rmap_name,
-						       filter->map[direct].name)
-						== 0))
-						filter->map[direct].map = map;
-				}
-
-				if (filter->usmap.name
-				    && (strcmp(rmap_name, filter->usmap.name)
+			for (direct = RMAP_IN; direct < RMAP_MAX; direct++) {
+				if ((filter->map[direct].name)
+				    && (strcmp(rmap_name,
+					       filter->map[direct].name)
 					== 0))
-					filter->usmap.map = map;
+					filter->map[direct].map = map;
 			}
+
+			if (filter->usmap.name
+			    && (strcmp(rmap_name, filter->usmap.name) == 0))
+				filter->usmap.map = map;
+		}
+	}
 }
 
 /*
@@ -2911,18 +2931,12 @@ static void bgp_route_map_process_update(struct bgp *bgp, const char *rmap_name,
 		if (CHECK_FLAG(peer->sflags, PEER_STATUS_GROUP))
 			continue;
 
-		for (afi = AFI_IP; afi < AFI_MAX; afi++)
-			for (safi = SAFI_UNICAST; safi < SAFI_MAX; safi++) {
-				/* Ignore inactive AFI/SAFI */
-				if (!peer->afc[afi][safi])
-					continue;
-
-				/* process in/out/import/export/default-orig
-				 * route-maps */
-				bgp_route_map_process_peer(rmap_name, map, peer,
-							   afi, safi,
-							   route_update);
-			}
+		FOREACH_AFI_SAFI (afi, safi) {
+			/* process in/out/import/export/default-orig
+			 * route-maps */
+			bgp_route_map_process_peer(rmap_name, map, peer, afi,
+						   safi, route_update);
+		}
 	}
 
 	/* for outbound/default-orig route-maps, process for groups */
@@ -2932,62 +2946,55 @@ static void bgp_route_map_process_update(struct bgp *bgp, const char *rmap_name,
 	/* update peer-group config (template) */
 	bgp_route_map_update_peer_group(rmap_name, map, bgp);
 
-	for (afi = AFI_IP; afi < AFI_MAX; afi++)
-		for (safi = SAFI_UNICAST; safi < SAFI_MAX; safi++) {
-			/* For table route-map updates. */
-			if (!bgp_fibupd_safi(safi))
-				continue;
+	FOREACH_AFI_SAFI (afi, safi) {
+		/* For table route-map updates. */
+		if (!bgp_fibupd_safi(safi))
+			continue;
 
-			if (bgp->table_map[afi][safi].name
-			    && (strcmp(rmap_name,
-				       bgp->table_map[afi][safi].name)
-				== 0)) {
-				bgp->table_map[afi][safi].map = map;
+		if (bgp->table_map[afi][safi].name
+		    && (strcmp(rmap_name, bgp->table_map[afi][safi].name)
+			== 0)) {
+			bgp->table_map[afi][safi].map = map;
 
-				if (BGP_DEBUG(zebra, ZEBRA))
-					zlog_debug(
-						"Processing route_map %s update on "
-						"table map",
-						rmap_name);
-				if (route_update)
-					bgp_zebra_announce_table(bgp, afi,
-								 safi);
-			}
-
-			/* For network route-map updates. */
-			for (bn = bgp_table_top(bgp->route[afi][safi]); bn;
-			     bn = bgp_route_next(bn))
-				if ((bgp_static = bn->info) != NULL) {
-					if (bgp_static->rmap.name
-					    && (strcmp(rmap_name,
-						       bgp_static->rmap.name)
-						== 0)) {
-						bgp_static->rmap.map = map;
-
-						if (route_update)
-							if (!bgp_static
-								     ->backdoor) {
-								if (bgp_debug_zebra(
-									    &bn->p))
-									zlog_debug(
-										"Processing route_map %s update on "
-										"static route %s",
-										rmap_name,
-										inet_ntop(
-											bn->p.family,
-											&bn->p.u.prefix,
-											buf,
-											INET6_ADDRSTRLEN));
-								bgp_static_update(
-									bgp,
-									&bn->p,
-									bgp_static,
-									afi,
-									safi);
-							}
-					}
-				}
+			if (BGP_DEBUG(zebra, ZEBRA))
+				zlog_debug(
+					"Processing route_map %s update on "
+					"table map",
+					rmap_name);
+			if (route_update)
+				bgp_zebra_announce_table(bgp, afi, safi);
 		}
+
+		/* For network route-map updates. */
+		for (bn = bgp_table_top(bgp->route[afi][safi]); bn;
+		     bn = bgp_route_next(bn))
+			if ((bgp_static = bn->info) != NULL) {
+				if (bgp_static->rmap.name
+				    && (strcmp(rmap_name, bgp_static->rmap.name)
+					== 0)) {
+					bgp_static->rmap.map = map;
+
+					if (route_update)
+						if (!bgp_static->backdoor) {
+							if (bgp_debug_zebra(
+								    &bn->p))
+								zlog_debug(
+									"Processing route_map %s update on "
+									"static route %s",
+									rmap_name,
+									inet_ntop(
+										bn->p.family,
+										&bn->p.u.prefix,
+										buf,
+										INET6_ADDRSTRLEN));
+							bgp_static_update(
+								bgp, &bn->p,
+								bgp_static, afi,
+								safi);
+						}
+				}
+			}
+	}
 
 	/* For redistribute route-map updates. */
 	for (afi = AFI_IP; afi < AFI_MAX; afi++)
@@ -3152,11 +3159,12 @@ DEFUN (no_match_evpn_vni,
 
 DEFUN (match_peer,
        match_peer_cmd,
-       "match peer <A.B.C.D|X:X::X:X>",
+       "match peer <A.B.C.D|X:X::X:X|WORD>",
        MATCH_STR
        "Match peer address\n"
        "IP address of peer\n"
-       "IPv6 address of peer\n")
+       "IPv6 address of peer\n"
+       "Interface name of peer\n")
 {
 	int idx_ip = 2;
 	return bgp_route_match_add(vty, "peer", argv[idx_ip]->arg,
@@ -3176,13 +3184,14 @@ DEFUN (match_peer_local,
 
 DEFUN (no_match_peer,
        no_match_peer_cmd,
-       "no match peer [<local|A.B.C.D|X:X::X:X>]",
+       "no match peer [<local|A.B.C.D|X:X::X:X|WORD>]",
        NO_STR
        MATCH_STR
        "Match peer address\n"
        "Static or Redistributed routes\n"
        "IP address of peer\n"
-       "IPv6 address of peer\n")
+       "IPv6 address of peer\n"
+       "Interface name of peer\n")
 {
 	int idx_peer = 3;
 
@@ -3796,7 +3805,7 @@ DEFUN (set_community,
 	}
 
 	/* Set communites attribute string.  */
-	str = community_str(com);
+	str = community_str(com, false);
 
 	if (additive) {
 		argstr = XCALLOC(MTYPE_TMP,
@@ -3972,7 +3981,7 @@ DEFUN (no_set_lcommunity_delete,
 
 DEFUN (set_ecommunity_rt,
        set_ecommunity_rt_cmd,
-       "set extcommunity rt ASN:nn_or_IP-address:nn...",
+       "set extcommunity rt ASN:NN_OR_IP-ADDRESS:NN...",
        SET_STR
        "BGP extended community attribute\n"
        "Route Target extended community\n"
@@ -3992,7 +4001,7 @@ DEFUN (set_ecommunity_rt,
 
 DEFUN (no_set_ecommunity_rt,
        no_set_ecommunity_rt_cmd,
-       "no set extcommunity rt ASN:nn_or_IP-address:nn...",
+       "no set extcommunity rt ASN:NN_OR_IP-ADDRESS:NN...",
        NO_STR
        SET_STR
        "BGP extended community attribute\n"
@@ -4006,7 +4015,7 @@ DEFUN (no_set_ecommunity_rt,
 
 DEFUN (set_ecommunity_soo,
        set_ecommunity_soo_cmd,
-       "set extcommunity soo ASN:nn_or_IP-address:nn...",
+       "set extcommunity soo ASN:NN_OR_IP-ADDRESS:NN...",
        SET_STR
        "BGP extended community attribute\n"
        "Site-of-Origin extended community\n"
@@ -4026,7 +4035,7 @@ DEFUN (set_ecommunity_soo,
 
 DEFUN (no_set_ecommunity_soo,
        no_set_ecommunity_soo_cmd,
-       "no set extcommunity soo ASN:nn_or_IP-address:nn...",
+       "no set extcommunity soo ASN:NN_OR_IP-ADDRESS:NN...",
        NO_STR
        SET_STR
        "BGP extended community attribute\n"

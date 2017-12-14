@@ -534,7 +534,7 @@ struct thread_master *frr_init(void)
 		snprintf(p_pathspace, sizeof(p_pathspace), "/%s",
 			 di->pathspace);
 
-	snprintf(config_default, sizeof(config_default), "%s%s/%s%s.conf",
+	snprintf(config_default, sizeof(config_default), "%s%s%s%s.conf",
 		 frr_sysconfdir, p_pathspace, di->name, p_instance);
 	snprintf(pidfile_default, sizeof(pidfile_default), "%s%s/%s%s.pid",
 		 frr_vtydir, p_pathspace, di->name, p_instance);
@@ -768,6 +768,8 @@ void frr_vty_serv(void)
 
 static void frr_terminal_close(int isexit)
 {
+	int nullfd;
+
 	if (daemon_ctl_sock != -1) {
 		close(daemon_ctl_sock);
 		daemon_ctl_sock = -1;
@@ -783,11 +785,16 @@ static void frr_terminal_close(int isexit)
 		fflush(stdout);
 	}
 
-	int nullfd = open("/dev/null", O_RDONLY | O_NOCTTY);
-	dup2(nullfd, 0);
-	dup2(nullfd, 1);
-	dup2(nullfd, 2);
-	close(nullfd);
+	nullfd = open("/dev/null", O_RDONLY | O_NOCTTY);
+	if (nullfd == -1) {
+		zlog_err("%s: failed to open /dev/null: %s", __func__,
+			 safe_strerror(errno));
+	} else {
+		dup2(nullfd, 0);
+		dup2(nullfd, 1);
+		dup2(nullfd, 2);
+		close(nullfd);
+	}
 }
 
 static struct thread *daemon_ctl_thread = NULL;
@@ -849,10 +856,15 @@ void frr_run(struct thread_master *master)
 		}
 	} else if (di->daemon_mode) {
 		int nullfd = open("/dev/null", O_RDONLY | O_NOCTTY);
-		dup2(nullfd, 0);
-		dup2(nullfd, 1);
-		dup2(nullfd, 2);
-		close(nullfd);
+		if (nullfd == -1) {
+			zlog_err("%s: failed to open /dev/null: %s", __func__,
+				 safe_strerror(errno));
+		} else {
+			dup2(nullfd, 0);
+			dup2(nullfd, 1);
+			dup2(nullfd, 2);
+			close(nullfd);
+		}
 
 		if (daemon_ctl_sock != -1)
 			close(daemon_ctl_sock);
@@ -886,6 +898,7 @@ void frr_fini(void)
 	zprivs_terminate(di->privs);
 	/* signal_init -> nothing needed */
 	thread_master_free(master);
+	master = NULL;
 	closezlog();
 	/* frrmod_init -> nothing needed / hooks */
 

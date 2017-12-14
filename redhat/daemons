@@ -35,7 +35,7 @@
 # group "frrvty" and set to ug=rw,o= though. Check /etc/pam.d/frr, too.
 #
 watchfrr_enable=no
-watchfrr_options=("-b_" "-r/etc/init.d/frr_restart_%s" "-s/etc/init.d/frr_start_%s" "-k/etc/init.d/frr_stop_%s")
+watchfrr_options=("-b_" "-r/usr/lib/frr/frr_restart_%s" "-s/usr/lib/frr/frr_start_%s" "-k/usr/lib/frr/frr_stop_%s")
 #
 zebra=no
 bgpd=no
@@ -49,6 +49,7 @@ pimd=no
 nhrpd=no
 eigrpd=no
 babeld=no
+sharpd=no
 #
 # Command line options for the daemons
 #
@@ -64,4 +65,13 @@ pimd_options=("-A 127.0.0.1")
 nhrpd_options=("-A 127.0.0.1")
 eigrpd_options=("-A 127.0.0.1")
 babeld_options=("-A 127.0.0.1")
+sharpd_options=("-A 127.0.0.1")
+
+#
+# If the vtysh_enable is yes, then the unified config is read
+# and applied if it exists.  If no unified frr.conf exists
+# then the per-daemon <daemon>.conf files are used)
+# If vtysh_enable is no or non-existant, the frr.conf is ignored.
+# it is highly suggested to have this set to yes
+vtysh_enable=yes
 

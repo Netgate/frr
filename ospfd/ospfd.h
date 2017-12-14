@@ -28,6 +28,7 @@
 
 #include "filter.h"
 #include "log.h"
+#include "vrf.h"
 
 #include "ospf_memory.h"
 #include "ospf_dump_api.h"
@@ -92,13 +93,6 @@ struct ospf_master {
 	/* OSPF thread master. */
 	struct thread_master *master;
 
-	/* Zebra interface list. */
-	struct list *iflist;
-
-	/* Redistributed external information. */
-	struct list *external[ZEBRA_ROUTE_MAX + 1];
-#define EXTERNAL_INFO(E)      (E->external_info)
-
 	/* Various OSPF global configuration. */
 	u_char options;
 #define OSPF_MASTER_SHUTDOWN (1 << 0) /* deferred-shutdown */
@@ -135,6 +129,10 @@ struct ospf {
 	/* OSPF Router ID. */
 	struct in_addr router_id;	/* Configured automatically. */
 	struct in_addr router_id_static; /* Configured manually. */
+	struct in_addr router_id_zebra;
+
+	vrf_id_t vrf_id;  /* VRF Id */
+	char *name;       /* VRF name */
 
 	/* ABR/ASBR internal flags. */
 	u_char flags;
@@ -302,10 +300,20 @@ struct ospf {
 	/* Statistics for LSA used for new instantiation. */
 	u_int32_t rx_lsa_count;
 
-	/* Counter of "ip ospf area x.x.x.x" */
+	/* Counter of "ip ospf area x.x.x.x" used
+	 * for multual exclusion of network command under
+	 * router ospf or ip ospf area x under interface. */
 	u_int32_t if_ospf_cli_count;
 
 	struct route_table *distance_table;
+
+	/* Used during ospf instance going down send LSDB
+	 * update to neighbors immediatly */
+	uint8_t inst_shutdown;
+
+	/* Redistributed external information. */
+	struct list *external[ZEBRA_ROUTE_MAX + 1];
+#define EXTERNAL_INFO(E)      (E->external_info)
 
 	QOBJ_FIELDS
 };
@@ -500,13 +508,16 @@ extern const int ospf_redistributed_proto_max;
 extern struct zclient *zclient;
 extern struct thread_master *master;
 extern int ospf_zlog;
+extern struct zebra_privs_t ospfd_privs;
 
 /* Prototypes. */
 extern const char *ospf_redist_string(u_int route_type);
-extern struct ospf *ospf_lookup(void);
 extern struct ospf *ospf_lookup_instance(u_short);
-extern struct ospf *ospf_get(void);
+extern struct ospf *ospf_get(u_short instance, const char *name);
 extern struct ospf *ospf_get_instance(u_short);
+extern struct ospf *ospf_lookup_by_inst_name(u_short instance,
+					     const char *name);
+extern struct ospf *ospf_lookup_by_vrf_id(vrf_id_t vrf_id);
 extern void ospf_finish(struct ospf *);
 extern void ospf_router_id_update(struct ospf *ospf);
 extern int ospf_network_set(struct ospf *, struct prefix_ipv4 *, struct in_addr,
@@ -520,7 +531,7 @@ extern int ospf_area_stub_unset(struct ospf *, struct in_addr);
 extern int ospf_area_no_summary_set(struct ospf *, struct in_addr);
 extern int ospf_area_no_summary_unset(struct ospf *, struct in_addr);
 extern int ospf_area_nssa_set(struct ospf *, struct in_addr);
-extern int ospf_area_nssa_unset(struct ospf *, struct in_addr);
+extern int ospf_area_nssa_unset(struct ospf *, struct in_addr, int);
 extern int ospf_area_nssa_translator_role_set(struct ospf *, struct in_addr,
 					      int);
 extern int ospf_area_export_list_set(struct ospf *, struct ospf_area *,
@@ -559,11 +570,17 @@ extern struct ospf_area *ospf_area_lookup_by_area_id(struct ospf *,
 extern void ospf_area_add_if(struct ospf_area *, struct ospf_interface *);
 extern void ospf_area_del_if(struct ospf_area *, struct ospf_interface *);
 
-extern void ospf_interface_area_set(struct interface *);
-extern void ospf_interface_area_unset(struct interface *);
+extern void ospf_interface_area_set(struct ospf *, struct interface *);
+extern void ospf_interface_area_unset(struct ospf *, struct interface *);
 
 extern void ospf_route_map_init(void);
 
 extern void ospf_master_init(struct thread_master *master);
+extern void ospf_vrf_init(void);
+extern void ospf_vrf_terminate(void);
+extern void ospf_vrf_link(struct ospf *ospf, struct vrf *vrf);
+extern void ospf_vrf_unlink(struct ospf *ospf, struct vrf *vrf);
+const char *ospf_vrf_id_to_name(vrf_id_t vrf_id);
+int ospf_area_nssa_no_summary_set(struct ospf *, struct in_addr);
 
 #endif /* _ZEBRA_OSPFD_H */

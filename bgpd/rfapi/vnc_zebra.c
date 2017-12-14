@@ -183,22 +183,32 @@ static void vnc_redistribute_add(struct prefix *p, u_int32_t metric,
 			vncHD1VR.peer->status =
 				Established; /* keep bgp core happy */
 			bgp_sync_delete(vncHD1VR.peer); /* don't need these */
-			if (vncHD1VR.peer->ibuf) {
-				stream_free(vncHD1VR.peer
-						    ->ibuf); /* don't need it */
+
+			/*
+			 * since this peer is not on the I/O thread, this lock
+			 * is not strictly necessary, but serves as a reminder
+			 * to those who may meddle...
+			 */
+			pthread_mutex_lock(&vncHD1VR.peer->io_mtx);
+			{
+				// we don't need any I/O related facilities
+				if (vncHD1VR.peer->ibuf)
+					stream_fifo_free(vncHD1VR.peer->ibuf);
+				if (vncHD1VR.peer->obuf)
+					stream_fifo_free(vncHD1VR.peer->obuf);
+
+				if (vncHD1VR.peer->ibuf_work)
+					stream_free(vncHD1VR.peer->ibuf_work);
+				if (vncHD1VR.peer->obuf_work)
+					stream_free(vncHD1VR.peer->obuf_work);
+
 				vncHD1VR.peer->ibuf = NULL;
-			}
-			if (vncHD1VR.peer->obuf) {
-				stream_fifo_free(
-					vncHD1VR.peer
-						->obuf); /* don't need it */
 				vncHD1VR.peer->obuf = NULL;
+				vncHD1VR.peer->obuf_work = NULL;
+				vncHD1VR.peer->ibuf_work = NULL;
 			}
-			if (vncHD1VR.peer->work) {
-				stream_free(vncHD1VR.peer
-						    ->work); /* don't need it */
-				vncHD1VR.peer->work = NULL;
-			}
+			pthread_mutex_unlock(&vncHD1VR.peer->io_mtx);
+
 			/* base code assumes have valid host pointer */
 			vncHD1VR.peer->host =
 				XSTRDUP(MTYPE_BGP_PEER_HOST, ".zebra.");
@@ -584,7 +594,7 @@ static void vnc_zebra_add_del_prefix(struct bgp *bgp,
 		nve_list_to_nh_array(rn->p.family, nves, &nexthop_count,
 				     &nh_ary, &nhp_ary);
 
-		list_delete(nves);
+		list_delete_and_null(&nves);
 
 		if (nexthop_count)
 			vnc_zebra_route_msg(&rn->p, nexthop_count, nhp_ary,
@@ -753,7 +763,7 @@ static void vnc_zebra_add_del_group_afi(struct bgp *bgp,
 		vnc_zlog_debug_verbose("%s: family: %d, nve count: %d",
 				       __func__, family, nexthop_count);
 
-		list_delete(nves);
+		list_delete_and_null(&nves);
 
 		if (nexthop_count) {
 			/*
@@ -883,6 +893,7 @@ int vnc_redistribute_unset(struct bgp *bgp, afi_t afi, int type)
 	return CMD_SUCCESS;
 }
 
+extern struct zebra_privs_t bgpd_privs;
 
 /*
  * Modeled after bgp_zebra.c'bgp_zebra_init()
@@ -891,8 +902,8 @@ int vnc_redistribute_unset(struct bgp *bgp, afi_t afi, int type)
 void vnc_zebra_init(struct thread_master *master)
 {
 	/* Set default values. */
-	zclient_vnc = zclient_new(master);
-	zclient_init(zclient_vnc, ZEBRA_ROUTE_VNC, 0);
+	zclient_vnc = zclient_new_notify(master, &zclient_options_default);
+	zclient_init(zclient_vnc, ZEBRA_ROUTE_VNC, 0, &bgpd_privs);
 
 	zclient_vnc->redistribute_route_add = vnc_zebra_read_route;
 	zclient_vnc->redistribute_route_del = vnc_zebra_read_route;

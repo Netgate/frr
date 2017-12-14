@@ -240,7 +240,6 @@ int pim_global_config_write(struct vty *vty)
 int pim_interface_config_write(struct vty *vty)
 {
 	struct pim_instance *pim;
-	struct listnode *node;
 	struct interface *ifp;
 	struct vrf *vrf;
 	int writes = 0;
@@ -250,8 +249,7 @@ int pim_interface_config_write(struct vty *vty)
 		if (!pim)
 			continue;
 
-		for (ALL_LIST_ELEMENTS_RO(vrf_iflist(pim->vrf_id), node, ifp)) {
-
+		FOR_ALL_INTERFACES (pim->vrf, ifp) {
 			/* IF name */
 			if (vrf->vrf_id == VRF_DEFAULT)
 				vty_frame(vty, "interface %s\n", ifp->name);
@@ -285,6 +283,7 @@ int pim_interface_config_write(struct vty *vty)
 						vty_out(vty, " %d",
 							pim_ifp->pim_default_holdtime);
 					vty_out(vty, "\n");
+					++writes;
 				}
 
 				/* update source */
@@ -356,6 +355,14 @@ int pim_interface_config_write(struct vty *vty)
 							group_str, source_str);
 						++writes;
 					}
+				}
+
+				/* boundary */
+				if (pim_ifp->boundary_oil_plist) {
+					vty_out(vty,
+						" ip multicast boundary oil %s\n",
+						pim_ifp->boundary_oil_plist);
+					++writes;
 				}
 
 				writes +=

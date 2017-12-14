@@ -153,14 +153,37 @@ enum eigrp_fsm_states {
 #define EIGRP_FSM_NEED_QUERY				2
 
 /*EIGRP FSM events*/
-#define EIGRP_FSM_EVENT_NQ_FCN                  0 /*input event other than query from succ, FC not satisfied*/
-#define EIGRP_FSM_EVENT_LR                      1 /*last reply, FD is reset*/
-#define EIGRP_FSM_EVENT_Q_FCN                   2 /*query from succ, FC not satisfied*/
-#define EIGRP_FSM_EVENT_LR_FCS                  3 /*last reply, FC satisfied with current value of FDij*/
-#define EIGRP_FSM_EVENT_DINC                    4 /*distance increase while in active state*/
-#define EIGRP_FSM_EVENT_QACT                    5 /*query from succ while in active state*/
-#define EIGRP_FSM_EVENT_LR_FCN                  6 /*last reply, FC not satisfied with current value of FDij*/
-#define EIGRP_FSM_KEEP_STATE                    7 /*state not changed, usually by receiving not last reply */
+enum eigrp_fsm_events {
+	/*
+	 * Input event other than query from succ,
+	 * FC is not satisified
+	 */
+	EIGRP_FSM_EVENT_NQ_FCN,
+
+	/* last reply, FD is reset */
+	EIGRP_FSM_EVENT_LR,
+
+	/* Query from succ, FC not satisfied */
+	EIGRP_FSM_EVENT_Q_FCN,
+
+	/* last reply, FC satisifed with current value of FDij */
+	EIGRP_FSM_EVENT_LR_FCS,
+
+	/* distance increase while in a active state */
+	EIGRP_FSM_EVENT_DINC,
+
+	/* Query from succ while in active state */
+	EIGRP_FSM_EVENT_QACT,
+
+	/* last reply, FC not satisified */
+	EIGRP_FSM_EVENT_LR_FCN,
+
+	/*
+	 * state not changed
+	 * usually by receiving not last reply
+	 */
+	 EIGRP_FSM_KEEP_STATE,
+};
 
 /**
  * External routes originate from some other protocol - these are them
@@ -273,6 +296,12 @@ enum eigrp_fsm_states {
 #define EIGRP_TLV_IPv4_INT              (EIGRP_TLV_IPv4 | EIGRP_TLV_INTERNAL)
 #define EIGRP_TLV_IPv4_EXT              (EIGRP_TLV_IPv4 | EIGRP_TLV_EXTERNAL)
 #define EIGRP_TLV_IPv4_COM              (EIGRP_TLV_IPv4 | EIGRP_TLV_COMMUNITY)
+
+#define EIGRP_TLV_IPV4_SIZE_GRT_24_BIT      0x001D
+#define EIGRP_TLV_IPV4_SIZE_GRT_16_BIT      0x001C
+#define EIGRP_TLV_IPV4_SIZE_GRT_8_BIT       0x001B
+#define EIGRP_TLV_IPV4_SIZE_GRT_0_BIT       0x001A
+#define EIGRP_TLV_MAX_IPV4_BYTE             EIGRP_TLV_IPV4_SIZE_GRT_24_BIT
 
 /* max number of TLV IPv4 prefixes in packet */
 #define EIGRP_TLV_MAX_IPv4				25

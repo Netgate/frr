@@ -153,7 +153,7 @@ static int isis_vertex_queue_tent_cmp(void *a, void *b)
 	if (va->insert_counter > vb->insert_counter)
 		return 1;
 
-	assert(!"Vertizes should be strictly ordered");
+	return 0;
 }
 
 static struct skiplist *isis_vertex_queue_skiplist(void)
@@ -205,10 +205,8 @@ static void isis_vertex_queue_free(struct isis_vertex_queue *queue)
 	if (queue->insert_counter) {
 		skiplist_free(queue->l.slist);
 		queue->l.slist = NULL;
-	} else {
-		list_delete(queue->l.list);
-		queue->l.list = NULL;
-	}
+	} else
+		list_delete_and_null(&queue->l.list);
 }
 
 static unsigned int isis_vertex_queue_count(struct isis_vertex_queue *queue)
@@ -437,10 +435,8 @@ static struct isis_vertex *isis_vertex_new(void *id, enum vertextype vtype)
 
 static void isis_vertex_del(struct isis_vertex *vertex)
 {
-	list_delete(vertex->Adj_N);
-	vertex->Adj_N = NULL;
-	list_delete(vertex->parents);
-	vertex->parents = NULL;
+	list_delete_and_null(&vertex->Adj_N);
+	list_delete_and_null(&vertex->parents);
 
 	memset(vertex, 0, sizeof(struct isis_vertex));
 	XFREE(MTYPE_ISIS_VERTEX, vertex);
@@ -1038,7 +1034,7 @@ static int isis_spf_preload_tent(struct isis_spftree *spftree,
 			adjdb = circuit->u.bc.adjdb[spftree->level - 1];
 			isis_adj_build_up_list(adjdb, adj_list);
 			if (listcount(adj_list) == 0) {
-				list_delete(adj_list);
+				list_delete_and_null(&adj_list);
 				if (isis->debugs & DEBUG_SPF_EVENTS)
 					zlog_debug(
 						"ISIS-Spf: no L%d adjacencies on circuit %s",
@@ -1102,7 +1098,7 @@ static int isis_spf_preload_tent(struct isis_spftree *spftree,
 						"isis_spf_preload_tent unknow adj type");
 				}
 			}
-			list_delete(adj_list);
+			list_delete_and_null(&adj_list);
 			/*
 			 * Add the pseudonode
 			 */
@@ -1253,7 +1249,7 @@ static void init_spt(struct isis_spftree *spftree, int mtid, int level,
 }
 
 static int isis_run_spf(struct isis_area *area, int level, int family,
-			u_char *sysid)
+			u_char *sysid, struct timeval *nowtv)
 {
 	int retval = ISIS_OK;
 	struct isis_vertex *vertex;
@@ -1267,9 +1263,8 @@ static int isis_run_spf(struct isis_area *area, int level, int family,
 	uint16_t mtid;
 
 	/* Get time that can't roll backwards. */
-	monotime(&time_now);
-	start_time = time_now.tv_sec;
-	start_time = (start_time * 1000000) + time_now.tv_usec;
+	start_time = nowtv->tv_sec;
+	start_time = (start_time * 1000000) + nowtv->tv_usec;
 
 	if (family == AF_INET)
 		spftree = area->spftree[level - 1];
@@ -1376,9 +1371,11 @@ static int isis_run_spf_cb(struct thread *thread)
 			   area->area_tag, level);
 
 	if (area->ip_circuits)
-		retval = isis_run_spf(area, level, AF_INET, isis->sysid);
+		retval = isis_run_spf(area, level, AF_INET, isis->sysid,
+			&thread->real);
 	if (area->ipv6_circuits)
-		retval = isis_run_spf(area, level, AF_INET6, isis->sysid);
+		retval = isis_run_spf(area, level, AF_INET6, isis->sysid,
+			&thread->real);
 
 	return retval;
 }
@@ -1439,9 +1436,8 @@ int isis_spf_schedule(struct isis_area *area, int level)
 			 timer, &area->spf_timer[level - 1]);
 
 	if (isis->debugs & DEBUG_SPF_EVENTS)
-		zlog_debug("ISIS-Spf (%s) L%d SPF scheduled %d sec from now",
-			   area->area_tag, level,
-			   area->min_spf_interval[level - 1] - diff);
+		zlog_debug("ISIS-Spf (%s) L%d SPF scheduled %ld sec from now",
+			   area->area_tag, level, timer);
 
 	return ISIS_OK;
 }

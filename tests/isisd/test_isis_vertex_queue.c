@@ -9,6 +9,8 @@ int isis_sock_init(struct isis_circuit *circuit)
 	return 0;
 }
 
+struct zebra_privs_t isisd_privs;
+
 static struct isis_vertex **vertices;
 static size_t vertex_count;
 
@@ -89,7 +91,7 @@ static void test_ordered(void)
 	assert(isis_vertex_queue_pop(&q) == vertices[1]);
 	assert(isis_find_vertex(&q, vertices[1]->N.id, vertices[1]->type) == NULL);
 
-	assert(isis_vertex_queue_pop(&q) == vertices[4]);
+	isis_vertex_queue_delete(&q, vertices[4]);
 	assert(isis_find_vertex(&q, vertices[4]->N.id, vertices[4]->type) == NULL);
 
 	assert(isis_vertex_queue_count(&q) == 0);

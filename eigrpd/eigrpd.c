@@ -94,8 +94,8 @@ extern struct in_addr router_id_zebra;
  */
 void eigrp_router_id_update(struct eigrp *eigrp)
 {
+	struct vrf *vrf = vrf_lookup_by_id(VRF_DEFAULT);
 	struct interface *ifp;
-	struct listnode *node;
 	u_int32_t router_id, router_id_old;
 
 	router_id_old = eigrp->router_id;
@@ -116,7 +116,7 @@ void eigrp_router_id_update(struct eigrp *eigrp)
 		//        inet_ntoa(eigrp->router_id));
 
 		/* update eigrp_interface's */
-		for (ALL_LIST_ELEMENTS_RO(vrf_iflist(VRF_DEFAULT), node, ifp))
+		FOR_ALL_INTERFACES (vrf, ifp)
 			eigrp_if_update(ifp);
 	}
 }
@@ -158,7 +158,7 @@ static struct eigrp *eigrp_new(const char *AS)
 	/* init internal data structures */
 	eigrp->eiflist = list_new();
 	eigrp->passive_interface_default = EIGRP_IF_ACTIVE;
-	eigrp->networks = route_table_init();
+	eigrp->networks = eigrp_topology_new();
 
 	if ((eigrp_socket = eigrp_sock_init()) < 0) {
 		zlog_err(
@@ -181,7 +181,7 @@ static struct eigrp *eigrp_new(const char *AS)
 	thread_add_read(master, eigrp_read, eigrp, eigrp->fd, &eigrp->t_read);
 	eigrp->oi_write_q = list_new();
 
-	eigrp->topology_table = eigrp_topology_new();
+	eigrp->topology_table = route_table_init();
 
 	eigrp->neighbor_self = eigrp_nbr_new(NULL);
 	eigrp->neighbor_self->src.s_addr = INADDR_ANY;
@@ -282,15 +282,16 @@ void eigrp_finish_final(struct eigrp *eigrp)
 	THREAD_OFF(eigrp->t_read);
 	close(eigrp->fd);
 
-	list_delete(eigrp->eiflist);
-	list_delete(eigrp->oi_write_q);
-	list_delete(eigrp->topology_changes_externalIPV4);
-	list_delete(eigrp->topology_changes_internalIPV4);
+	list_delete_and_null(&eigrp->eiflist);
+	list_delete_and_null(&eigrp->oi_write_q);
 
 	eigrp_topology_cleanup(eigrp->topology_table);
 	eigrp_topology_free(eigrp->topology_table);
 
 	eigrp_nbr_delete(eigrp->neighbor_self);
+
+	list_delete_and_null(&eigrp->topology_changes_externalIPV4);
+	list_delete_and_null(&eigrp->topology_changes_internalIPV4);
 
 	eigrp_delete(eigrp);
 

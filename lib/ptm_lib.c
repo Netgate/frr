@@ -223,6 +223,25 @@ int ptm_lib_init_msg(ptm_lib_handle_t *hdl, int cmd_id, int type, void *in_ctxt,
 	return 0;
 }
 
+int ptm_lib_cleanup_msg(ptm_lib_handle_t *hdl, void *ctxt)
+{
+	ptm_lib_msg_ctxt_t *p_ctxt = ctxt;
+	csv_t *csv;
+
+	if (!p_ctxt) {
+		ERRLOG("%s: no context \n", __FUNCTION__);
+		return -1;
+	}
+
+	csv = p_ctxt->csv;
+
+	csv_clean(csv);
+	csv_free(csv);
+	free(p_ctxt);
+
+	return 0;
+}
+
 int ptm_lib_complete_msg(ptm_lib_handle_t *hdl, void *ctxt, char *buf, int *len)
 {
 	ptm_lib_msg_ctxt_t *p_ctxt = ctxt;
@@ -330,7 +349,7 @@ int ptm_lib_process_msg(ptm_lib_handle_t *hdl, int fd, char *inbuf, int inlen,
 	char client_name[32];
 	int cmd_id, type, ver, msglen;
 	csv_t *csv;
-	ptm_lib_msg_ctxt_t *p_ctxt;
+	ptm_lib_msg_ctxt_t *p_ctxt = NULL;
 
 	len = _ptm_lib_read_ptm_socket(fd, inbuf, PTMLIB_MSG_HDR_LEN);
 	if (len <= 0)

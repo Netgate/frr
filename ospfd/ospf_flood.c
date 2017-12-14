@@ -77,7 +77,8 @@ static void ospf_flood_delayed_lsa_ack(struct ospf_neighbor *inbr,
 }
 
 /* Check LSA is related to external info. */
-struct external_info *ospf_external_info_check(struct ospf_lsa *lsa)
+struct external_info *ospf_external_info_check(struct ospf *ospf,
+					       struct ospf_lsa *lsa)
 {
 	struct as_external_lsa *al;
 	struct prefix_ipv4 p;
@@ -96,18 +97,18 @@ struct external_info *ospf_external_info_check(struct ospf_lsa *lsa)
 		redist_on =
 			is_prefix_default(&p)
 				? vrf_bitmap_check(zclient->default_information,
-						   VRF_DEFAULT)
+						   ospf->vrf_id)
 				: (zclient->mi_redist[AFI_IP][type].enabled
 				   || vrf_bitmap_check(
 					      zclient->redist[AFI_IP][type],
-					      VRF_DEFAULT));
+					      ospf->vrf_id));
 		// Pending: check for MI above.
 		if (redist_on) {
 			struct list *ext_list;
 			struct listnode *node;
 			struct ospf_external *ext;
 
-			ext_list = om->external[type];
+			ext_list = ospf->external[type];
 			if (!ext_list)
 				continue;
 
@@ -205,7 +206,7 @@ static void ospf_process_self_originated_lsa(struct ospf *ospf,
 			ospf_translated_nssa_refresh(ospf, NULL, new);
 			return;
 		}
-		ei = ospf_external_info_check(new);
+		ei = ospf_external_info_check(ospf, new);
 		if (ei)
 			ospf_external_lsa_refresh(ospf, new, ei,
 						  LSA_REFRESH_FORCE);
@@ -360,9 +361,9 @@ static int ospf_flood_through_interface(struct ospf_interface *oi,
 	if (IS_DEBUG_OSPF_EVENT)
 		zlog_debug(
 			"ospf_flood_through_interface(): "
-			"considering int %s, INBR(%s), LSA[%s]",
+			"considering int %s, INBR(%s), LSA[%s] AGE %u",
 			IF_NAME(oi), inbr ? inet_ntoa(inbr->router_id) : "NULL",
-			dump_lsa_key(lsa));
+			dump_lsa_key(lsa), ntohs(lsa->data->ls_age));
 
 	if (!ospf_if_is_enable(oi))
 		return 0;
@@ -957,6 +958,9 @@ void ospf_lsa_flush_area(struct ospf_lsa *lsa, struct ospf_area *area)
 	   more time for the ACK to be received and avoid
 	   retransmissions */
 	lsa->data->ls_age = htons(OSPF_LSA_MAXAGE);
+	if (IS_DEBUG_OSPF_EVENT)
+		zlog_debug("%s: MAXAGE set to LSA %s", __PRETTY_FUNCTION__,
+			   inet_ntoa(lsa->data->id));
 	monotime(&lsa->tv_recv);
 	lsa->tv_orig = lsa->tv_recv;
 	ospf_flood_through_area(area, NULL, lsa);

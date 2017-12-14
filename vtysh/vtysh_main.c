@@ -404,9 +404,9 @@ int main(int argc, char **argv, char **env)
 			"NOT SUPPORTED since its\nresults are inconsistent!\n");
 	}
 
-	snprintf(vtysh_config, sizeof(vtysh_config), "%s%s/%s", sysconfdir,
+	snprintf(vtysh_config, sizeof(vtysh_config), "%s%s%s", sysconfdir,
 		 pathspace, VTYSH_CONFIG_NAME);
-	snprintf(frr_config, sizeof(frr_config), "%s%s/%s", sysconfdir,
+	snprintf(frr_config, sizeof(frr_config), "%s%s%s", sysconfdir,
 		 pathspace, FRR_CONFIG_NAME);
 	strlcat(vtydir, pathspace, sizeof(vtydir));
 
@@ -451,7 +451,7 @@ int main(int argc, char **argv, char **env)
 		exit(ret);
 	}
 
-	if (dryrun && cmd) {
+	if (dryrun && cmd && cmd->line) {
 		vtysh_execute("enable");
 		while (cmd) {
 			struct cmd_rec *cr;
@@ -533,7 +533,7 @@ int main(int argc, char **argv, char **env)
 
 			fp = open(history_file, O_CREAT | O_EXCL,
 				  S_IRUSR | S_IWUSR);
-			if (fp)
+			if (fp != -1)
 				close(fp);
 
 			read_history(history_file);
@@ -552,7 +552,7 @@ int main(int argc, char **argv, char **env)
 	}
 
 	/* If eval mode. */
-	if (cmd) {
+	if (cmd && cmd->line) {
 		/* Enter into enable node. */
 		vtysh_execute("enable");
 

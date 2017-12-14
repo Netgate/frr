@@ -38,8 +38,6 @@
 #include "table.h"
 #include "vty.h"
 
-extern struct zebra_privs_t eigrpd_privs;
-
 #include "eigrpd/eigrp_structs.h"
 #include "eigrpd/eigrpd.h"
 #include "eigrpd/eigrp_interface.h"
@@ -231,9 +229,9 @@ int eigrp_if_drop_allspfrouters(struct eigrp *top, struct prefix *p,
 
 int eigrp_network_set(struct eigrp *eigrp, struct prefix *p)
 {
+	struct vrf *vrf = vrf_lookup_by_id(VRF_DEFAULT);
 	struct route_node *rn;
 	struct interface *ifp;
-	struct listnode *node;
 
 	rn = route_node_get(eigrp->networks, (struct prefix *)p);
 	if (rn->info) {
@@ -251,7 +249,7 @@ int eigrp_network_set(struct eigrp *eigrp, struct prefix *p)
 		eigrp_router_id_update(eigrp);
 	/* Run network config now. */
 	/* Get target interface. */
-	for (ALL_LIST_ELEMENTS_RO(vrf_iflist(VRF_DEFAULT), node, ifp)) {
+	FOR_ALL_INTERFACES (vrf, ifp) {
 		zlog_debug("Setting up %s", ifp->name);
 		eigrp_network_run_interface(eigrp, p, ifp);
 	}
@@ -271,6 +269,7 @@ static int eigrp_network_match_iface(const struct connected *co,
 static void eigrp_network_run_interface(struct eigrp *eigrp, struct prefix *p,
 					struct interface *ifp)
 {
+	struct eigrp_interface *ei;
 	struct listnode *cnode;
 	struct connected *co;
 
@@ -282,23 +281,14 @@ static void eigrp_network_run_interface(struct eigrp *eigrp, struct prefix *p,
 			continue;
 
 		if (p->family == co->address->family
-		    && !eigrp_if_table_lookup(ifp, co->address)
+		    && !ifp->info
 		    && eigrp_network_match_iface(co, p)) {
-			struct eigrp_interface *ei;
 
 			ei = eigrp_if_new(eigrp, ifp, co->address);
 			ei->connected = co;
 
-			ei->params = eigrp_lookup_if_params(
-				ifp, ei->address->u.prefix4);
-
 			/* Relate eigrp interface to eigrp instance. */
 			ei->eigrp = eigrp;
-
-			/* update network type as interface flag */
-			/* If network type is specified previously,
-			   skip network type setting. */
-			ei->type = IF_DEF_PARAMS(ifp)->type;
 
 			/* if router_id is not configured, dont bring up
 			 * interfaces.
@@ -415,16 +405,17 @@ u_int32_t eigrp_calculate_metrics(struct eigrp *eigrp,
 u_int32_t eigrp_calculate_total_metrics(struct eigrp *eigrp,
 					struct eigrp_nexthop_entry *entry)
 {
+	struct eigrp_interface *ei = entry->ei;
+
 	entry->total_metric = entry->reported_metric;
 	uint64_t temp_delay = (uint64_t)entry->total_metric.delay
-			      + (uint64_t)eigrp_delay_to_scaled(
-					EIGRP_IF_PARAM(entry->ei, delay));
+			      + (uint64_t)eigrp_delay_to_scaled(ei->params.delay);
 	entry->total_metric.delay = temp_delay > EIGRP_MAX_METRIC
 					    ? EIGRP_MAX_METRIC
 					    : (u_int32_t)temp_delay;
 
 	u_int32_t bw =
-		eigrp_bandwidth_to_scaled(EIGRP_IF_PARAM(entry->ei, bandwidth));
+		eigrp_bandwidth_to_scaled(ei->params.bandwidth);
 	entry->total_metric.bandwidth = entry->total_metric.bandwidth > bw
 					       ? bw
 					       : entry->total_metric.bandwidth;

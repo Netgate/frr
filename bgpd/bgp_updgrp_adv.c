@@ -483,7 +483,7 @@ void bgp_adj_out_unset_subgroup(struct bgp_node *rn,
 {
 	struct bgp_adj_out *adj;
 	struct bgp_advertise *adv;
-	char trigger_write;
+	bool trigger_write;
 
 	if (DISABLE_BGP_ANNOUNCE)
 		return;
@@ -502,17 +502,13 @@ void bgp_adj_out_unset_subgroup(struct bgp_node *rn,
 			adv->adj = adj;
 
 			/* Note if we need to trigger a packet write */
-			if (BGP_ADV_FIFO_EMPTY(&subgrp->sync->withdraw))
-				trigger_write = 1;
-			else
-				trigger_write = 0;
+			trigger_write =
+				BGP_ADV_FIFO_EMPTY(&subgrp->sync->withdraw);
 
 			/* Add to synchronization entry for withdraw
 			 * announcement.  */
 			BGP_ADV_FIFO_ADD(&subgrp->sync->withdraw, &adv->fifo);
 
-			/* Schedule packet write, if FIFO is getting its first
-			 * entry. */
 			if (trigger_write)
 				subgroup_trigger_write(subgrp);
 		} else {
@@ -687,11 +683,11 @@ void subgroup_default_originate(struct update_subgroup *subgrp, int withdraw)
 
 	attr.local_pref = bgp->default_local_pref;
 
-	if (afi == AFI_IP)
-		str2prefix("0.0.0.0/0", &p);
-	else if (afi == AFI_IP6) {
-		str2prefix("::/0", &p);
+	memset(&p, 0, sizeof(p));
+	p.family = afi2family(afi);
+	p.prefixlen = 0;
 
+	if ((afi == AFI_IP6) || peer_cap_enhe(peer, afi, safi)) {
 		/* IPv6 global nexthop must be included. */
 		attr.mp_nexthop_len = BGP_ATTR_NHLEN_IPV6_GLOBAL;
 
@@ -759,10 +755,9 @@ void subgroup_default_originate(struct update_subgroup *subgrp, int withdraw)
 			 * clear adj_out for the 0.0.0.0/0 prefix in the BGP
 			 * table.
 			 */
-			if (afi == AFI_IP)
-				str2prefix("0.0.0.0/0", &p);
-			else
-				str2prefix("::/0", &p);
+			memset(&p, 0, sizeof(p));
+			p.family = afi2family(afi);
+			p.prefixlen = 0;
 
 			rn = bgp_afi_node_get(bgp->rib[afi][safi], afi, safi,
 					      &p, NULL);

@@ -74,6 +74,7 @@ struct vtysh_client vtysh_client[] = {
 	{.fd = -1, .name = "nhrpd", .flag = VTYSH_NHRPD, .next = NULL},
 	{.fd = -1, .name = "eigrpd", .flag = VTYSH_EIGRPD, .next = NULL},
 	{.fd = -1, .name = "babeld", .flag = VTYSH_BABELD, .next = NULL},
+        {.fd = -1, .name = "sharpd", .flag = VTYSH_SHARPD, .next = NULL},
 	{.fd = -1, .name = "watchfrr", .flag = VTYSH_WATCHFRR, .next = NULL},
 };
 
@@ -226,7 +227,8 @@ static int vtysh_client_run_all(struct vtysh_client *head_client,
 			wrong_instance++;
 			continue;
 		}
-		correct_instance++;
+		if (client->fd > 0)
+			correct_instance++;
 		if (rc != CMD_SUCCESS) {
 			if (!continue_on_err)
 				return rc;
@@ -423,13 +425,22 @@ static int vtysh_execute_func(const char *line, int pager)
 		}
 
 		cmd_stat = CMD_SUCCESS;
+		struct vtysh_client *vc;
 		for (i = 0; i < array_size(vtysh_client); i++) {
 			if (cmd->daemon & vtysh_client[i].flag) {
 				if (vtysh_client[i].fd < 0
 				    && (cmd->daemon == vtysh_client[i].flag)) {
-					fprintf(stderr, "%s is not running\n",
-						vtysh_client[i].name);
-					continue;
+					bool any_inst = false;
+					for (vc = &vtysh_client[i]; vc;
+					     vc = vc->next)
+						any_inst = any_inst
+							   || (vc->fd > 0);
+					if (!any_inst) {
+						fprintf(stderr,
+							"%s is not running\n",
+							vtysh_client[i].name);
+						continue;
+					}
 				}
 				cmd_stat = vtysh_client_execute(
 					&vtysh_client[i], line, fp);
@@ -563,6 +574,7 @@ int vtysh_mark_file(const char *filename)
 		 * appropriate */
 		if (strlen(vty_buf_trimmed) == 3
 		    && strncmp("end", vty_buf_trimmed, 3) == 0) {
+			cmd_free_strvec(vline);
 			continue;
 		}
 
@@ -794,20 +806,23 @@ static int vtysh_rl_describe(void)
 	} else if (rl_end && isspace((int)rl_line_buffer[rl_end - 1]))
 		vector_set(vline, NULL);
 
-	describe = cmd_describe_command(vline, vty, &ret);
-
 	fprintf(stdout, "\n");
+
+	describe = cmd_describe_command(vline, vty, &ret);
 
 	/* Ambiguous and no match error. */
 	switch (ret) {
 	case CMD_ERR_AMBIGUOUS:
 		cmd_free_strvec(vline);
+		vector_free(describe);
 		fprintf(stdout, "%% Ambiguous command.\n");
 		rl_on_new_line();
 		return 0;
 		break;
 	case CMD_ERR_NO_MATCH:
 		cmd_free_strvec(vline);
+		if (describe)
+			vector_free(describe);
 		fprintf(stdout, "%% There is no matched command.\n");
 		rl_on_new_line();
 		return 0;
@@ -1031,6 +1046,10 @@ struct cmd_node link_params_node = {
 	LINK_PARAMS_NODE, "%s(config-link-params)# ",
 };
 
+#if defined(HAVE_RPKI)
+static struct cmd_node rpki_node = {RPKI_NODE, "%s(config-rpki)# ", 1};
+#endif
+
 /* Defined in lib/vty.c */
 extern struct cmd_node vty_node;
 
@@ -1167,6 +1186,37 @@ DEFUNSH(VTYSH_BGPD, address_family_ipv6_labeled_unicast,
 	return CMD_SUCCESS;
 }
 
+#if defined(HAVE_RPKI)
+DEFUNSH(VTYSH_BGPD,
+	rpki,
+	rpki_cmd,
+	"rpki",
+	"Enable rpki and enter rpki configuration mode\n")
+{
+	vty->node = RPKI_NODE;
+	return CMD_SUCCESS;
+}
+
+DEFUNSH(VTYSH_BGPD,
+	rpki_exit,
+	rpki_exit_cmd,
+	"exit",
+	"Exit current mode and down to previous mode\n")
+{
+	vty->node = CONFIG_NODE;
+	return CMD_SUCCESS;
+}
+
+DEFUNSH(VTYSH_BGPD,
+	rpki_quit,
+	rpki_quit_cmd,
+	"quit",
+	"Exit current mode and down to previous mode\n")
+{
+	return rpki_exit(self, vty, argc, argv);
+}
+#endif
+
 DEFUNSH(VTYSH_BGPD, address_family_evpn, address_family_evpn_cmd,
 	"address-family <l2vpn evpn>",
 	"Enter Address Family command mode\n"
@@ -1263,10 +1313,12 @@ DEFUNSH(VTYSH_RIPNGD, router_ripng, router_ripng_cmd, "router ripng",
 	return CMD_SUCCESS;
 }
 
-DEFUNSH(VTYSH_OSPFD, router_ospf, router_ospf_cmd, "router ospf [(1-65535)]",
+DEFUNSH(VTYSH_OSPFD, router_ospf, router_ospf_cmd,
+	"router ospf [(1-65535)] [vrf NAME]",
 	"Enable a routing process\n"
 	"Start OSPF configuration\n"
-	"Instance ID\n")
+	"Instance ID\n"
+	VRF_CMD_HELP_STR)
 {
 	vty->node = OSPF_NODE;
 	return CMD_SUCCESS;
@@ -1896,7 +1948,7 @@ DEFUN (vtysh_show_debugging,
        DEBUG_STR)
 {
 	return show_per_daemon("do show debugging\n",
-			       "Debugging Information for %s:\n");
+			       "");
 }
 
 DEFUN (vtysh_show_debugging_hashtable,
@@ -2963,6 +3015,9 @@ void vtysh_init_vty(void)
 	install_node(&keychain_key_node, NULL);
 	install_node(&isis_node, NULL);
 	install_node(&vty_node, NULL);
+#if defined(HAVE_RPKI)
+	install_node(&rpki_node, NULL);
+#endif
 
 	struct cmd_node *node;
 	for (unsigned int i = 0; i < vector_active(cmdvec); i++) {
@@ -3160,6 +3215,13 @@ void vtysh_init_vty(void)
 	install_element(BGP_IPV6M_NODE, &exit_address_family_cmd);
 	install_element(BGP_EVPN_NODE, &exit_address_family_cmd);
 	install_element(BGP_IPV6L_NODE, &exit_address_family_cmd);
+
+#if defined(HAVE_RPKI)
+	install_element(CONFIG_NODE, &rpki_cmd);
+	install_element(RPKI_NODE, &rpki_exit_cmd);
+	install_element(RPKI_NODE, &rpki_quit_cmd);
+	install_element(RPKI_NODE, &vtysh_end_all_cmd);
+#endif
 
 	/* EVPN commands */
 	install_element(BGP_EVPN_NODE, &bgp_evpn_vni_cmd);

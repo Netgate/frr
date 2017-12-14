@@ -169,6 +169,7 @@ const char *ospf_timeval_dump(struct timeval *t, char *buf, size_t size)
 	if (us >= 1000) {
 		ms = us / 1000;
 		us %= 1000;
+		(void)us; /* unused */
 	}
 
 	if (ms >= 1000) {
@@ -229,7 +230,7 @@ static void ospf_packet_hello_dump(struct stream *s, u_int16_t length)
 	struct ospf_hello *hello;
 	int i;
 
-	hello = (struct ospf_hello *)STREAM_PNT(s);
+	hello = (struct ospf_hello *)stream_pnt(s);
 
 	zlog_debug("Hello");
 	zlog_debug("  NetworkMask %s", inet_ntoa(hello->network_mask));
@@ -277,7 +278,7 @@ static void ospf_router_lsa_dump(struct stream *s, u_int16_t length)
 	struct router_lsa *rl;
 	int i, len;
 
-	rl = (struct router_lsa *)STREAM_PNT(s);
+	rl = (struct router_lsa *)stream_pnt(s);
 
 	zlog_debug("  Router-LSA");
 	zlog_debug("    flags %s",
@@ -302,7 +303,7 @@ static void ospf_network_lsa_dump(struct stream *s, u_int16_t length)
 	struct network_lsa *nl;
 	int i, cnt;
 
-	nl = (struct network_lsa *)STREAM_PNT(s);
+	nl = (struct network_lsa *)stream_pnt(s);
 	cnt = (ntohs(nl->header.length) - (OSPF_LSA_HEADER_SIZE + 4)) / 4;
 
 	zlog_debug("  Network-LSA");
@@ -324,7 +325,7 @@ static void ospf_summary_lsa_dump(struct stream *s, u_int16_t length)
 	int size;
 	int i;
 
-	sl = (struct summary_lsa *)STREAM_PNT(s);
+	sl = (struct summary_lsa *)stream_pnt(s);
 
 	zlog_debug("  Summary-LSA");
 	zlog_debug("    Network Mask %s", inet_ntoa(sl->mask));
@@ -341,7 +342,7 @@ static void ospf_as_external_lsa_dump(struct stream *s, u_int16_t length)
 	int size;
 	int i;
 
-	al = (struct as_external_lsa *)STREAM_PNT(s);
+	al = (struct as_external_lsa *)stream_pnt(s);
 	zlog_debug("  %s", ospf_lsa_type_msg[al->header.type].str);
 	zlog_debug("    Network Mask %s", inet_ntoa(al->mask));
 
@@ -365,7 +366,7 @@ static void ospf_lsa_header_list_dump(struct stream *s, u_int16_t length)
 
 	/* LSA Headers. */
 	while (length > 0) {
-		lsa = (struct lsa_header *)STREAM_PNT(s);
+		lsa = (struct lsa_header *)stream_pnt(s);
 		ospf_lsa_header_dump(lsa);
 
 		stream_forward_getp(s, OSPF_LSA_HEADER_SIZE);
@@ -381,7 +382,7 @@ static void ospf_packet_db_desc_dump(struct stream *s, u_int16_t length)
 	u_int32_t gp;
 
 	gp = stream_get_getp(s);
-	dd = (struct ospf_db_desc *)STREAM_PNT(s);
+	dd = (struct ospf_db_desc *)stream_pnt(s);
 
 	zlog_debug("Database Description");
 	zlog_debug("  Interface MTU %d", ntohs(dd->mtu));
@@ -451,7 +452,7 @@ static void ospf_packet_ls_upd_dump(struct stream *s, u_int16_t length)
 			break;
 		}
 
-		lsa = (struct lsa_header *)STREAM_PNT(s);
+		lsa = (struct lsa_header *)stream_pnt(s);
 		lsa_len = ntohs(lsa->length);
 		ospf_lsa_header_dump(lsa);
 
@@ -565,7 +566,7 @@ void ospf_packet_dump(struct stream *s)
 	gp = stream_get_getp(s);
 
 	/* OSPF Header dump. */
-	ospfh = (struct ospf_header *)STREAM_PNT(s);
+	ospfh = (struct ospf_header *)stream_pnt(s);
 
 	/* Until detail flag is set, return. */
 	if (!(term_debug_ospf_packet[ospfh->type - 1] & OSPF_DEBUG_DETAIL))
@@ -1181,7 +1182,7 @@ DEFUN (debug_ospf_zebra,
        "debug ospf zebra [<interface|redistribute>]",
        DEBUG_STR
        OSPF_STR
-       "OSPF Zebra information\n"
+       ZEBRA_STR
        "Zebra interface\n"
        "Zebra redistribute\n")
 {
@@ -1194,7 +1195,7 @@ DEFUN (debug_ospf_instance_zebra,
        DEBUG_STR
        OSPF_STR
        "Instance ID\n"
-       "OSPF Zebra information\n"
+       ZEBRA_STR
        "Zebra interface\n"
        "Zebra redistribute\n")
 {
@@ -1244,7 +1245,7 @@ DEFUN (no_debug_ospf_zebra,
        NO_STR
        DEBUG_STR
        OSPF_STR
-       "OSPF Zebra information\n"
+       ZEBRA_STR
        "Zebra interface\n"
        "Zebra redistribute\n")
 {
@@ -1258,7 +1259,7 @@ DEFUN (no_debug_ospf_instance_zebra,
        DEBUG_STR
        OSPF_STR
        "Instance ID\n"
-       "OSPF Zebra information\n"
+       ZEBRA_STR
        "Zebra interface\n"
        "Zebra redistribute\n")
 {
@@ -1604,9 +1605,10 @@ DEFUN_NOSH (show_debugging_ospf,
 	    DEBUG_STR
 	    OSPF_STR)
 {
-	struct ospf *ospf;
+	struct ospf *ospf = NULL;
 
-	if ((ospf = ospf_lookup()) == NULL)
+	ospf = ospf_lookup_by_vrf_id(VRF_DEFAULT);
+	if (ospf == NULL)
 		return CMD_SUCCESS;
 
 	return show_debugging_ospf_common(vty, ospf);
@@ -1651,7 +1653,8 @@ static int config_write_debug(struct vty *vty)
 	char str[16];
 	memset(str, 0, 16);
 
-	if ((ospf = ospf_lookup()) == NULL)
+	ospf = ospf_lookup_by_vrf_id(VRF_DEFAULT);
+	if (ospf == NULL)
 		return CMD_SUCCESS;
 
 	if (ospf->instance)

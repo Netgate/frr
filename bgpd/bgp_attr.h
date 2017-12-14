@@ -227,6 +227,7 @@ typedef enum {
 	/* only used internally, send notify + convert to BGP_ATTR_PARSE_ERROR
 	   */
 	BGP_ATTR_PARSE_ERROR_NOTIFYPLS = -3,
+	BGP_ATTR_PARSE_EOR = -4,
 } bgp_attr_parse_ret_t;
 
 struct bpacket_attr_vec_arr;
@@ -238,6 +239,7 @@ extern bgp_attr_parse_ret_t bgp_attr_parse(struct peer *, struct attr *,
 					   bgp_size_t, struct bgp_nlri *,
 					   struct bgp_nlri *);
 extern void bgp_attr_dup(struct attr *, struct attr *);
+extern void bgp_attr_undup(struct attr *new, struct attr *old);
 extern struct attr *bgp_attr_intern(struct attr *attr);
 extern void bgp_attr_unintern_sub(struct attr *);
 extern void bgp_attr_unintern(struct attr **);

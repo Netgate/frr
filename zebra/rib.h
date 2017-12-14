@@ -71,7 +71,7 @@ struct route_entry {
 	u_int32_t nexthop_mtu;
 
 	/* Distance. */
-	u_char distance;
+	uint8_t distance;
 
 	/* Flags of this route.
 	 * This flag's definition is in lib/zebra.h ZEBRA_FLAG_* and is exposed
@@ -135,6 +135,8 @@ typedef struct rib_dest_t_ {
 } rib_dest_t;
 
 #define RIB_ROUTE_QUEUED(x)	(1 << (x))
+// If MQ_SIZE is modified this value needs to be updated.
+#define RIB_ROUTE_ANY_QUEUED    0x1F
 
 /*
  * The maximum qindex that can be used.
@@ -283,9 +285,9 @@ extern int zebra_check_addr(struct prefix *p);
 extern void rib_addnode(struct route_node *rn, struct route_entry *re,
 			int process);
 extern void rib_delnode(struct route_node *rn, struct route_entry *re);
-extern int rib_install_kernel(struct route_node *rn, struct route_entry *re,
-			      struct route_entry *old);
-extern int rib_uninstall_kernel(struct route_node *rn, struct route_entry *re);
+extern void rib_install_kernel(struct route_node *rn, struct route_entry *re,
+			       struct route_entry *old);
+extern void rib_uninstall_kernel(struct route_node *rn, struct route_entry *re);
 
 /* NOTE:
  * All rib_add function will not just add prefix into RIB, but
@@ -294,7 +296,7 @@ extern int rib_add(afi_t afi, safi_t safi, vrf_id_t vrf_id, int type,
 		   u_short instance, int flags, struct prefix *p,
 		   struct prefix_ipv6 *src_p, const struct nexthop *nh,
 		   u_int32_t table_id, u_int32_t metric, u_int32_t mtu,
-		   u_char distance);
+		   uint8_t distance);
 
 extern int rib_add_multipath(afi_t afi, safi_t safi, struct prefix *,
 			     struct prefix_ipv6 *src_p, struct route_entry *);
@@ -302,7 +304,7 @@ extern int rib_add_multipath(afi_t afi, safi_t safi, struct prefix *,
 extern void rib_delete(afi_t afi, safi_t safi, vrf_id_t vrf_id, int type,
 		       u_short instance, int flags, struct prefix *p,
 		       struct prefix_ipv6 *src_p, const struct nexthop *nh,
-		       u_int32_t table_id, u_int32_t metric);
+		       u_int32_t table_id, u_int32_t metric, bool fromkernel);
 
 extern struct route_entry *rib_match(afi_t afi, safi_t safi, vrf_id_t,
 				     union g_addr *,
@@ -328,7 +330,7 @@ extern void rib_unlink(struct route_node *, struct route_entry *);
 extern int rib_gc_dest(struct route_node *rn);
 extern struct route_table *rib_tables_iter_next(rib_tables_iter_t *iter);
 
-extern u_char route_distance(int type);
+extern uint8_t route_distance(int type);
 
 /*
  * Inline functions.
@@ -432,5 +434,9 @@ static inline void rib_tables_iter_cleanup(rib_tables_iter_t *iter)
 
 DECLARE_HOOK(rib_update, (struct route_node * rn, const char *reason),
 	     (rn, reason))
+
+
+extern void zebra_vty_init(void);
+extern pid_t pid;
 
 #endif /*_ZEBRA_RIB_H */

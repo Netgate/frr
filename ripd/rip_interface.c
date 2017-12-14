@@ -58,8 +58,6 @@ const struct message ri_version_msg[] = {{RI_RIP_VERSION_1, "1"},
 					 {RI_RIP_VERSION_NONE, "none"},
 					 {0}};
 
-extern struct zebra_privs_t ripd_privs;
-
 /* RIP enabled network vector. */
 vector rip_enable_interface;
 
@@ -336,10 +334,10 @@ static int rip_if_ipv4_address_check(struct interface *ifp)
 /* Does this address belongs to me ? */
 int if_check_address(struct in_addr addr)
 {
-	struct listnode *node;
+	struct vrf *vrf = vrf_lookup_by_id(VRF_DEFAULT);
 	struct interface *ifp;
 
-	for (ALL_LIST_ELEMENTS_RO(vrf_iflist(VRF_DEFAULT), node, ifp)) {
+	FOR_ALL_INTERFACES (vrf, ifp) {
 		struct listnode *cnode;
 		struct connected *connected;
 
@@ -471,7 +469,7 @@ int rip_interface_delete(int command, struct zclient *zclient,
 
 	/* To support pseudo interface do not free interface structure.  */
 	/* if_delete(ifp); */
-	ifp->ifindex = IFINDEX_DELETED;
+	if_set_index(ifp, IFINDEX_INTERNAL);
 
 	return 0;
 }
@@ -490,10 +488,10 @@ static void rip_interface_clean(struct rip_interface *ri)
 
 void rip_interfaces_clean(void)
 {
-	struct listnode *node;
+	struct vrf *vrf = vrf_lookup_by_id(VRF_DEFAULT);
 	struct interface *ifp;
 
-	for (ALL_LIST_ELEMENTS_RO(vrf_iflist(VRF_DEFAULT), node, ifp))
+	FOR_ALL_INTERFACES (vrf, ifp)
 		rip_interface_clean(ifp->info);
 }
 
@@ -542,10 +540,10 @@ static void rip_interface_reset(struct rip_interface *ri)
 
 void rip_interfaces_reset(void)
 {
-	struct listnode *node;
+	struct vrf *vrf = vrf_lookup_by_id(VRF_DEFAULT);
 	struct interface *ifp;
 
-	for (ALL_LIST_ELEMENTS_RO(vrf_iflist(VRF_DEFAULT), node, ifp))
+	FOR_ALL_INTERFACES (vrf, ifp)
 		rip_interface_reset(ifp->info);
 }
 
@@ -561,7 +559,7 @@ int rip_if_down(struct interface *ifp)
 			if ((list = rp->info) != NULL)
 				for (ALL_LIST_ELEMENTS(list, listnode, nextnode,
 						       rinfo))
-					if (rinfo->ifindex == ifp->ifindex)
+					if (rinfo->nh.ifindex == ifp->ifindex)
 						rip_ecmp_delete(rinfo);
 
 		ri = ifp->info;
@@ -583,16 +581,17 @@ int rip_if_down(struct interface *ifp)
 /* Needed for stop RIP process. */
 void rip_if_down_all()
 {
+	struct vrf *vrf = vrf_lookup_by_id(VRF_DEFAULT);
 	struct interface *ifp;
-	struct listnode *node, *nnode;
 
-	for (ALL_LIST_ELEMENTS(vrf_iflist(VRF_DEFAULT), node, nnode, ifp))
+	FOR_ALL_INTERFACES (vrf, ifp)
 		rip_if_down(ifp);
 }
 
 static void rip_apply_address_add(struct connected *ifc)
 {
 	struct prefix_ipv4 address;
+	struct nexthop nh;
 	struct prefix *p;
 
 	if (!rip)
@@ -604,18 +603,22 @@ static void rip_apply_address_add(struct connected *ifc)
 	p = ifc->address;
 
 	memset(&address, 0, sizeof(address));
+	memset(&nh, 0, sizeof(nh));
+
 	address.family = p->family;
 	address.prefix = p->u.prefix4;
 	address.prefixlen = p->prefixlen;
 	apply_mask_ipv4(&address);
+
+	nh.ifindex = ifc->ifp->ifindex;
+	nh.type = NEXTHOP_TYPE_IFINDEX;
 
 	/* Check if this interface is RIP enabled or not
 	   or  Check if this address's prefix is RIP enabled */
 	if ((rip_enable_if_lookup(ifc->ifp->name) >= 0)
 	    || (rip_enable_network_lookup2(ifc) >= 0))
 		rip_redistribute_add(ZEBRA_ROUTE_CONNECT, RIP_ROUTE_INTERFACE,
-				     &address, ifc->ifp->ifindex, NULL, 0, 0,
-				     0);
+				     &address, &nh, 0, 0, 0);
 }
 
 int rip_interface_address_add(int command, struct zclient *zclient,
@@ -881,6 +884,9 @@ static void rip_connect_set(struct interface *ifp, int set)
 	struct listnode *node, *nnode;
 	struct connected *connected;
 	struct prefix_ipv4 address;
+	struct nexthop nh;
+
+	memset(&nh, 0, sizeof(nh));
 
 	for (ALL_LIST_ELEMENTS(ifp->connected, node, nnode, connected)) {
 		struct prefix *p;
@@ -894,6 +900,8 @@ static void rip_connect_set(struct interface *ifp, int set)
 		address.prefixlen = p->prefixlen;
 		apply_mask_ipv4(&address);
 
+		nh.ifindex = connected->ifp->ifindex;
+		nh.type = NEXTHOP_TYPE_IFINDEX;
 		if (set) {
 			/* Check once more wether this prefix is within a
 			 * "network IF_OR_PREF" one */
@@ -902,7 +910,7 @@ static void rip_connect_set(struct interface *ifp, int set)
 				rip_redistribute_add(
 					ZEBRA_ROUTE_CONNECT,
 					RIP_ROUTE_INTERFACE, &address,
-					connected->ifp->ifindex, NULL, 0, 0, 0);
+					&nh, 0, 0, 0);
 		} else {
 			rip_redistribute_delete(ZEBRA_ROUTE_CONNECT,
 						RIP_ROUTE_INTERFACE, &address,
@@ -911,7 +919,7 @@ static void rip_connect_set(struct interface *ifp, int set)
 				rip_redistribute_add(
 					ZEBRA_ROUTE_CONNECT,
 					RIP_ROUTE_REDISTRIBUTE, &address,
-					connected->ifp->ifindex, NULL, 0, 0, 0);
+					&nh, 0, 0, 0);
 		}
 	}
 }
@@ -977,11 +985,11 @@ void rip_enable_apply(struct interface *ifp)
 /* Apply network configuration to all interface. */
 void rip_enable_apply_all()
 {
+	struct vrf *vrf = vrf_lookup_by_id(VRF_DEFAULT);
 	struct interface *ifp;
-	struct listnode *node, *nnode;
 
 	/* Check each interface. */
-	for (ALL_LIST_ELEMENTS(vrf_iflist(VRF_DEFAULT), node, nnode, ifp))
+	FOR_ALL_INTERFACES (vrf, ifp)
 		rip_enable_apply(ifp);
 }
 
@@ -1091,10 +1099,10 @@ void rip_passive_interface_apply(struct interface *ifp)
 
 static void rip_passive_interface_apply_all(void)
 {
+	struct vrf *vrf = vrf_lookup_by_id(VRF_DEFAULT);
 	struct interface *ifp;
-	struct listnode *node, *nnode;
 
-	for (ALL_LIST_ELEMENTS(vrf_iflist(VRF_DEFAULT), node, nnode, ifp))
+	FOR_ALL_INTERFACES (vrf, ifp)
 		rip_passive_interface_apply(ifp);
 }
 
@@ -1728,14 +1736,11 @@ DEFUN (no_rip_passive_interface,
 /* Write rip configuration of each interface. */
 static int rip_interface_config_write(struct vty *vty)
 {
-	struct listnode *node;
+	struct vrf *vrf = vrf_lookup_by_id(VRF_DEFAULT);
 	struct interface *ifp;
 
-	for (ALL_LIST_ELEMENTS_RO(vrf_iflist(VRF_DEFAULT), node, ifp)) {
+	FOR_ALL_INTERFACES (vrf, ifp) {
 		struct rip_interface *ri;
-
-		if (ifp->ifindex == IFINDEX_DELETED)
-			continue;
 
 		ri = ifp->info;
 

@@ -77,7 +77,7 @@ struct ospf_route *ospf_find_asbr_route(struct ospf *ospf,
 
 	/* If none is found -- look through all. */
 	if (listcount(chosen) == 0) {
-		list_free(chosen);
+		list_delete_and_null(&chosen);
 		chosen = rn->info;
 	}
 
@@ -98,7 +98,7 @@ struct ospf_route *ospf_find_asbr_route(struct ospf *ospf,
 		}
 
 	if (chosen != rn->info)
-		list_delete(chosen);
+		list_delete_and_null(&chosen);
 
 	return best;
 }
@@ -598,7 +598,8 @@ static int ospf_ase_route_match_same(struct route_table *rt,
 	return 1;
 }
 
-static int ospf_ase_compare_tables(struct route_table *new_external_route,
+static int ospf_ase_compare_tables(struct ospf *ospf,
+				   struct route_table *new_external_route,
 				   struct route_table *old_external_route)
 {
 	struct route_node *rn, *new_rn;
@@ -609,7 +610,8 @@ static int ospf_ase_compare_tables(struct route_table *new_external_route,
 		if ((or = rn->info)) {
 			if (!(new_rn = route_node_lookup(new_external_route,
 							 &rn->p)))
-				ospf_zebra_delete((struct prefix_ipv4 *)&rn->p,
+				ospf_zebra_delete(ospf,
+						  (struct prefix_ipv4 *)&rn->p,
 						  or);
 			else
 				route_unlock_node(new_rn);
@@ -621,7 +623,8 @@ static int ospf_ase_compare_tables(struct route_table *new_external_route,
 		if ((or = rn->info) != NULL)
 			if (!ospf_ase_route_match_same(old_external_route,
 						       &rn->p, or))
-				ospf_zebra_add((struct prefix_ipv4 *)&rn->p,
+				ospf_zebra_add(ospf,
+					       (struct prefix_ipv4 *)&rn->p,
 					       or);
 
 	return 0;
@@ -666,7 +669,7 @@ static int ospf_ase_calculate_timer(struct thread *t)
 
 		/* Compare old and new external routing table and install the
 		   difference info zebra/kernel */
-		ospf_ase_compare_tables(ospf->new_external_route,
+		ospf_ase_compare_tables(ospf, ospf->new_external_route,
 					ospf->old_external_route);
 
 		/* Delete old external routing table */
@@ -758,7 +761,7 @@ void ospf_ase_external_lsas_finish(struct route_table *rt)
 		if ((lst = rn->info) != NULL) {
 			for (ALL_LIST_ELEMENTS(lst, node, nnode, lsa))
 				ospf_lsa_unlock(&lsa); /* external_lsas lst */
-			list_delete(lst);
+			list_delete_and_null(&lst);
 		}
 
 	route_table_finish(rt);
@@ -814,7 +817,7 @@ void ospf_ase_incremental_update(struct ospf *ospf, struct ospf_lsa *lsa)
 	}
 
 	/* install changes to zebra */
-	ospf_ase_compare_tables(ospf->new_external_route, tmp_old);
+	ospf_ase_compare_tables(ospf, ospf->new_external_route, tmp_old);
 
 	/* update ospf->old_external_route table */
 	if (rn && rn->info)

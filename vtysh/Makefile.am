@@ -56,6 +56,10 @@ vtysh_scan += $(top_srcdir)/bgpd/bgp_routemap.c
 vtysh_scan += $(top_srcdir)/bgpd/bgp_vty.c
 endif
 
+if RPKI
+vtysh_scan += $(top_srcdir)/bgpd/bgp_rpki.c
+endif
+
 if ISISD
 vtysh_scan += $(top_srcdir)/isisd/isis_redist.c
 vtysh_scan += $(top_srcdir)/isisd/isis_spf.c
@@ -126,6 +130,10 @@ if BABELD
 vtysh_scan += $(top_srcdir)/babeld/babel_interface.c
 vtysh_scan += $(top_srcdir)/babeld/babel_zebra.c
 vtysh_scan += $(top_srcdir)/babeld/babeld.c
+endif
+
+if SHARPD
+vtysh_scan += $(top_srcdir)/sharpd/sharp_vty.c
 endif
 
 if SNMP

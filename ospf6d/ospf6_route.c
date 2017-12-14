@@ -241,18 +241,25 @@ int ospf6_route_cmp_nexthops(struct ospf6_route *a, struct ospf6_route *b)
 {
 	struct listnode *anode, *bnode;
 	struct ospf6_nexthop *anh, *bnh;
+	bool identical = false;
 
 	if (a && b) {
 		if (listcount(a->nh_list) == listcount(b->nh_list)) {
 			for (ALL_LIST_ELEMENTS_RO(a->nh_list, anode, anh)) {
+				identical = false;
 				for (ALL_LIST_ELEMENTS_RO(b->nh_list, bnode,
-							  bnh))
-					if (!ospf6_nexthop_is_same(anh, bnh))
-						return (1);
+							  bnh)) {
+					if (ospf6_nexthop_is_same(anh, bnh))
+						identical = true;
+				}
+				/* Currnet List A element not found List B
+				 * Non-Identical lists return */
+				if (identical == false)
+					return 1;
 			}
-			return (0);
+			return 0;
 		} else
-			return (1);
+			return 1;
 	}
 	/* One of the routes doesn't exist ? */
 	return (1);
@@ -333,9 +340,14 @@ int ospf6_route_get_first_nh_index(struct ospf6_route *route)
 
 static int ospf6_nexthop_cmp(struct ospf6_nexthop *a, struct ospf6_nexthop *b)
 {
-	if ((a)->ifindex == (b)->ifindex &&
-	    IN6_ARE_ADDR_EQUAL(&(a)->address, &(b)->address))
+	if (a->ifindex < b->ifindex)
+		return -1;
+	else if (a->ifindex > b->ifindex)
 		return 1;
+	else
+		return memcmp(&a->address, &b->address,
+			      sizeof(struct in6_addr));
+
 	return 0;
 }
 
@@ -353,7 +365,7 @@ void ospf6_route_delete(struct ospf6_route *route)
 {
 	if (route) {
 		if (route->nh_list)
-			list_delete(route->nh_list);
+			list_delete_and_null(&route->nh_list);
 		XFREE(MTYPE_OSPF6_ROUTE, route);
 	}
 }
@@ -683,9 +695,9 @@ struct ospf6_route *ospf6_route_add(struct ospf6_route *route,
 
 	/* Else, this is the brand new route regarding to the prefix */
 	if (IS_OSPF6_DEBUG_ROUTE(MEMORY))
-		zlog_debug("%s %p: route add %p: brand new route",
+		zlog_debug("%s %p: route add %p %s : brand new route",
 			   ospf6_route_table_name(table), (void *)table,
-			   (void *)route);
+			   (void *)route, buf);
 	else if (IS_OSPF6_DEBUG_ROUTE(TABLE))
 		zlog_debug("%s: route add: brand new route",
 			   ospf6_route_table_name(table));
@@ -760,9 +772,9 @@ void ospf6_route_remove(struct ospf6_route *route,
 		prefix2str(&route->prefix, buf, sizeof(buf));
 
 	if (IS_OSPF6_DEBUG_ROUTE(MEMORY))
-		zlog_debug("%s %p: route remove %p: %s rnode refcount %u",
+		zlog_debug("%s %p: route remove %p: %s refcount %u",
 			   ospf6_route_table_name(table), (void *)table,
-			   (void *)route, buf, route->rnode->lock);
+			   (void *)route, buf, route->lock);
 	else if (IS_OSPF6_DEBUG_ROUTE(TABLE))
 		zlog_debug("%s: route remove: %s",
 			   ospf6_route_table_name(table), buf);
@@ -801,6 +813,7 @@ void ospf6_route_remove(struct ospf6_route *route,
 
 	SET_FLAG(route->flag, OSPF6_ROUTE_WAS_REMOVED);
 
+	/* Note hook_remove may call ospf6_route_remove */
 	if (table->hook_remove)
 		(*table->hook_remove)(route);
 
@@ -1469,13 +1482,13 @@ DEFUN (debug_ospf6_route,
 	int idx_type = 3;
 	unsigned char level = 0;
 
-	if (!strncmp(argv[idx_type]->arg, "table", 5))
+	if (!strcmp(argv[idx_type]->text, "table"))
 		level = OSPF6_DEBUG_ROUTE_TABLE;
-	else if (!strncmp(argv[idx_type]->arg, "intra", 5))
+	else if (!strcmp(argv[idx_type]->text, "intra-area"))
 		level = OSPF6_DEBUG_ROUTE_INTRA;
-	else if (!strncmp(argv[idx_type]->arg, "inter", 5))
+	else if (!strcmp(argv[idx_type]->text, "inter-area"))
 		level = OSPF6_DEBUG_ROUTE_INTER;
-	else if (!strncmp(argv[idx_type]->arg, "memor", 5))
+	else if (!strcmp(argv[idx_type]->text, "memory"))
 		level = OSPF6_DEBUG_ROUTE_MEMORY;
 	OSPF6_DEBUG_ROUTE_ON(level);
 	return CMD_SUCCESS;
@@ -1496,13 +1509,13 @@ DEFUN (no_debug_ospf6_route,
 	int idx_type = 4;
 	unsigned char level = 0;
 
-	if (!strncmp(argv[idx_type]->arg, "table", 5))
+	if (!strcmp(argv[idx_type]->text, "table"))
 		level = OSPF6_DEBUG_ROUTE_TABLE;
-	else if (!strncmp(argv[idx_type]->arg, "intra", 5))
+	else if (!strcmp(argv[idx_type]->text, "intra-area"))
 		level = OSPF6_DEBUG_ROUTE_INTRA;
-	else if (!strncmp(argv[idx_type]->arg, "inter", 5))
+	else if (!strcmp(argv[idx_type]->text, "inter-area"))
 		level = OSPF6_DEBUG_ROUTE_INTER;
-	else if (!strncmp(argv[idx_type]->arg, "memor", 5))
+	else if (!strcmp(argv[idx_type]->text, "memory"))
 		level = OSPF6_DEBUG_ROUTE_MEMORY;
 	OSPF6_DEBUG_ROUTE_OFF(level);
 	return CMD_SUCCESS;
@@ -1516,6 +1529,9 @@ int config_write_ospf6_debug_route(struct vty *vty)
 		vty_out(vty, "debug ospf6 route intra-area\n");
 	if (IS_OSPF6_DEBUG_ROUTE(INTER))
 		vty_out(vty, "debug ospf6 route inter-area\n");
+	if (IS_OSPF6_DEBUG_ROUTE(MEMORY))
+		vty_out(vty, "debug ospf6 route memory\n");
+
 	return 0;
 }
 

@@ -166,8 +166,7 @@ static int ospf_mpls_te_unregister()
 
 void ospf_mpls_te_term(void)
 {
-	list_delete(OspfMplsTE.iflist);
-	OspfMplsTE.iflist = NULL;
+	list_delete_and_null(&OspfMplsTE.iflist);
 
 	ospf_delete_opaque_functab(OSPF_OPAQUE_AREA_LSA,
 				   OPAQUE_TYPE_TRAFFIC_ENGINEERING_LSA);
@@ -728,7 +727,7 @@ static void update_linkparams(struct mpls_te_link *lp)
 			else {
 				lp->flags = INTER_AS | FLOOD_AREA;
 				lp->area = ospf_area_lookup_by_area_id(
-					ospf_lookup(),
+					ospf_lookup_by_vrf_id(VRF_DEFAULT),
 					OspfMplsTE.interas_areaid);
 			}
 		}
@@ -1127,7 +1126,8 @@ static void ospf_mpls_te_lsa_body_set(struct stream *s, struct mpls_te_link *lp)
 }
 
 /* Create new opaque-LSA. */
-static struct ospf_lsa *ospf_mpls_te_lsa_new(struct ospf_area *area,
+static struct ospf_lsa *ospf_mpls_te_lsa_new(struct ospf *ospf,
+					     struct ospf_area *area,
 					     struct mpls_te_link *lp)
 {
 	struct stream *s;
@@ -1167,9 +1167,12 @@ static struct ospf_lsa *ospf_mpls_te_lsa_new(struct ospf_area *area,
 		tmp = SET_OPAQUE_LSID(OPAQUE_TYPE_INTER_AS_LSA, lp->instance);
 		lsa_id.s_addr = htonl(tmp);
 
-		struct ospf *top = ospf_lookup();
+		if (!ospf) {
+			stream_free(s);
+			return NULL;
+		}
 
-		lsa_header_set(s, options, lsa_type, lsa_id, top->router_id);
+		lsa_header_set(s, options, lsa_type, lsa_id, ospf->router_id);
 	} else {
 		options |= LSA_OPTIONS_GET(area); /* Get area default option */
 		options |= LSA_OPTIONS_NSSA_GET(area);
@@ -1207,6 +1210,9 @@ static struct ospf_lsa *ospf_mpls_te_lsa_new(struct ospf_area *area,
 		return new;
 	}
 
+	new->vrf_id = ospf->vrf_id;
+	if (area && area->ospf)
+		new->vrf_id = area->ospf->vrf_id;
 	new->area = area;
 	SET_FLAG(new->flags, OSPF_LSA_SELF);
 	memcpy(new->data, lsah, length);
@@ -1218,11 +1224,12 @@ static struct ospf_lsa *ospf_mpls_te_lsa_new(struct ospf_area *area,
 static int ospf_mpls_te_lsa_originate1(struct ospf_area *area,
 				       struct mpls_te_link *lp)
 {
-	struct ospf_lsa *new;
+	struct ospf_lsa *new = NULL;
 	int rc = -1;
 
 	/* Create new Opaque-LSA/MPLS-TE instance. */
-	if ((new = ospf_mpls_te_lsa_new(area, lp)) == NULL) {
+	new = ospf_mpls_te_lsa_new(area->ospf, area, lp);
+	if (new == NULL) {
 		zlog_warn(
 			"ospf_mpls_te_lsa_originate1: ospf_mpls_te_lsa_new() ?");
 		return rc;
@@ -1245,7 +1252,7 @@ static int ospf_mpls_te_lsa_originate1(struct ospf_area *area,
 
 	if (IS_DEBUG_OSPF(lsa, LSA_GENERATE)) {
 		char area_id[INET_ADDRSTRLEN];
-		strcpy(area_id, inet_ntoa(area->area_id));
+		strlcpy(area_id, inet_ntoa(area->area_id), sizeof(area_id));
 		zlog_debug(
 			"LSA[Type%d:%s]: Originate Opaque-LSA/MPLS-TE: Area(%s), Link(%s)",
 			new->data->type, inet_ntoa(new->data->id), area_id,
@@ -1321,11 +1328,13 @@ static int ospf_mpls_te_lsa_originate2(struct ospf *top,
 	int rc = -1;
 
 	/* Create new Opaque-LSA/Inter-AS instance. */
-	if ((new = ospf_mpls_te_lsa_new(NULL, lp)) == NULL) {
+	new = ospf_mpls_te_lsa_new(top, NULL, lp);
+	if (new == NULL) {
 		zlog_warn(
 			"ospf_mpls_te_lsa_originate2: ospf_router_info_lsa_new() ?");
 		return rc;
 	}
+	new->vrf_id = top->vrf_id;
 
 	/* Install this LSA into LSDB. */
 	if (ospf_lsa_install(top, NULL /*oi */, new) == NULL) {
@@ -1451,9 +1460,10 @@ static struct ospf_lsa *ospf_mpls_te_lsa_refresh(struct ospf_lsa *lsa)
 		ospf_opaque_lsa_flush_schedule(lsa);
 		return NULL;
 	}
-
+	top = ospf_lookup_by_vrf_id(lsa->vrf_id);
 	/* Create new Opaque-LSA/MPLS-TE instance. */
-	if ((new = ospf_mpls_te_lsa_new(area, lp)) == NULL) {
+	new = ospf_mpls_te_lsa_new(top, area, lp);
+	if (new == NULL) {
 		zlog_warn("ospf_mpls_te_lsa_refresh: ospf_mpls_te_lsa_new() ?");
 		return NULL;
 	}
@@ -1465,8 +1475,6 @@ static struct ospf_lsa *ospf_mpls_te_lsa_refresh(struct ospf_lsa *lsa)
 	 * ospf_lookup() to get ospf instance */
 	if (area)
 		top = area->ospf;
-	else
-		top = ospf_lookup();
 
 	if (ospf_lsa_install(top, NULL /*oi */, new) == NULL) {
 		zlog_warn("ospf_mpls_te_lsa_refresh: ospf_lsa_install() ?");
@@ -1500,7 +1508,7 @@ void ospf_mpls_te_lsa_schedule(struct mpls_te_link *lp, enum lsa_opcode opcode)
 
 	memset(&lsa, 0, sizeof(lsa));
 	memset(&lsah, 0, sizeof(lsah));
-	top = ospf_lookup();
+	top = ospf_lookup_by_vrf_id(VRF_DEFAULT);
 
 	/* Check if the pseudo link is ready to flood */
 	if (!(CHECK_FLAG(lp->flags, LPFLG_LSA_ACTIVE))
@@ -2517,29 +2525,65 @@ static void show_mpls_te_link_sub(struct vty *vty, struct interface *ifp)
 
 DEFUN (show_ip_ospf_mpls_te_link,
        show_ip_ospf_mpls_te_link_cmd,
-       "show ip ospf mpls-te interface [INTERFACE]",
+       "show ip ospf [vrf <NAME|all>] mpls-te interface [INTERFACE]",
        SHOW_STR
        IP_STR
        OSPF_STR
+       VRF_CMD_HELP_STR
+       "All VRFs\n"
        "MPLS-TE information\n"
        "Interface information\n"
        "Interface name\n")
 {
+	struct vrf *vrf;
 	int idx_interface = 5;
 	struct interface *ifp;
-	struct listnode *node, *nnode;
+	struct listnode *node;
+	char *vrf_name = NULL;
+	bool all_vrf;
+	int inst = 0;
+	int idx_vrf = 0;
+	struct ospf *ospf = NULL;
 
+	if (argv_find(argv, argc, "vrf", &idx_vrf)) {
+		vrf_name = argv[idx_vrf + 1]->arg;
+		all_vrf = strmatch(vrf_name, "all");
+	}
+
+	/* vrf input is provided could be all or specific vrf*/
+	if (vrf_name) {
+		if (all_vrf) {
+			for (ALL_LIST_ELEMENTS_RO(om->ospf, node, ospf)) {
+				if (!ospf->oi_running)
+					continue;
+				vrf = vrf_lookup_by_id(ospf->vrf_id);
+				FOR_ALL_INTERFACES (vrf, ifp)
+					show_mpls_te_link_sub(vty, ifp);
+			}
+			return CMD_SUCCESS;
+		}
+		ospf = ospf_lookup_by_inst_name (inst, vrf_name);
+		if (ospf == NULL || !ospf->oi_running)
+			return CMD_SUCCESS;
+		vrf = vrf_lookup_by_id(ospf->vrf_id);
+		FOR_ALL_INTERFACES (vrf, ifp)
+			show_mpls_te_link_sub(vty, ifp);
+		return CMD_SUCCESS;
+	}
 	/* Show All Interfaces. */
 	if (argc == 5) {
-		for (ALL_LIST_ELEMENTS(vrf_iflist(VRF_DEFAULT), node, nnode,
-				       ifp))
-			show_mpls_te_link_sub(vty, ifp);
+		for (ALL_LIST_ELEMENTS_RO(om->ospf, node, ospf)) {
+			if (!ospf->oi_running)
+				continue;
+			vrf = vrf_lookup_by_id(ospf->vrf_id);
+			FOR_ALL_INTERFACES (vrf, ifp)
+				show_mpls_te_link_sub(vty, ifp);
+		}
 	}
 	/* Interface name is specified. */
 	else {
-		if ((ifp = if_lookup_by_name(argv[idx_interface]->arg,
-					     VRF_DEFAULT))
-		    == NULL)
+		ifp = if_lookup_by_name_all_vrf(argv[idx_interface]->arg);
+		if (ifp == NULL)
 			vty_out(vty, "No such interface name\n");
 		else
 			show_mpls_te_link_sub(vty, ifp);

@@ -144,15 +144,8 @@ static u_int32_t ospf6_interface_get_cost(struct ospf6_interface *oi)
 	return cost;
 }
 
-static void ospf6_interface_recalculate_cost(struct ospf6_interface *oi)
+static void ospf6_interface_force_recalculate_cost(struct ospf6_interface *oi)
 {
-	u_int32_t newcost;
-
-	newcost = ospf6_interface_get_cost(oi);
-	if (newcost == oi->cost)
-		return;
-	oi->cost = newcost;
-
 	/* update cost held in route_connected list in ospf6_interface */
 	ospf6_interface_connected_route_update(oi->interface);
 
@@ -164,6 +157,18 @@ static void ospf6_interface_recalculate_cost(struct ospf6_interface *oi)
 		OSPF6_INTRA_PREFIX_LSA_SCHEDULE_TRANSIT(oi);
 		OSPF6_INTRA_PREFIX_LSA_SCHEDULE_STUB(oi->area);
 	}
+}
+
+static void ospf6_interface_recalculate_cost(struct ospf6_interface *oi)
+{
+	u_int32_t newcost;
+
+	newcost = ospf6_interface_get_cost(oi);
+	if (newcost == oi->cost)
+		return;
+	oi->cost = newcost;
+
+	ospf6_interface_force_recalculate_cost(oi);
 }
 
 /* Create new ospf6 interface structure */
@@ -242,7 +247,7 @@ void ospf6_interface_delete(struct ospf6_interface *oi)
 	for (ALL_LIST_ELEMENTS(oi->neighbor_list, node, nnode, on))
 		ospf6_neighbor_delete(on);
 
-	list_delete(oi->neighbor_list);
+	list_delete_and_null(&oi->neighbor_list);
 
 	THREAD_OFF(oi->thread_send_hello);
 	THREAD_OFF(oi->thread_send_lsupdate);
@@ -983,9 +988,9 @@ DEFUN (show_ipv6_ospf6_interface,
        INTERFACE_STR
        IFNAME_STR)
 {
+	struct vrf *vrf = vrf_lookup_by_id(VRF_DEFAULT);
 	int idx_ifname = 4;
 	struct interface *ifp;
-	struct listnode *i;
 
 	if (argc == 5) {
 		ifp = if_lookup_by_name(argv[idx_ifname]->arg, VRF_DEFAULT);
@@ -996,7 +1001,7 @@ DEFUN (show_ipv6_ospf6_interface,
 		}
 		ospf6_interface_show(vty, ifp);
 	} else {
-		for (ALL_LIST_ELEMENTS_RO(vrf_iflist(VRF_DEFAULT), i, ifp))
+		FOR_ALL_INTERFACES (vrf, ifp)
 			ospf6_interface_show(vty, ifp);
 	}
 
@@ -1054,12 +1059,12 @@ DEFUN (show_ipv6_ospf6_interface_prefix,
        OSPF6_ROUTE_MATCH_STR
        "Display details of the prefixes\n")
 {
+	struct vrf *vrf = vrf_lookup_by_id(VRF_DEFAULT);
 	int idx_prefix = 5;
-	struct listnode *i;
 	struct ospf6_interface *oi;
 	struct interface *ifp;
 
-	for (ALL_LIST_ELEMENTS_RO(vrf_iflist(VRF_DEFAULT), i, ifp)) {
+	FOR_ALL_INTERFACES (vrf, ifp) {
 		oi = (struct ospf6_interface *)ifp->info;
 		if (oi == NULL)
 			continue;
@@ -1207,7 +1212,7 @@ DEFUN (ipv6_ospf6_cost,
 	oi->cost = lcost;
 	SET_FLAG(oi->flag, OSPF6_INTERFACE_NOAUTOCOST);
 
-	ospf6_interface_recalculate_cost(oi);
+	ospf6_interface_force_recalculate_cost(oi);
 
 	return CMD_SUCCESS;
 }
@@ -1755,11 +1760,11 @@ DEFUN (no_ipv6_ospf6_network,
 
 static int config_write_ospf6_interface(struct vty *vty)
 {
-	struct listnode *i;
+	struct vrf *vrf = vrf_lookup_by_id(VRF_DEFAULT);
 	struct ospf6_interface *oi;
 	struct interface *ifp;
 
-	for (ALL_LIST_ELEMENTS_RO(vrf_iflist(VRF_DEFAULT), i, ifp)) {
+	FOR_ALL_INTERFACES (vrf, ifp) {
 		oi = (struct ospf6_interface *)ifp->info;
 		if (oi == NULL)
 			continue;
@@ -1905,13 +1910,13 @@ DEFUN (clear_ipv6_ospf6_interface,
        IFNAME_STR
        )
 {
+	struct vrf *vrf = vrf_lookup_by_id(VRF_DEFAULT);
 	int idx_ifname = 4;
 	struct interface *ifp;
-	struct listnode *node;
 
 	if (argc == 4) /* Clear all the ospfv3 interfaces. */
 	{
-		for (ALL_LIST_ELEMENTS_RO(vrf_iflist(VRF_DEFAULT), node, ifp))
+		FOR_ALL_INTERFACES (vrf, ifp)
 			ospf6_interface_clear(vty, ifp);
 	} else /* Interface name is specified. */
 	{

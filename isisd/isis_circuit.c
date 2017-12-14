@@ -45,6 +45,7 @@
 #include "isisd/isis_flags.h"
 #include "isisd/isis_circuit.h"
 #include "isisd/isis_lsp.h"
+#include "isisd/isis_lsp_hash.h"
 #include "isisd/isis_pdu.h"
 #include "isisd/isis_network.h"
 #include "isisd/isis_misc.h"
@@ -452,19 +453,19 @@ void isis_circuit_if_del(struct isis_circuit *circuit, struct interface *ifp)
 
 	if (circuit->ip_addrs) {
 		assert(listcount(circuit->ip_addrs) == 0);
-		list_delete(circuit->ip_addrs);
+		list_delete_and_null(&circuit->ip_addrs);
 		circuit->ip_addrs = NULL;
 	}
 
 	if (circuit->ipv6_link) {
 		assert(listcount(circuit->ipv6_link) == 0);
-		list_delete(circuit->ipv6_link);
+		list_delete_and_null(&circuit->ipv6_link);
 		circuit->ipv6_link = NULL;
 	}
 
 	if (circuit->ipv6_non_link) {
 		assert(listcount(circuit->ipv6_non_link) == 0);
-		list_delete(circuit->ipv6_non_link);
+		list_delete_and_null(&circuit->ipv6_non_link);
 		circuit->ipv6_non_link = NULL;
 	}
 
@@ -674,7 +675,9 @@ int isis_circuit_up(struct isis_circuit *circuit)
 	isis_circuit_prepare(circuit);
 
 	circuit->lsp_queue = list_new();
-	circuit->lsp_queue_last_cleared = time(NULL);
+	circuit->lsp_hash = isis_lsp_hash_new();
+	circuit->lsp_queue_last_push[0] = circuit->lsp_queue_last_push[1] =
+		monotime(NULL);
 
 	return ISIS_OK;
 }
@@ -690,22 +693,22 @@ void isis_circuit_down(struct isis_circuit *circuit)
 	if (circuit->circ_type == CIRCUIT_T_BROADCAST) {
 		/* destroy neighbour lists */
 		if (circuit->u.bc.lan_neighs[0]) {
-			list_delete(circuit->u.bc.lan_neighs[0]);
+			list_delete_and_null(&circuit->u.bc.lan_neighs[0]);
 			circuit->u.bc.lan_neighs[0] = NULL;
 		}
 		if (circuit->u.bc.lan_neighs[1]) {
-			list_delete(circuit->u.bc.lan_neighs[1]);
+			list_delete_and_null(&circuit->u.bc.lan_neighs[1]);
 			circuit->u.bc.lan_neighs[1] = NULL;
 		}
 		/* destroy adjacency databases */
 		if (circuit->u.bc.adjdb[0]) {
 			circuit->u.bc.adjdb[0]->del = isis_delete_adj;
-			list_delete(circuit->u.bc.adjdb[0]);
+			list_delete_and_null(&circuit->u.bc.adjdb[0]);
 			circuit->u.bc.adjdb[0] = NULL;
 		}
 		if (circuit->u.bc.adjdb[1]) {
 			circuit->u.bc.adjdb[1]->del = isis_delete_adj;
-			list_delete(circuit->u.bc.adjdb[1]);
+			list_delete_and_null(&circuit->u.bc.adjdb[1]);
 			circuit->u.bc.adjdb[1] = NULL;
 		}
 		if (circuit->u.bc.is_dr[0]) {
@@ -739,12 +742,16 @@ void isis_circuit_down(struct isis_circuit *circuit)
 	THREAD_TIMER_OFF(circuit->t_send_csnp[1]);
 	THREAD_TIMER_OFF(circuit->t_send_psnp[0]);
 	THREAD_TIMER_OFF(circuit->t_send_psnp[1]);
+	THREAD_OFF(circuit->t_send_lsp);
 	THREAD_OFF(circuit->t_read);
 
 	if (circuit->lsp_queue) {
-		circuit->lsp_queue->del = NULL;
-		list_delete(circuit->lsp_queue);
-		circuit->lsp_queue = NULL;
+		list_delete_and_null(&circuit->lsp_queue);
+	}
+
+	if (circuit->lsp_hash) {
+		isis_lsp_hash_free(circuit->lsp_hash);
+		circuit->lsp_hash = NULL;
 	}
 
 	/* send one gratuitous hello to spead up convergence */
@@ -926,17 +933,15 @@ void isis_circuit_print_vty(struct isis_circuit *circuit, struct vty *vty,
 
 int isis_interface_config_write(struct vty *vty)
 {
+	struct vrf *vrf = vrf_lookup_by_id(VRF_DEFAULT);
 	int write = 0;
-	struct listnode *node, *node2;
+	struct listnode *node;
 	struct interface *ifp;
 	struct isis_area *area;
 	struct isis_circuit *circuit;
 	int i;
 
-	for (ALL_LIST_ELEMENTS_RO(vrf_iflist(VRF_DEFAULT), node, ifp)) {
-		if (ifp->ifindex == IFINDEX_DELETED)
-			continue;
-
+	FOR_ALL_INTERFACES (vrf, ifp) {
 		/* IF name */
 		vty_frame(vty, "interface %s\n", ifp->name);
 		write++;
@@ -946,7 +951,7 @@ int isis_interface_config_write(struct vty *vty)
 			write++;
 		}
 		/* ISIS Circuit */
-		for (ALL_LIST_ELEMENTS_RO(isis->area_list, node2, area)) {
+		for (ALL_LIST_ELEMENTS_RO(isis->area_list, node, area)) {
 			circuit =
 				circuit_lookup_by_ifp(ifp, area->circuit_list);
 			if (circuit == NULL)
@@ -1338,4 +1343,57 @@ void isis_circuit_init()
 	if_cmd_init();
 
 	isis_vty_init();
+}
+
+void isis_circuit_schedule_lsp_send(struct isis_circuit *circuit)
+{
+	if (circuit->t_send_lsp)
+		return;
+	circuit->t_send_lsp = thread_add_event(master, send_lsp, circuit, 0, NULL);
+}
+
+void isis_circuit_queue_lsp(struct isis_circuit *circuit, struct isis_lsp *lsp)
+{
+	if (isis_lsp_hash_lookup(circuit->lsp_hash, lsp))
+		return;
+
+	listnode_add(circuit->lsp_queue, lsp);
+	isis_lsp_hash_add(circuit->lsp_hash, lsp);
+	isis_circuit_schedule_lsp_send(circuit);
+}
+
+void isis_circuit_lsp_queue_clean(struct isis_circuit *circuit)
+{
+	if (!circuit->lsp_queue)
+		return;
+
+	list_delete_all_node(circuit->lsp_queue);
+	isis_lsp_hash_clean(circuit->lsp_hash);
+}
+
+void isis_circuit_cancel_queued_lsp(struct isis_circuit *circuit,
+				    struct isis_lsp *lsp)
+{
+	if (!circuit->lsp_queue)
+		return;
+
+	listnode_delete(circuit->lsp_queue, lsp);
+	isis_lsp_hash_release(circuit->lsp_hash, lsp);
+}
+
+struct isis_lsp *isis_circuit_lsp_queue_pop(struct isis_circuit *circuit)
+{
+	if (!circuit->lsp_queue)
+		return NULL;
+
+	struct listnode *node = listhead(circuit->lsp_queue);
+	if (!node)
+		return NULL;
+
+	struct isis_lsp *rv = listgetdata(node);
+
+	list_delete_node(circuit->lsp_queue, node);
+	isis_lsp_hash_release(circuit->lsp_hash, rv);
+
+	return rv;
 }

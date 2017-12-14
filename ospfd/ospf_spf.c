@@ -210,12 +210,10 @@ static void ospf_vertex_free(void *data)
 	// assert (listcount (v->parents) == 0);
 
 	if (v->children)
-		list_delete(v->children);
-	v->children = NULL;
+		list_delete_and_null(&v->children);
 
 	if (v->parents)
-		list_delete(v->parents);
-	v->parents = NULL;
+		list_delete_and_null(&v->parents);
 
 	v->lsa = NULL;
 
@@ -781,7 +779,8 @@ static unsigned int ospf_nexthop_calculation(struct ospf_area *area,
  * of candidates with any vertices not already on the list.  If a lower-cost
  * path is found to a vertex already on the candidate list, store the new cost.
  */
-static void ospf_spf_next(struct vertex *v, struct ospf_area *area,
+static void ospf_spf_next(struct vertex *v, struct ospf *ospf,
+			  struct ospf_area *area,
 			  struct pqueue *candidate)
 {
 	struct ospf_lsa *w_lsa = NULL;
@@ -841,7 +840,8 @@ static void ospf_spf_next(struct vertex *v, struct ospf_area *area,
 							inet_ntoa(l->link_id));
 				}
 
-				w_lsa = ospf_lsa_lookup(area, OSPF_ROUTER_LSA,
+				w_lsa = ospf_lsa_lookup(ospf, area,
+							OSPF_ROUTER_LSA,
 							l->link_id, l->link_id);
 				if (w_lsa) {
 					if (IS_DEBUG_OSPF_EVENT)
@@ -1087,7 +1087,7 @@ void ospf_rtrs_free(struct route_table *rtrs)
 			for (ALL_LIST_ELEMENTS(or_list, node, nnode, or))
 				ospf_route_free(or);
 
-			list_delete(or_list);
+			list_delete_and_null(&or_list);
 
 			/* Unlock the node. */
 			rn->info = NULL;
@@ -1159,7 +1159,7 @@ ospf_rtrs_print (struct route_table *rtrs)
 #endif
 
 /* Calculating the shortest-path tree for an area. */
-static void ospf_spf_calculate(struct ospf_area *area,
+static void ospf_spf_calculate(struct ospf *ospf, struct ospf_area *area,
 			       struct route_table *new_table,
 			       struct route_table *new_rtrs)
 {
@@ -1209,7 +1209,7 @@ static void ospf_spf_calculate(struct ospf_area *area,
 
 	for (;;) {
 		/* RFC2328 16.1. (2). */
-		ospf_spf_next(v, area, candidate);
+		ospf_spf_next(v, ospf, area, candidate);
 
 		/* RFC2328 16.1. (3). */
 		/* If at this step the candidate list is empty, the shortest-
@@ -1307,13 +1307,13 @@ static int ospf_spf_calculate_timer(struct thread *thread)
 		if (ospf->backbone && ospf->backbone == area)
 			continue;
 
-		ospf_spf_calculate(area, new_table, new_rtrs);
+		ospf_spf_calculate(ospf, area, new_table, new_rtrs);
 		areas_processed++;
 	}
 
 	/* SPF for backbone, if required */
 	if (ospf->backbone) {
-		ospf_spf_calculate(ospf->backbone, new_table, new_rtrs);
+		ospf_spf_calculate(ospf, ospf->backbone, new_table, new_rtrs);
 		areas_processed++;
 	}
 
@@ -1339,6 +1339,12 @@ static int ospf_spf_calculate_timer(struct thread *thread)
 
 	ospf_ase_calculate_timer_add(ospf);
 
+
+	if (IS_DEBUG_OSPF_EVENT)
+		zlog_debug("%s: ospf install new route, vrf %s id %u new_table count %lu",
+			   __PRETTY_FUNCTION__,
+			   ospf_vrf_id_to_name(ospf->vrf_id),
+			   ospf->vrf_id, new_table->count);
 	/* Update routing table. */
 	monotime(&start_time);
 	ospf_route_install(ospf, new_table);

@@ -126,7 +126,7 @@ static int ospf6_zebra_if_del(int command, struct zclient *zclient,
   ospf6_interface_if_del (ifp);
 #endif /*0*/
 
-	ifp->ifindex = IFINDEX_DELETED;
+	if_set_index(ifp, IFINDEX_INTERNAL);
 	return 0;
 }
 
@@ -256,7 +256,7 @@ DEFUN (show_zebra,
        SHOW_STR
        IPV6_STR
        OSPF6_STR
-       "Zebra information\n")
+       ZEBRA_STR)
 {
 	int i;
 	if (zclient == NULL) {
@@ -583,8 +583,8 @@ static void ospf6_zebra_connected(struct zclient *zclient)
 void ospf6_zebra_init(struct thread_master *master)
 {
 	/* Allocate zebra structure. */
-	zclient = zclient_new(master);
-	zclient_init(zclient, ZEBRA_ROUTE_OSPF6, 0);
+	zclient = zclient_new_notify(master, &zclient_options_default);
+	zclient_init(zclient, ZEBRA_ROUTE_OSPF6, 0, &ospf6d_privs);
 	zclient->zebra_connected = ospf6_zebra_connected;
 	zclient->router_id_update = ospf6_router_id_update_zebra;
 	zclient->interface_add = ospf6_zebra_if_add;

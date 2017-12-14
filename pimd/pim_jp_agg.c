@@ -32,7 +32,7 @@
 
 void pim_jp_agg_group_list_free(struct pim_jp_agg_group *jag)
 {
-	list_delete(jag->sources);
+	list_delete_and_null(&jag->sources);
 
 	XFREE(MTYPE_PIM_JP_AGG_GROUP, jag);
 }
@@ -108,8 +108,7 @@ void pim_jp_agg_clear_group(struct list *group)
 			js->up = NULL;
 			XFREE(MTYPE_PIM_JP_AGG_SOURCE, js);
 		}
-		list_delete(jag->sources);
-		jag->sources = NULL;
+		list_delete_and_null(&jag->sources);
 		listnode_delete(group, jag);
 		XFREE(MTYPE_PIM_JP_AGG_GROUP, jag);
 	}
@@ -169,8 +168,7 @@ void pim_jp_agg_remove_group(struct list *group, struct pim_upstream *up)
 	}
 
 	if (jag->sources->count == 0) {
-		list_delete(jag->sources);
-		jag->sources = NULL;
+		list_delete_and_null(&jag->sources);
 		listnode_delete(group, jag);
 		XFREE(MTYPE_PIM_JP_AGG_GROUP, jag);
 	}
@@ -214,12 +212,11 @@ int pim_jp_agg_is_in_list(struct list *group, struct pim_upstream *up)
 void pim_jp_agg_upstream_verification(struct pim_upstream *up, bool ignore)
 {
 #ifdef PIM_JP_AGG_DEBUG
-	struct listnode *node;
 	struct interface *ifp;
 	struct pim_interface *pim_ifp = up->rpf.source_nexthop.interface->info;
 	struct pim_instance *pim = pim_ifp->pim;
 
-	for (ALL_LIST_ELEMENTS_RO(vrf_iflist(pim->vrf_id), node, ifp)) {
+	FOR_ALL_INTERFACES (pim->vrf, ifp) {
 		pim_ifp = ifp->info;
 		struct listnode *nnode;
 

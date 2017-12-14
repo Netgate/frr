@@ -68,6 +68,16 @@ Italicized lists are private.
 | _Security_                     | security@lists.frrouting.org |
 | _Technical Steering Committee_ | tsc@lists.frrouting.org      |
 
+The Development list is used to discuss and document general issues
+related to project development and governance. The public Slack
+instance, frrouting.slack.com, and weekly technical meetings provide a
+higher bandwidth channel for discussions.  The results of such
+discussions must be reflected in updates, as appropriate, to code (i.e.,
+merges), [github](https://github.com/FRRouting/frr/issues) tracked
+issues, and for governance or process changes, updates to the
+Development list and either this file or information posted at
+[https://frrouting.org/](https://frrouting.org/).
+
 
 ### Changelog
 
@@ -82,7 +92,7 @@ for the release notes.
 
 ### Pre-submission Checklist
 
-* Format code (see [Coding style requirements](#coding-style-requirements))
+* Format code (see [Developer's Guidelines](#developers-guidelines))
 * Verify and acknowledge license (see [License for contributions](#license-for-contributions))
 * Ensure you have properly signed off (see [Signing Off](#signing-off))
 * Test building with various configurations:
@@ -111,7 +121,7 @@ the Developer's Certificate of Origin (below). Code without a proper signoff
 can not and will not be merged.
 
 If you are unfamiliar with this process, you should read the [official policy
-at kernel.org](http://www.kernel.org/doc/Documentation/SubmittingPatches) and
+at kernel.org](https://www.kernel.org/doc/html/latest/process/submitting-patches.html) and
 you might find this article about [participating in the Linux community on the
 Linux Foundation
 website](http://www.linuxfoundation.org/content/how-participate-linux-community-0)
@@ -221,6 +231,25 @@ merged in a timely manner.
 
 
 ## Developer's Guidelines
+
+### Commit messages
+
+Commit messages should be formatted in the same way as Linux kernel commit
+messages. The format is roughly
+
+```
+dir: short summary
+
+extended summary
+```
+
+`dir` should be the top level source directory under which the change was made.
+For example, a change in bgpd/rfapi would be formatted as:
+
+`bgpd: short summary`
+
+The first line should be no longer than 50 characters. Subsequent lines should
+be wrapped to 72 characters.
 
 ### Source file header
 

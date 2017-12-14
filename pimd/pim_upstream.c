@@ -82,8 +82,7 @@ static void pim_upstream_remove_children(struct pim_instance *pim,
 		if (child)
 			child->parent = NULL;
 	}
-	list_delete(up->sources);
-	up->sources = NULL;
+	list_delete_and_null(&up->sources);
 }
 
 /*
@@ -203,13 +202,12 @@ struct pim_upstream *pim_upstream_del(struct pim_instance *pim,
 
 	pim_upstream_remove_children(pim, up);
 	if (up->sources)
-		list_delete(up->sources);
-	up->sources = NULL;
+		list_delete_and_null(&up->sources);
+
 	pim_mroute_del(up->channel_oil, __PRETTY_FUNCTION__);
 	upstream_channel_oil_detach(up);
 
-	list_delete(up->ifchannels);
-	up->ifchannels = NULL;
+	list_delete_and_null(&up->ifchannels);
 
 	/*
 	  notice that listnode_delete() can't be moved
@@ -696,9 +694,9 @@ static struct pim_upstream *pim_upstream_new(struct pim_instance *pim,
 
 		pim_upstream_remove_children(pim, up);
 		if (up->sources)
-			list_delete(up->sources);
+			list_delete_and_null(&up->sources);
 
-		list_delete(up->ifchannels);
+		list_delete_and_null(&up->ifchannels);
 
 		hash_release(pim->upstream_hash, up);
 		XFREE(MTYPE_PIM_UPSTREAM, up);
@@ -866,12 +864,11 @@ int pim_upstream_evaluate_join_desired(struct pim_instance *pim,
 				       struct pim_upstream *up)
 {
 	struct interface *ifp;
-	struct listnode *node;
 	struct pim_ifchannel *ch, *starch;
 	struct pim_upstream *starup = up->parent;
 	int ret = 0;
 
-	for (ALL_LIST_ELEMENTS_RO(vrf_iflist(pim->vrf_id), node, ifp)) {
+	FOR_ALL_INTERFACES (pim->vrf, ifp) {
 		if (!ifp->info)
 			continue;
 
@@ -1428,7 +1425,6 @@ int pim_upstream_inherited_olist_decide(struct pim_instance *pim,
 	struct interface *ifp;
 	struct pim_interface *pim_ifp = NULL;
 	struct pim_ifchannel *ch, *starch;
-	struct listnode *node;
 	struct pim_upstream *starup = up->parent;
 	int output_intf = 0;
 
@@ -1443,7 +1439,7 @@ int pim_upstream_inherited_olist_decide(struct pim_instance *pim,
 		up->channel_oil = pim_channel_oil_add(
 			pim, &up->sg, pim_ifp->mroute_vif_index);
 
-	for (ALL_LIST_ELEMENTS_RO(vrf_iflist(pim->vrf_id), node, ifp)) {
+	FOR_ALL_INTERFACES (pim->vrf, ifp) {
 		if (!ifp->info)
 			continue;
 
@@ -1548,8 +1544,7 @@ unsigned int pim_upstream_hash_key(void *arg)
 void pim_upstream_terminate(struct pim_instance *pim)
 {
 	if (pim->upstream_list)
-		list_delete(pim->upstream_list);
-	pim->upstream_list = NULL;
+		list_delete_and_null(&pim->upstream_list);
 
 	if (pim->upstream_hash)
 		hash_free(pim->upstream_hash);

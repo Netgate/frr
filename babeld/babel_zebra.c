@@ -237,8 +237,8 @@ babel_zebra_connected (struct zclient *zclient)
 
 void babelz_zebra_init(void)
 {
-    zclient = zclient_new(master);
-    zclient_init(zclient, ZEBRA_ROUTE_BABEL, 0);
+    zclient = zclient_new_notify(master, &zclient_options_default);
+    zclient_init(zclient, ZEBRA_ROUTE_BABEL, 0, &babeld_privs);
 
     zclient->zebra_connected = babel_zebra_connected;
     zclient->interface_add = babel_interface_add;

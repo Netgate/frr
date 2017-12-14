@@ -50,8 +50,6 @@ enum { ripng_all_route,
        ripng_changed_route,
 };
 
-extern struct zebra_privs_t ripngd_privs;
-
 /* Prototypes. */
 void ripng_output_process(struct interface *, struct sockaddr_in6 *, int);
 
@@ -103,21 +101,21 @@ static int ripng_make_socket(void)
 	setsockopt_so_recvbuf(sock, 8096);
 	ret = setsockopt_ipv6_pktinfo(sock, 1);
 	if (ret < 0)
-		return ret;
+		goto error;
 #ifdef IPTOS_PREC_INTERNETCONTROL
 	ret = setsockopt_ipv6_tclass(sock, IPTOS_PREC_INTERNETCONTROL);
 	if (ret < 0)
-		return ret;
+		goto error;
 #endif
 	ret = setsockopt_ipv6_multicast_hops(sock, 255);
 	if (ret < 0)
-		return ret;
+		goto error;
 	ret = setsockopt_ipv6_multicast_loop(sock, 0);
 	if (ret < 0)
-		return ret;
+		goto error;
 	ret = setsockopt_ipv6_hoplimit(sock, 1);
 	if (ret < 0)
-		return ret;
+		goto error;
 
 	memset(&ripaddr, 0, sizeof(ripaddr));
 	ripaddr.sin6_family = AF_INET6;
@@ -134,11 +132,15 @@ static int ripng_make_socket(void)
 		zlog_err("Can't bind ripng socket: %s.", safe_strerror(errno));
 		if (ripngd_privs.change(ZPRIVS_LOWER))
 			zlog_err("ripng_make_socket: could not lower privs");
-		return ret;
+		goto error;
 	}
 	if (ripngd_privs.change(ZPRIVS_LOWER))
 		zlog_err("ripng_make_socket: could not lower privs");
 	return sock;
+
+error:
+	close(sock);
+	return ret;
 }
 
 /* Send RIPng packet. */
@@ -407,8 +409,7 @@ static int ripng_garbage_collect(struct thread *t)
 	/* Unlock route_node. */
 	listnode_delete(rp->info, rinfo);
 	if (list_isempty((struct list *)rp->info)) {
-		list_free(rp->info);
-		rp->info = NULL;
+		list_delete_and_null((struct list **)&rp->info);
 		route_unlock_node(rp);
 	}
 
@@ -843,6 +844,8 @@ static void ripng_route_process(struct rte *rte, struct sockaddr_in6 *from,
 		   unusable). */
 		if (rte->metric != RIPNG_METRIC_INFINITY)
 			ripng_ecmp_add(&newinfo);
+		else
+			route_unlock_node(rp);
 	} else {
 		/* If there is an existing route, compare the next hop address
 		   to the address of the router from which the datagram came.
@@ -1378,7 +1381,7 @@ static void ripng_clear_changed_flag(void)
    enabled interface. */
 static int ripng_update(struct thread *t)
 {
-	struct listnode *node;
+	struct vrf *vrf = vrf_lookup_by_id(VRF_DEFAULT);
 	struct interface *ifp;
 	struct ripng_interface *ri;
 
@@ -1390,7 +1393,7 @@ static int ripng_update(struct thread *t)
 		zlog_debug("RIPng update timer expired!");
 
 	/* Supply routes to each interface. */
-	for (ALL_LIST_ELEMENTS_RO(vrf_iflist(VRF_DEFAULT), node, ifp)) {
+	FOR_ALL_INTERFACES (vrf, ifp) {
 		ri = ifp->info;
 
 		if (if_is_loopback(ifp) || !if_is_up(ifp))
@@ -1446,7 +1449,7 @@ static int ripng_triggered_interval(struct thread *t)
 /* Execute triggered update. */
 int ripng_triggered_update(struct thread *t)
 {
-	struct listnode *node;
+	struct vrf *vrf = vrf_lookup_by_id(VRF_DEFAULT);
 	struct interface *ifp;
 	struct ripng_interface *ri;
 	int interval;
@@ -1466,7 +1469,7 @@ int ripng_triggered_update(struct thread *t)
 
 	/* Split Horizon processing is done when generating triggered
 	   updates as well as normal updates (see section 2.6). */
-	for (ALL_LIST_ELEMENTS_RO(vrf_iflist(VRF_DEFAULT), node, ifp)) {
+	FOR_ALL_INTERFACES (vrf, ifp) {
 		ri = ifp->info;
 
 		if (if_is_loopback(ifp) || !if_is_up(ifp))
@@ -2011,7 +2014,7 @@ DEFUN (show_ipv6_ripng,
 
 				len = 28 - len;
 				if (len > 0)
-					len = vty_out(vty, "%*s", len, " ");
+					vty_out(vty, "%*s", len, " ");
 
 				/* from */
 				if ((rinfo->type == ZEBRA_ROUTE_RIPNG)
@@ -2059,7 +2062,7 @@ DEFUN (show_ipv6_ripng_status,
        "Show RIPng routes\n"
        "IPv6 routing protocol process parameters and statistics\n")
 {
-	struct listnode *node;
+	struct vrf *vrf = vrf_lookup_by_id(VRF_DEFAULT);
 	struct interface *ifp;
 
 	if (!ripng)
@@ -2092,7 +2095,7 @@ DEFUN (show_ipv6_ripng_status,
 
 	vty_out(vty, "    Interface        Send  Recv\n");
 
-	for (ALL_LIST_ELEMENTS_RO(vrf_iflist(VRF_DEFAULT), node, ifp)) {
+	FOR_ALL_INTERFACES (vrf, ifp) {
 		struct ripng_interface *ri;
 
 		ri = ifp->info;
@@ -2150,7 +2153,7 @@ DEFUN (clear_ipv6_rip,
 		}
 
 		if (list_isempty(list)) {
-			list_free(list);
+			list_delete_and_null(&list);
 			rp->info = NULL;
 			route_unlock_node(rp);
 		}
@@ -2792,10 +2795,10 @@ void ripng_distribute_update_interface(struct interface *ifp)
 /* Update all interface's distribute list. */
 static void ripng_distribute_update_all(struct prefix_list *notused)
 {
+	struct vrf *vrf = vrf_lookup_by_id(VRF_DEFAULT);
 	struct interface *ifp;
-	struct listnode *node;
 
-	for (ALL_LIST_ELEMENTS_RO(vrf_iflist(VRF_DEFAULT), node, ifp))
+	FOR_ALL_INTERFACES (vrf, ifp)
 		ripng_distribute_update_interface(ifp);
 }
 
@@ -2829,7 +2832,7 @@ void ripng_clean()
 						rinfo->t_garbage_collect);
 					ripng_info_free(rinfo);
 				}
-				list_delete(list);
+				list_delete_and_null(&list);
 				rp->info = NULL;
 				route_unlock_node(rp);
 			}
@@ -2969,10 +2972,10 @@ static void ripng_routemap_update_redistribute(void)
 
 static void ripng_routemap_update(const char *unused)
 {
+	struct vrf *vrf = vrf_lookup_by_id(VRF_DEFAULT);
 	struct interface *ifp;
-	struct listnode *node;
 
-	for (ALL_LIST_ELEMENTS_RO(vrf_iflist(VRF_DEFAULT), node, ifp))
+	FOR_ALL_INTERFACES (vrf, ifp)
 		ripng_if_rmap_update_interface(ifp);
 
 	ripng_routemap_update_redistribute();

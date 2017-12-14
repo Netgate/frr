@@ -169,7 +169,7 @@ void pim_ifchannel_delete(struct pim_ifchannel *ch)
 	pim_ifchannel_remove_children(ch);
 
 	if (ch->sources)
-		list_delete(ch->sources);
+		list_delete_and_null(&ch->sources);
 
 	listnode_delete(ch->upstream->ifchannels, ch);
 
@@ -571,7 +571,7 @@ struct pim_ifchannel *pim_ifchannel_add(struct interface *ifp,
 
 		pim_ifchannel_remove_children(ch);
 		if (ch->sources)
-			list_delete(ch->sources);
+			list_delete_and_null(&ch->sources);
 
 		THREAD_OFF(ch->t_ifjoin_expiry_timer);
 		THREAD_OFF(ch->t_ifjoin_prune_pending_timer);
@@ -1291,10 +1291,9 @@ void pim_ifchannel_scan_forward_start(struct interface *new_ifp)
 {
 	struct pim_interface *new_pim_ifp = new_ifp->info;
 	struct pim_instance *pim = new_pim_ifp->pim;
-	struct listnode *ifnode;
 	struct interface *ifp;
 
-	for (ALL_LIST_ELEMENTS_RO(vrf_iflist(pim->vrf_id), ifnode, ifp)) {
+	FOR_ALL_INTERFACES (pim->vrf, ifp) {
 		struct pim_interface *loop_pim_ifp = ifp->info;
 		struct pim_ifchannel *ch;
 

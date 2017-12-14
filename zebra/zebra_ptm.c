@@ -257,14 +257,13 @@ DEFUN (zebra_ptm_enable,
        "Enable neighbor check with specified topology\n")
 {
 	struct vrf *vrf;
-	struct listnode *i;
 	struct interface *ifp;
 	struct zebra_if *if_data;
 
 	ptm_cb.ptm_enable = ZEBRA_IF_PTM_ENABLE_ON;
 
 	RB_FOREACH (vrf, vrf_name_head, &vrfs_by_name)
-		for (ALL_LIST_ELEMENTS_RO(vrf->iflist, i, ifp))
+		FOR_ALL_INTERFACES (vrf, ifp)
 			if (!ifp->ptm_enable) {
 				if_data = (struct zebra_if *)ifp->info;
 				if (if_data
@@ -662,7 +661,7 @@ int zebra_ptm_sock_read(struct thread *thread)
 }
 
 /* BFD peer/dst register/update */
-int zebra_ptm_bfd_dst_register(struct zserv *client, int sock, u_short length,
+int zebra_ptm_bfd_dst_register(struct zserv *client, u_short length,
 			       int command, struct zebra_vrf *zvrf)
 {
 	struct stream *s;
@@ -706,19 +705,19 @@ int zebra_ptm_bfd_dst_register(struct zserv *client, int sock, u_short length,
 
 	s = client->ibuf;
 
-	pid = stream_getl(s);
+	STREAM_GETL(s, pid);
 	sprintf(tmp_buf, "%d", pid);
 	ptm_lib_append_msg(ptm_hdl, out_ctxt, ZEBRA_PTM_BFD_SEQID_FIELD,
 			   tmp_buf);
 
-	dst_p.family = stream_getw(s);
+	STREAM_GETW(s, dst_p.family);
 
 	if (dst_p.family == AF_INET)
 		dst_p.prefixlen = IPV4_MAX_BYTELEN;
 	else
 		dst_p.prefixlen = IPV6_MAX_BYTELEN;
 
-	stream_get(&dst_p.u.prefix, s, dst_p.prefixlen);
+	STREAM_GET(&dst_p.u.prefix, s, dst_p.prefixlen);
 	if (dst_p.family == AF_INET) {
 		inet_ntop(AF_INET, &dst_p.u.prefix4, buf, sizeof(buf));
 		ptm_lib_append_msg(ptm_hdl, out_ctxt,
@@ -729,32 +728,32 @@ int zebra_ptm_bfd_dst_register(struct zserv *client, int sock, u_short length,
 				   ZEBRA_PTM_BFD_DST_IP_FIELD, buf);
 	}
 
-	min_rx_timer = stream_getl(s);
+	STREAM_GETL(s, min_rx_timer);
 	sprintf(tmp_buf, "%d", min_rx_timer);
 	ptm_lib_append_msg(ptm_hdl, out_ctxt, ZEBRA_PTM_BFD_MIN_RX_FIELD,
 			   tmp_buf);
-	min_tx_timer = stream_getl(s);
+	STREAM_GETL(s, min_tx_timer);
 	sprintf(tmp_buf, "%d", min_tx_timer);
 	ptm_lib_append_msg(ptm_hdl, out_ctxt, ZEBRA_PTM_BFD_MIN_TX_FIELD,
 			   tmp_buf);
-	detect_mul = stream_getc(s);
+	STREAM_GETC(s, detect_mul);
 	sprintf(tmp_buf, "%d", detect_mul);
 	ptm_lib_append_msg(ptm_hdl, out_ctxt, ZEBRA_PTM_BFD_DETECT_MULT_FIELD,
 			   tmp_buf);
 
-	multi_hop = stream_getc(s);
+	STREAM_GETC(s, multi_hop);
 	if (multi_hop) {
 		sprintf(tmp_buf, "%d", 1);
 		ptm_lib_append_msg(ptm_hdl, out_ctxt,
 				   ZEBRA_PTM_BFD_MULTI_HOP_FIELD, tmp_buf);
-		src_p.family = stream_getw(s);
+		STREAM_GETW(s, src_p.family);
 
 		if (src_p.family == AF_INET)
 			src_p.prefixlen = IPV4_MAX_BYTELEN;
 		else
 			src_p.prefixlen = IPV6_MAX_BYTELEN;
 
-		stream_get(&src_p.u.prefix, s, src_p.prefixlen);
+		STREAM_GET(&src_p.u.prefix, s, src_p.prefixlen);
 		if (src_p.family == AF_INET) {
 			inet_ntop(AF_INET, &src_p.u.prefix4, buf, sizeof(buf));
 			ptm_lib_append_msg(ptm_hdl, out_ctxt,
@@ -765,7 +764,7 @@ int zebra_ptm_bfd_dst_register(struct zserv *client, int sock, u_short length,
 					   ZEBRA_PTM_BFD_SRC_IP_FIELD, buf);
 		}
 
-		multi_hop_cnt = stream_getc(s);
+		STREAM_GETC(s, multi_hop_cnt);
 		sprintf(tmp_buf, "%d", multi_hop_cnt);
 		ptm_lib_append_msg(ptm_hdl, out_ctxt,
 				   ZEBRA_PTM_BFD_MAX_HOP_CNT_FIELD, tmp_buf);
@@ -776,14 +775,14 @@ int zebra_ptm_bfd_dst_register(struct zserv *client, int sock, u_short length,
 					   zvrf_name(zvrf));
 	} else {
 		if (dst_p.family == AF_INET6) {
-			src_p.family = stream_getw(s);
+			STREAM_GETW(s, src_p.family);
 
 			if (src_p.family == AF_INET)
 				src_p.prefixlen = IPV4_MAX_BYTELEN;
 			else
 				src_p.prefixlen = IPV6_MAX_BYTELEN;
 
-			stream_get(&src_p.u.prefix, s, src_p.prefixlen);
+			STREAM_GET(&src_p.u.prefix, s, src_p.prefixlen);
 			if (src_p.family == AF_INET) {
 				inet_ntop(AF_INET, &src_p.u.prefix4, buf,
 					  sizeof(buf));
@@ -798,8 +797,8 @@ int zebra_ptm_bfd_dst_register(struct zserv *client, int sock, u_short length,
 						   buf);
 			}
 		}
-		len = stream_getc(s);
-		stream_get(if_name, s, len);
+		STREAM_GETC(s, len);
+		STREAM_GET(if_name, s, len);
 		if_name[len] = '\0';
 
 		ptm_lib_append_msg(ptm_hdl, out_ctxt,
@@ -816,11 +815,14 @@ int zebra_ptm_bfd_dst_register(struct zserv *client, int sock, u_short length,
 		zlog_debug("%s: Sent message (%d) %s", __func__, data_len,
 			   ptm_cb.out_data);
 	zebra_ptm_send_message(ptm_cb.out_data, data_len);
+
+stream_failure:
+	ptm_lib_cleanup_msg(ptm_hdl, out_ctxt);
 	return 0;
 }
 
 /* BFD peer/dst deregister */
-int zebra_ptm_bfd_dst_deregister(struct zserv *client, int sock, u_short length,
+int zebra_ptm_bfd_dst_deregister(struct zserv *client, u_short length,
 				 struct zebra_vrf *zvrf)
 {
 	struct stream *s;
@@ -859,19 +861,19 @@ int zebra_ptm_bfd_dst_deregister(struct zserv *client, int sock, u_short length,
 
 	s = client->ibuf;
 
-	pid = stream_getl(s);
+	STREAM_GETL(s, pid);
 	sprintf(tmp_buf, "%d", pid);
 	ptm_lib_append_msg(ptm_hdl, out_ctxt, ZEBRA_PTM_BFD_SEQID_FIELD,
 			   tmp_buf);
 
-	dst_p.family = stream_getw(s);
+	STREAM_GETW(s, dst_p.family);
 
 	if (dst_p.family == AF_INET)
 		dst_p.prefixlen = IPV4_MAX_BYTELEN;
 	else
 		dst_p.prefixlen = IPV6_MAX_BYTELEN;
 
-	stream_get(&dst_p.u.prefix, s, dst_p.prefixlen);
+	STREAM_GET(&dst_p.u.prefix, s, dst_p.prefixlen);
 	if (dst_p.family == AF_INET)
 		inet_ntop(AF_INET, &dst_p.u.prefix4, buf, sizeof(buf));
 	else
@@ -879,20 +881,20 @@ int zebra_ptm_bfd_dst_deregister(struct zserv *client, int sock, u_short length,
 	ptm_lib_append_msg(ptm_hdl, out_ctxt, ZEBRA_PTM_BFD_DST_IP_FIELD, buf);
 
 
-	multi_hop = stream_getc(s);
+	STREAM_GETC(s, multi_hop);
 	if (multi_hop) {
 		sprintf(tmp_buf, "%d", 1);
 		ptm_lib_append_msg(ptm_hdl, out_ctxt,
 				   ZEBRA_PTM_BFD_MULTI_HOP_FIELD, tmp_buf);
 
-		src_p.family = stream_getw(s);
+		STREAM_GETW(s, src_p.family);
 
 		if (src_p.family == AF_INET)
 			src_p.prefixlen = IPV4_MAX_BYTELEN;
 		else
 			src_p.prefixlen = IPV6_MAX_BYTELEN;
 
-		stream_get(&src_p.u.prefix, s, src_p.prefixlen);
+		STREAM_GET(&src_p.u.prefix, s, src_p.prefixlen);
 		if (src_p.family == AF_INET)
 			inet_ntop(AF_INET, &src_p.u.prefix4, buf, sizeof(buf));
 		else
@@ -906,14 +908,14 @@ int zebra_ptm_bfd_dst_deregister(struct zserv *client, int sock, u_short length,
 					   zvrf_name(zvrf));
 	} else {
 		if (dst_p.family == AF_INET6) {
-			src_p.family = stream_getw(s);
+			STREAM_GETW(s, src_p.family);
 
 			if (src_p.family == AF_INET)
 				src_p.prefixlen = IPV4_MAX_BYTELEN;
 			else
 				src_p.prefixlen = IPV6_MAX_BYTELEN;
 
-			stream_get(&src_p.u.prefix, s, src_p.prefixlen);
+			STREAM_GET(&src_p.u.prefix, s, src_p.prefixlen);
 			if (src_p.family == AF_INET) {
 				inet_ntop(AF_INET, &src_p.u.prefix4, buf,
 					  sizeof(buf));
@@ -929,8 +931,8 @@ int zebra_ptm_bfd_dst_deregister(struct zserv *client, int sock, u_short length,
 			}
 		}
 
-		len = stream_getc(s);
-		stream_get(if_name, s, len);
+		STREAM_GETC(s, len);
+		STREAM_GET(if_name, s, len);
 		if_name[len] = '\0';
 
 		ptm_lib_append_msg(ptm_hdl, out_ctxt,
@@ -943,11 +945,14 @@ int zebra_ptm_bfd_dst_deregister(struct zserv *client, int sock, u_short length,
 			   ptm_cb.out_data);
 
 	zebra_ptm_send_message(ptm_cb.out_data, data_len);
+
+stream_failure:
+	ptm_lib_cleanup_msg(ptm_hdl, out_ctxt);
 	return 0;
 }
 
 /* BFD client register */
-int zebra_ptm_bfd_client_register(struct zserv *client, int sock,
+int zebra_ptm_bfd_client_register(struct zserv *client,
 				  u_short length)
 {
 	struct stream *s;
@@ -961,6 +966,9 @@ int zebra_ptm_bfd_client_register(struct zserv *client, int sock,
 	if (IS_ZEBRA_DEBUG_EVENT)
 		zlog_debug("bfd_client_register msg from client %s: length=%d",
 			   zebra_route_string(client->proto), length);
+
+	s = client->ibuf;
+	STREAM_GETL(s, pid);
 
 	if (ptm_cb.ptm_sock == -1) {
 		ptm_cb.t_timer = NULL;
@@ -978,9 +986,6 @@ int zebra_ptm_bfd_client_register(struct zserv *client, int sock,
 	ptm_lib_append_msg(ptm_hdl, out_ctxt, ZEBRA_PTM_BFD_CLIENT_FIELD,
 			   tmp_buf);
 
-	s = client->ibuf;
-
-	pid = stream_getl(s);
 	sprintf(tmp_buf, "%d", pid);
 	ptm_lib_append_msg(ptm_hdl, out_ctxt, ZEBRA_PTM_BFD_SEQID_FIELD,
 			   tmp_buf);
@@ -994,6 +999,7 @@ int zebra_ptm_bfd_client_register(struct zserv *client, int sock,
 
 	SET_FLAG(ptm_cb.client_flags[client->proto],
 		 ZEBRA_PTM_BFD_CLIENT_FLAG_REG);
+stream_failure:
 	return 0;
 }
 
@@ -1088,12 +1094,11 @@ void zebra_ptm_send_status_req(void)
 void zebra_ptm_reset_status(int ptm_disable)
 {
 	struct vrf *vrf;
-	struct listnode *i;
 	struct interface *ifp;
 	int send_linkup;
 
 	RB_FOREACH (vrf, vrf_id_head, &vrfs_by_id)
-		for (ALL_LIST_ELEMENTS_RO(vrf->iflist, i, ifp)) {
+		FOR_ALL_INTERFACES (vrf, ifp) {
 			send_linkup = 0;
 			if (ifp->ptm_enable) {
 				if (!if_is_operative(ifp))

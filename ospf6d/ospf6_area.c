@@ -61,8 +61,8 @@ static void ospf6_area_lsdb_hook_add(struct ospf6_lsa *lsa)
 	case OSPF6_LSTYPE_ROUTER:
 	case OSPF6_LSTYPE_NETWORK:
 		if (IS_OSPF6_DEBUG_EXAMIN_TYPE(lsa->header->type)) {
-			zlog_debug("Examin %s", lsa->name);
-			zlog_debug("Schedule SPF Calculation for %s",
+			zlog_debug("%s Examin LSA %s", __PRETTY_FUNCTION__, lsa->name);
+			zlog_debug(" Schedule SPF Calculation for %s",
 				   OSPF6_AREA(lsa->lsdb->data)->name);
 		}
 		ospf6_spf_schedule(
@@ -234,6 +234,7 @@ struct ospf6_area *ospf6_area_create(u_int32_t area_id, struct ospf6 *o, int df)
 	oa->summary_prefix->scope = oa;
 	oa->summary_router = OSPF6_ROUTE_TABLE_CREATE(AREA, SUMMARY_ROUTERS);
 	oa->summary_router->scope = oa;
+	oa->router_lsa_size_limit = 1024 + 256;
 
 	/* set default options */
 	if (CHECK_FLAG(o->flag, OSPF6_STUB_ROUTER)) {
@@ -272,7 +273,7 @@ void ospf6_area_delete(struct ospf6_area *oa)
 	for (ALL_LIST_ELEMENTS_RO(oa->if_list, n, oi))
 		oi->area = NULL;
 
-	list_delete(oa->if_list);
+	list_delete_and_null(&oa->if_list);
 
 	ospf6_lsdb_delete(oa->lsdb);
 	ospf6_lsdb_delete(oa->lsdb_self);

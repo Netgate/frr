@@ -114,7 +114,7 @@ l2vpn_exit(struct l2vpn *l2vpn)
 static __inline int
 l2vpn_if_compare(const struct l2vpn_if *a, const struct l2vpn_if *b)
 {
-	return (strcmp(a->ifname, b->ifname));
+	return (if_cmp_name_func((char *)a->ifname, (char *)b->ifname));
 }
 
 struct l2vpn_if *
@@ -177,7 +177,7 @@ l2vpn_if_update(struct l2vpn_if *lif)
 static __inline int
 l2vpn_pw_compare(const struct l2vpn_pw *a, const struct l2vpn_pw *b)
 {
-	return (strcmp(a->ifname, b->ifname));
+	return (if_cmp_name_func((char *)a->ifname, (char *)b->ifname));
 }
 
 struct l2vpn_pw *
@@ -239,13 +239,13 @@ l2vpn_pw_init(struct l2vpn_pw *pw)
 
 	l2vpn_pw_reset(pw);
 
+	pw2zpw(pw, &zpw);
+	lde_imsg_compose_parent(IMSG_KPW_ADD, 0, &zpw, sizeof(zpw));
+
 	l2vpn_pw_fec(pw, &fec);
 	lde_kernel_insert(&fec, AF_INET, (union ldpd_addr*)&pw->lsr_id, 0, 0,
 	    0, (void *)pw);
 	lde_kernel_update(&fec);
-
-	pw2zpw(pw, &zpw);
-	lde_imsg_compose_parent(IMSG_KPW_ADD, 0, &zpw, sizeof(zpw));
 }
 
 void
@@ -295,17 +295,26 @@ int
 l2vpn_pw_ok(struct l2vpn_pw *pw, struct fec_nh *fnh)
 {
 	/* check for a remote label */
-	if (fnh->remote_label == NO_LABEL)
+	if (fnh->remote_label == NO_LABEL) {
+		log_warnx("%s: pseudowire %s: no remote label", __func__,
+			  pw->ifname);
 		return (0);
+	}
 
 	/* MTUs must match */
-	if (pw->l2vpn->mtu != pw->remote_mtu)
+	if (pw->l2vpn->mtu != pw->remote_mtu) {
+		log_warnx("%s: pseudowire %s: MTU mismatch detected", __func__,
+			  pw->ifname);
 		return (0);
+	}
 
 	/* check pw status if applicable */
 	if ((pw->flags & F_PW_STATUSTLV) &&
-	    pw->remote_status != PW_FORWARDING)
+	    pw->remote_status != PW_FORWARDING) {
+		log_warnx("%s: pseudowire %s: remote end is down", __func__,
+			  pw->ifname);
 		return (0);
+	}
 
 	return (1);
 }
@@ -550,7 +559,8 @@ l2vpn_pw_ctl(pid_t pid)
 			    sizeof(pwctl.ifname));
 			pwctl.pwid = pw->pwid;
 			pwctl.lsr_id = pw->lsr_id;
-			if (pw->local_status == PW_FORWARDING &&
+			if (pw->enabled &&
+			    pw->local_status == PW_FORWARDING &&
 			    pw->remote_status == PW_FORWARDING)
 				pwctl.status = 1;
 

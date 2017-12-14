@@ -223,6 +223,9 @@ uint8_t add_te_subtlvs(uint8_t *buf, struct mpls_te_circuit *mtc)
 		tlvs += size;
 	}
 
+	/* Add before this line any other parsing of TLV */
+	(void)tlvs;
+
 	/* Update SubTLVs length */
 	mtc->length = subtlvs_len(mtc);
 
@@ -1242,13 +1245,13 @@ DEFUN (show_isis_mpls_te_interface,
        "Interface information\n"
        "Interface name\n")
 {
+	struct vrf *vrf = vrf_lookup_by_id(VRF_DEFAULT);
 	int idx_interface = 4;
 	struct interface *ifp;
-	struct listnode *node;
 
 	/* Show All Interfaces. */
 	if (argc == 4) {
-		for (ALL_LIST_ELEMENTS_RO(vrf_iflist(VRF_DEFAULT), node, ifp))
+		FOR_ALL_INTERFACES (vrf, ifp)
 			show_mpls_te_sub(vty, ifp);
 	}
 	/* Interface name is specified. */

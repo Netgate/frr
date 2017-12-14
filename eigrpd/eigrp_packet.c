@@ -108,7 +108,7 @@ int eigrp_make_md5_digest(struct eigrp_interface *ei, struct stream *s,
 	stream_get(auth_TLV, s, EIGRP_AUTH_MD5_TLV_SIZE);
 	stream_set_getp(s, backup_get);
 
-	keychain = keychain_lookup(IF_DEF_PARAMS(ei->ifp)->auth_keychain);
+	keychain = keychain_lookup(ei->params.auth_keychain);
 	if (keychain)
 		key = key_lookup_for_send(keychain);
 	else {
@@ -169,7 +169,7 @@ int eigrp_check_md5_digest(struct stream *s,
 	struct TLV_MD5_Authentication_Type *auth_TLV;
 	struct eigrp_header *eigrph;
 
-	if (nbr && ntohl(nbr->crypt_seqnum) > ntohl(authTLV->key_sequence)) {
+	if (ntohl(nbr->crypt_seqnum) > ntohl(authTLV->key_sequence)) {
 		zlog_warn(
 			"interface %s: eigrp_check_md5 bad sequence %d (expect %d)",
 			IF_NAME(nbr->ei), ntohl(authTLV->key_sequence),
@@ -189,7 +189,7 @@ int eigrp_check_md5_digest(struct stream *s,
 	ibuf = s->data;
 	backup_end = s->endp;
 
-	keychain = keychain_lookup(IF_DEF_PARAMS(nbr->ei->ifp)->auth_keychain);
+	keychain = keychain_lookup(nbr->ei->params.auth_keychain);
 	if (keychain)
 		key = key_lookup_for_send(keychain);
 
@@ -265,7 +265,7 @@ int eigrp_make_sha256_digest(struct eigrp_interface *ei, struct stream *s,
 	stream_get(auth_TLV, s, EIGRP_AUTH_SHA256_TLV_SIZE);
 	stream_set_getp(s, backup_get);
 
-	keychain = keychain_lookup(IF_DEF_PARAMS(ei->ifp)->auth_keychain);
+	keychain = keychain_lookup(ei->params.auth_keychain);
 	if (keychain)
 		key = key_lookup_for_send(keychain);
 
@@ -317,7 +317,6 @@ int eigrp_write(struct thread *thread)
 	struct ip iph;
 	struct msghdr msg;
 	struct iovec iov[2];
-	u_int16_t opcode = 0;
 	u_int32_t seqno, ack;
 
 	int ret;
@@ -345,8 +344,18 @@ int eigrp_write(struct thread *thread)
 
 	/* Get one packet from queue. */
 	ep = eigrp_fifo_next(ei->obuf);
-	assert(ep);
-	assert(ep->length >= EIGRP_HEADER_LEN);
+	if (!ep) {
+		zlog_err("%s: Interface %s no packet on queue?",
+			 __PRETTY_FUNCTION__, ei->ifp->name);
+		goto out;
+	}
+	if (ep->length < EIGRP_HEADER_LEN) {
+		zlog_err("%s: Packet just has a header?",
+			 __PRETTY_FUNCTION__);
+		eigrp_header_dump((struct eigrp_header *)ep->s->data);
+		eigrp_packet_delete(ei);
+		goto out;
+	}
 
 	if (ep->dst.s_addr == htonl(EIGRP_MULTICAST_ADDRESS))
 		eigrp_if_ipmulticast(eigrp, ei->address, ei->ifp->ifindex);
@@ -363,7 +372,6 @@ int eigrp_write(struct thread *thread)
 	 * this outgoing packet.
 	 */
 	eigrph = (struct eigrp_header *)STREAM_DATA(ep->s);
-	opcode = eigrph->opcode;
 	seqno = ntohl(eigrph->sequence);
 	ack = ntohl(eigrph->ack);
 	if (ep->nbr && (ack != ep->nbr->recv_sequence_number)) {
@@ -417,7 +425,7 @@ int eigrp_write(struct thread *thread)
 
 	iov[0].iov_base = (char *)&iph;
 	iov[0].iov_len = iph.ip_hl << EIGRP_WRITE_IPHL_SHIFT;
-	iov[1].iov_base = STREAM_PNT(ep->s);
+	iov[1].iov_base = stream_pnt(ep->s);
 	iov[1].iov_len = ep->length;
 
 	/* send final fragment (could be first) */
@@ -427,9 +435,8 @@ int eigrp_write(struct thread *thread)
 
 	if (IS_DEBUG_EIGRP_TRANSMIT(0, SEND)) {
 		eigrph = (struct eigrp_header *)STREAM_DATA(ep->s);
-		opcode = eigrph->opcode;
 		zlog_debug("Sending [%s][%d/%d] to [%s] via [%s] ret [%d].",
-			   lookup_msg(eigrp_packet_type_str, opcode, NULL),
+			   lookup_msg(eigrp_packet_type_str, eigrph->opcode, NULL),
 			   seqno, ack,
 			   inet_ntoa(ep->dst), IF_NAME(ei), ret);
 	}
@@ -445,6 +452,7 @@ int eigrp_write(struct thread *thread)
 	/* Now delete packet from queue. */
 	eigrp_packet_delete(ei);
 
+out:
 	if (eigrp_fifo_next(ei->obuf) == NULL) {
 		ei->on_write_q = 0;
 		list_delete_node(eigrp->oi_write_q, node);
@@ -522,7 +530,7 @@ int eigrp_read(struct thread *thread)
 	}
 
 	/* associate packet with eigrp interface */
-	ei = eigrp_if_lookup_recv_if(eigrp, iph->ip_src, ifp);
+	ei = ifp->info;
 
 	/* eigrp_verify_header() relies on a valid "ei" and thus can be called
 	   only
@@ -547,7 +555,7 @@ int eigrp_read(struct thread *thread)
 	   by eigrp_recv_packet() to be correct). */
 
 	stream_forward_getp(ibuf, (iph->ip_hl * 4));
-	eigrph = (struct eigrp_header *)STREAM_PNT(ibuf);
+	eigrph = (struct eigrp_header *)stream_pnt(ibuf);
 
 	if (IS_DEBUG_EIGRP_TRANSMIT(0, RECV)
 	    && IS_DEBUG_EIGRP_TRANSMIT(0, PACKET_DETAIL))
@@ -557,21 +565,8 @@ int eigrp_read(struct thread *thread)
 	//  stream_get_getp(ibuf)))
 	//    return -1;
 
-	/* Now it is safe to access all fields of EIGRP packet header. */
-	/* associate packet with eigrp interface */
-	ei = eigrp_if_lookup_recv_if(eigrp, iph->ip_src, ifp);
-
-	/* eigrp_verify_header() relies on a valid "ei" and thus can be called
-	   only
-	   after the checks below are passed. These checks in turn access the
-	   fields of unverified "eigrph" structure for their own purposes and
-	   must remain very accurate in doing this.
-	*/
-	if (!ei)
-		return 0;
-
 	/* If incoming interface is passive one, ignore it. */
-	if (ei && EIGRP_IF_PASSIVE_STATUS(ei) == EIGRP_IF_PASSIVE) {
+	if (ei && eigrp_if_is_passive(ei)) {
 		char buf[3][INET_ADDRSTRLEN];
 
 		if (IS_DEBUG_EIGRP_TRANSMIT(0, RECV))
@@ -586,11 +581,6 @@ int eigrp_read(struct thread *thread)
 					  buf[2], sizeof(buf[2])));
 
 		if (iph->ip_dst.s_addr == htonl(EIGRP_MULTICAST_ADDRESS)) {
-			/* Try to fix multicast membership.
-			 * Some OS:es may have problems in this area,
-			 * make sure it is removed.
-			 */
-			EI_MEMBER_JOINED(ei, MEMBER_ALLROUTERS);
 			eigrp_if_set_multicast(ei);
 		}
 		return 0;
@@ -1175,25 +1165,57 @@ u_int16_t eigrp_add_internalTLV_to_stream(struct stream *s,
 	u_int16_t length;
 
 	stream_putw(s, EIGRP_TLV_IPv4_INT);
-	if (pe->destination->prefixlen <= 8) {
-		stream_putw(s, 0x001A);
-		length = 0x001A;
+	switch (pe->destination->prefixlen) {
+	case 0:
+	case 1:
+	case 2:
+	case 3:
+	case 4:
+	case 5:
+	case 6:
+	case 7:
+	case 8:
+		length = EIGRP_TLV_IPV4_SIZE_GRT_0_BIT;
+		stream_putw(s, length);
+		break;
+	case 9:
+	case 10:
+	case 11:
+	case 12:
+	case 13:
+	case 14:
+	case 15:
+	case 16:
+		length = EIGRP_TLV_IPV4_SIZE_GRT_8_BIT;
+		stream_putw(s, length);
+		break;
+	case 17:
+	case 18:
+	case 19:
+	case 20:
+	case 21:
+	case 22:
+	case 23:
+	case 24:
+		length = EIGRP_TLV_IPV4_SIZE_GRT_16_BIT;
+		stream_putw(s, length);
+		break;
+	case 25:
+	case 26:
+	case 27:
+	case 28:
+	case 29:
+	case 30:
+	case 31:
+	case 32:
+		length = EIGRP_TLV_IPV4_SIZE_GRT_24_BIT;
+		stream_putw(s, length);
+		break;
+	default:
+		zlog_err("%s: Unexpected prefix length: %d",
+			 __PRETTY_FUNCTION__, pe->destination->prefixlen);
+		return 0;
 	}
-	if ((pe->destination->prefixlen > 8)
-	    && (pe->destination->prefixlen <= 16)) {
-		stream_putw(s, 0x001B);
-		length = 0x001B;
-	}
-	if ((pe->destination->prefixlen > 16)
-	    && (pe->destination->prefixlen <= 24)) {
-		stream_putw(s, 0x001C);
-		length = 0x001C;
-	}
-	if (pe->destination->prefixlen > 24) {
-		stream_putw(s, 0x001D);
-		length = 0x001D;
-	}
-
 	stream_putl(s, 0x00000000);
 
 	/*Metric*/
@@ -1240,12 +1262,12 @@ u_int16_t eigrp_add_authTLV_MD5_to_stream(struct stream *s,
 	authTLV->key_sequence = 0;
 	memset(authTLV->Nullpad, 0, sizeof(authTLV->Nullpad));
 
-	keychain = keychain_lookup(IF_DEF_PARAMS(ei->ifp)->auth_keychain);
+	keychain = keychain_lookup(ei->params.auth_keychain);
 	if (keychain)
 		key = key_lookup_for_send(keychain);
 	else {
-		free(IF_DEF_PARAMS(ei->ifp)->auth_keychain);
-		IF_DEF_PARAMS(ei->ifp)->auth_keychain = NULL;
+		free(ei->params.auth_keychain);
+		ei->params.auth_keychain = NULL;
 		eigrp_authTLV_MD5_free(authTLV);
 		return 0;
 	}
@@ -1280,12 +1302,12 @@ u_int16_t eigrp_add_authTLV_SHA256_to_stream(struct stream *s,
 	authTLV->key_sequence = 0;
 	memset(authTLV->Nullpad, 0, sizeof(authTLV->Nullpad));
 
-	keychain = keychain_lookup(IF_DEF_PARAMS(ei->ifp)->auth_keychain);
+	keychain = keychain_lookup(ei->params.auth_keychain);
 	if (keychain)
 		key = key_lookup_for_send(keychain);
 	else {
-		free(IF_DEF_PARAMS(ei->ifp)->auth_keychain);
-		IF_DEF_PARAMS(ei->ifp)->auth_keychain = NULL;
+		free(ei->params.auth_keychain);
+		ei->params.auth_keychain = NULL;
 		eigrp_authTLV_SHA256_free(authTLV);
 		return 0;
 	}
