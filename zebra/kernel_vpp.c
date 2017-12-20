@@ -1,4 +1,4 @@
-/* 
+/*
  * Copyright 2017, Rubicon Communications, LLC.
  */
 
@@ -20,9 +20,10 @@
 #include "zebra/interface.h"
 #include "zebra/debug.h"
 
+#include <vppmgmt/vpp_mgmt_api.h>
+
 #include "zebra/rt_vpp.h"
 
-#include <vppmgmt/vpp_mgmt_api.h>
 
 unsigned int debug;		/* FIXME -- remove form libvppmgmt */
 
