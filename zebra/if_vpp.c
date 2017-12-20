@@ -1,4 +1,4 @@
-/* 
+/*
  * Copyright 2017, Rubicon Communications, LLC.
  */
 
@@ -16,10 +16,42 @@
 #include "zebra/interface.h"
 #include "zebra/ioctl.h"
 
-#include "zebra/rt_vpp.h"
-
 #include <vppinfra/types.h>
 #include <vppmgmt/vpp_mgmt_api.h>
+
+#include "zebra/rt_vpp.h"
+
+
+/*
+ * VPP Land		FRR Land		What Is it?
+ * --------		--------		----------
+ * sw_if_index,ifi	ifindex			common variable name
+ *	~0		IFINDEX_INTERNAL == 0	invalid entry
+ *	0		1			first valid index
+ *
+ * sw_if_index as found in a VPP message is in network-byte-order.
+ * ifi as found in vmgmt_*() calls is in host-byte-order.
+ * So:
+ *    ifi <==> ntohl(sw_if_index)
+ *    ifindex <==> vpp_map_swif_to_ifindex(ifi)
+ */
+
+u32 vpp_map_ifindex_to_swif(u_int32_t ifindex)
+{
+	if (ifindex == IFINDEX_INTERNAL) {
+		return ~0U;
+	}
+	return ifindex - 1;
+}
+
+
+u_int32_t vpp_map_swif_to_ifindex(u32 ifi)
+{
+	if (ifi == ~0U) {
+		return IFINDEX_INTERNAL;
+	}
+	return ifi + 1;
+}
 
 
 /*
@@ -60,7 +92,7 @@ static int vpp_intf_convert_one_if(u32 ifi)
 		return 0;
 	}
 
-	printf("Interface: %s  Index: %d\n", intf->interface_name, ifi);
+	printf("Interface: %s  VPP Index: %d\n", intf->interface_name, ifi);
 	if (intf->description) {
 		printf("    Description: %s\n", intf->description);
 	}
@@ -90,15 +122,15 @@ static int vpp_intf_convert_one_if(u32 ifi)
 	 */
 	vrf_id = VRF_DEFAULT;
 
-	ifp = if_get_by_name((char *)intf->interface_name, vrf_id);
-	ifp->ifindex = intf->sw_if_index;
+	ifp = if_get_by_name((char *)intf->interface_name, vrf_id, 0);
+	if_set_index(ifp, vpp_map_swif_to_ifindex(ifi));
 	ifp->mtu6 = ifp->mtu = intf->link_mtu;
 	ifp->metric = 0;
 	ifp->flags = flags & 0x0000fffff;
 	ifp->ll_type = ZEBRA_LLT_ETHER;
 	clib_memcpy(ifp->hw_addr, intf->l2_address, sizeof(intf->l2_address));
 	ifp->hw_addr_len = intf->l2_address_length;
-	
+
 	if_add_update(ifp);
 
 	/*
@@ -195,12 +227,14 @@ void interface_list(struct zebra_ns *zns)
 
 int if_set_flags(struct interface *ifp, uint64_t flags)
 {
+	printf("%s: failed\n", __func__);
 	return -1;
 }
 
 
 int if_unset_flags(struct interface *ifp, uint64_t flags)
 {
+	printf("%s: failed\n", __func__);
 	return -1;
 }
 
@@ -212,12 +246,14 @@ void if_get_flags(struct interface *ifp)
 
 int if_set_prefix(struct interface *fp, struct connected *ifc)
 {
+	printf("%s: failed\n", __func__);
 	return -1;
 }
 
 
 int if_unset_prefix(struct interface *ifp, struct connected *ifc)
 {
+	printf("%s: failed\n", __func__);
 	return -1;
 }
 
@@ -234,12 +270,14 @@ void if_get_mtu(struct interface *ifp)
 
 int if_prefix_add_ipv6(struct interface *ifp, struct connected *ifc)
 {
+	printf("%s: failed\n", __func__);
 	return -1;
 }
 
 
 int if_prefix_delete_ipv6(struct interface *ifp, struct connected *ifc)
 {
+	printf("%s: failed\n", __func__);
 	return -1;
 }
 
