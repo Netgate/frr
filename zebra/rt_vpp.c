@@ -119,9 +119,9 @@ static int route_multipath(u_int8_t is_add,
 	 * FIXME: needs to come from re->vrf_id.
 	 */
 	if (is_ipv6) {
-		rt_table_name = "IPv6-VRF:0";
+		rt_table_name = ROUTE_DEFAULT_IPV6_NAME;
 	} else {
-		rt_table_name = "IPv4-VRF:0";
+		rt_table_name = ROUTE_DEFAULT_IPV4_NAME;
 	}
 
 	for (nh = re->nexthop; nh; nh = nh->next) {

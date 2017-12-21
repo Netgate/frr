@@ -278,10 +278,10 @@ void vpp_route_read(struct zebra_ns *zns)
         vmgmt_route_mark_dirty();
         vmgmt_route_refresh_all();
 
-	rt_table = vmgmt_route_get_table((char *)"IPv4-VRF:0");
+	rt_table = vmgmt_route_get_table((char *)ROUTE_DEFAULT_IPV4_NAME);
 	vpp_route_table_add(rt_table, zns);
 
-	rt_table = vmgmt_route_get_table((char *)"IPv6-VRF:0");
+	rt_table = vmgmt_route_get_table((char *)ROUTE_DEFAULT_IPV6_NAME);
 	vpp_route_table_add(rt_table, zns);
 }
 

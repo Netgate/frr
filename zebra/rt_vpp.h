@@ -1,6 +1,10 @@
-/* 
+/*
  * Copyright 2017, Rubicon Communications, LLC.
  */
+
+#define ROUTE_DEFAULT_IPV4_NAME		"ipv4-VRF:0"
+#define ROUTE_DEFAULT_IPV6_NAME		"ipv6-VRF:0"
+
 
 u32 vpp_map_ifindex_to_swif(u_int32_t ifindex);
 u_int32_t vpp_map_swif_to_ifindex(u32 ifi);
