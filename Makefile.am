@@ -127,3 +127,9 @@ DISTCLEANFILES = extras/scripts/.version *.tar.gz
 
 clean-local:
 	@rm -rf build-root
+
+pkg-srpm: dist
+	make -C extras/rpm srpm
+
+pkg-rpm: dist
+	make -C extras/rpm

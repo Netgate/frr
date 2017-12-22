@@ -1905,7 +1905,9 @@ AC_CONFIG_FILES([Makefile
 	  doc/frr-args.8
 	  pkgsrc/bgpd.sh pkgsrc/ospf6d.sh pkgsrc/ospfd.sh
 	  pkgsrc/ripd.sh pkgsrc/ripngd.sh pkgsrc/zebra.sh
-	  pkgsrc/eigrpd.sh])
+	  pkgsrc/eigrpd.sh
+	  extras/rpm/Makefile
+])
 
 if test "${enable_bgp_vnc}" != "no"; then
    if test "${with_rfp_path}" != "bgpd/rfp-example" ; then

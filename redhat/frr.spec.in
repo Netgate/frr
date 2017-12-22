@@ -1,3 +1,5 @@
+%{!?_topdir: %define _topdir %(pwd)}
+
 # configure options
 #
 # Some can be overriden on rpmbuild commandline with:
@@ -128,11 +130,11 @@
 
 Summary: Routing daemon
 Name:           frr
-Version:        %{rpmversion}
-Release:        @CONFDATE@%{release_rev}%{?dist}
+Version:        %{_version}
+Release:        %{_release}
 License:        GPLv2+
 Group:          System Environment/Daemons
-Source0:        http://www.frrouting.org/releases/frr/%{name}-%{frrversion}.tar.gz
+Source:         %{name}-%{version}-%{release}.tar.gz
 URL:            http://www.frrouting.org
 Requires(pre):  /sbin/install-info
 Requires(preun): /sbin/install-info
