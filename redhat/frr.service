@@ -10,7 +10,6 @@ NotifyAccess=all
 StartLimitInterval=3m
 StartLimitBurst=3
 TimeoutSec=1m
-WatchdogSec=60s
 RestartSec=5
 Restart=on-abnormal
 LimitNOFILE=1024
