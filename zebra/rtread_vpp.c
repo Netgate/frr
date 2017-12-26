@@ -71,7 +71,9 @@ static void vpp_rt_add_v6_route(ip6_fib_details_t *v6_route,
 			table_id,
 			0,
 			0 /* mtu */,
-			0);
+			0,
+			0 /* tag */
+			);
 #endif
 	}
 }
@@ -189,8 +191,9 @@ static void vpp_rt_add_v4_route(ip_fib_details_t *v4_route,
 				&nh,	/* nexthop */
 				table_id,	/* routing table_id */
 				0,	/* metric */
-				0	/* mtu */,
-				0	/* distance */
+				0,	/* mtu */
+				0,	/* distance */
+				0	/* tag */
 				);
 
 		} else if (v4_route->count > 1) {
