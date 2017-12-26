@@ -145,6 +145,11 @@ static void vpp_rt_add_v4_route(ip_fib_details_t *v4_route,
 		path = &fib_path_vec[p];
 
 		ip4nh = (u_int32_t *)path->next_hop;
+		if (pref.prefixlen == 32
+		    && *(u_int32_t *)&pref.u.prefix4 == *(u_int32_t *)ip4nh) {
+			continue;
+		}
+
 		ifindex = vpp_map_swif_to_ifindex(path->sw_if_index);
 
 		memset(&nh, 0, sizeof(nh));
