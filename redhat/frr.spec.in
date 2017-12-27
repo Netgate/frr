@@ -371,6 +371,11 @@ if getent passwd %frr_user >/dev/null ; then : ; else \
   -M -r -s /sbin/nologin -c "FRRouting suite" \
   -d %_localstatedir %frr_user 2> /dev/null || : ; \
 fi
+if getent passwd frr >/dev/null ; then \
+    /usr/sbin/groupadd -f -r vpp > /dev/null ; \
+    /sbin/usermod -a -G vpp frr || : ; \
+    else : ; \
+fi
 %if 0%{?vty_group:1}
 /usr/sbin/usermod -a -G %vty_group %frr_user
 %endif
