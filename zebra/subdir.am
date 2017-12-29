@@ -22,8 +22,8 @@ endif
 LIBVPPMGMT_INCLUDE_DIR	= ${LIBVPPMGMT_DIR}/usr/include
 LIBVPPMGMT_LIB_DIR	= ${LIBVPPMGMT_DIR}/usr/lib64
 
-VPP_INCLUDE_DIR		= ${VPP_DIR}/include
-VPP_LIB_DIR		= ${VPP_DIR}/lib64
+VPP_INCLUDE_DIR		= ${VPP_DIR}/build-root/install-vpp-native/vpp/include
+VPP_LIB_DIR		= ${VPP_DIR}/build-root/install-vpp-native/vpp/lib64
 
 AM_CFLAGS	+= -I${LIBVPPMGMT_INCLUDE_DIR}
 AM_CFLAGS	+= -I${VPP_INCLUDE_DIR}
