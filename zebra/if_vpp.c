@@ -93,10 +93,6 @@ static int vpp_intf_convert_one_if(u32 ifi)
 	}
 
 	printf("Interface: %s  VPP Index: %d\n", intf->interface_name, ifi);
-	if (intf->description) {
-		printf("    Description: %s\n", intf->description);
-	}
-
 	printf("    Admin status: %s\n", intf->admin_up ? "up" : "down");
 	printf("    Link status: %s\n", intf->link_up ? "up" : "down");
 
