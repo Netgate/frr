@@ -123,6 +123,9 @@ extras/scripts/.version:
 	sh extras/scripts/version > extras/scripts/.tmpversion
 	mv extras/scripts/.tmpversion extras/scripts/.version
 
+dist-hook:
+	rm -f extras/scripts/.version
+
 DISTCLEANFILES = extras/scripts/.version *.tar.gz
 
 clean-local:
