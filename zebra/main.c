@@ -48,6 +48,9 @@
 #include "zebra/zebra_mpls.h"
 #include "zebra/label_manager.h"
 
+#include <vppmgmt/vpp_mgmt_api.h>
+
+
 #define ZEBRA_PTM_SUPPORT
 
 /* Zebra instance */
@@ -336,7 +339,9 @@ int main(int argc, char **argv)
 	*  The notifications from kernel will show originating PID equal
 	*  to that after daemon() completes (if ever called).
 	*/
+	vmgmt_disconnect();
 	frr_config_fork();
+	vmgmt_init((char *) "route_daemon", 1);
 
 	/* Clean up rib -- before fork (?) */
 	/* rib_weed_tables (); */
