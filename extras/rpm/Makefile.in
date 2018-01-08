@@ -11,11 +11,11 @@ BR=$(shell realpath $(CURDIR)/../../build-root)
 RPMBUILD=$(BR)/rpmbuild
 
 ifneq ($(strip ${VPP_DIR}),)
-	VPP_DEF=--define "vppdir $(VPP_DIR)"
+	VPP_DEF=--define "vpp_dir $(VPP_DIR)"
 endif
 
 ifneq ($(strip ${LIBVPPMGMT_DIR}),)
-	LIBVPPMGMT_DEF=--define "libvppmgmtdir $(LIBVPPMGMT_DIR)"
+	LIBVPPMGMT_DEF=--define "libvppmgmt_dir $(LIBVPPMGMT_DIR)"
 endif
 
 all: RPM
