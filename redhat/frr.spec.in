@@ -375,7 +375,8 @@ if getent passwd %frr_user >/dev/null ; then : ; else \
 fi
 if getent passwd frr >/dev/null ; then \
     /usr/sbin/groupadd -f -r vpp > /dev/null ; \
-    /sbin/usermod -a -G vpp frr || : ; \
+    /usr/sbin/groupadd -f -r root > /dev/null ; \
+    /sbin/usermod -a -G vpp,root frr || : ; \
     else : ; \
 fi
 %if 0%{?vty_group:1}
