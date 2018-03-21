@@ -281,4 +281,38 @@ int if_prefix_delete_ipv6(struct interface *ifp, struct connected *ifc)
 	return -1;
 }
 
+void vpp_link_change(sw_interface_event_t *event)
+{
+	struct interface *ifp;
+	char *if_name;
+	u_int64_t flags = 0;
+
+	if (!event) {
+		zlog_err("%s: No interface event data", __func__);
+	}
+
+	zlog_warn("VPP interface event received");
+
+	/* don't do anything for local0 */
+	if (!event->sw_if_index) {
+		return;
+	}
+
+	if_name = (char *) event->interface_name;
+	if (!(ifp = if_get_by_name(if_name, VRF_DEFAULT, 0))) {
+		zlog_err("%s: No interface found for %s", __func__, if_name);
+		return;
+	}
+
+	zlog_info("%s: initial interface flags: %lu", __func__, ifp->flags);
+
+	flags |= (event->admin_state) ? IFF_UP : 0;
+	flags |= (event->link_state) ? IFF_RUNNING : 0;
+	flags |= (strncmp(if_name, "loop", 4)) ? 0 : IFF_LOOPBACK;
+
+	if_flags_update(ifp, flags & 0x0000fffff);
+
+	zlog_info("%s: updated interface flags: %lu", __func__, ifp->flags);
+
+}
 #endif

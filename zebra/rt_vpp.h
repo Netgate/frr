@@ -16,4 +16,4 @@ void vpp_macfdb_read(struct zebra_ns *zns);
 void vpp_macfdb_read_for_bridge(struct zebra_ns *zns,
 				struct interface *ifp,
 				struct interface *br_if);
-
+void vpp_link_change(sw_interface_event_t *event);

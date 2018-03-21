@@ -38,6 +38,7 @@ void kernel_init(struct zebra_ns *zns)
 	} else {
 		zlog_info("vmgmt_init success");
 	}
+	vmgmt_intf_event_register(vpp_link_change);
 }
 
 

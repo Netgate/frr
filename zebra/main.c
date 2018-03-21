@@ -341,7 +341,7 @@ int main(int argc, char **argv)
 	*/
 	vmgmt_disconnect();
 	frr_config_fork();
-	vmgmt_init((char *) "route_daemon", 1);
+	kernel_init(NULL);
 
 	/* Clean up rib -- before fork (?) */
 	/* rib_weed_tables (); */
