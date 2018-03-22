@@ -82,6 +82,10 @@ static int vpp_intf_convert_one_if(u32 ifi)
 	ip_details_t *ipd_v6;
 	char addrbuf[40];
 
+	if (!ifi) {
+		return 0;
+	}
+
 	ipd_v4 = ipd_v6 = 0;
 	vmgmt_intf_interface_data_get(ifi, &ipd_v4, &ipd_v6, &intf);
 
