@@ -113,8 +113,8 @@ static int vpp_intf_convert_one_if(u32 ifi)
 	flags = 0;
 	flags |= (intf->admin_up) ? IFF_UP : 0;
 	flags |= (intf->link_up) ? IFF_RUNNING : 0;
-	flags |= (strstr((const char *) intf->interface_name, "local"))
-		? IFF_LOOPBACK : 0;
+	flags |= (strncmp((const char *)intf->interface_name, "loop", 4)) ?
+		0 : IFF_LOOPBACK;
 
 	/*
 	 * FIXME: Zebra VRF in VPP tinkerings.
