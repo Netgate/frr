@@ -138,7 +138,7 @@ static int vpp_intf_convert_one_if(u32 ifi)
 	 */
 	if (ipd_v4
 	    && vec_len(ipd_v4->addr) > 0
-	    && ipd_v4[ifi].present) {
+	    && ipd_v4->present) {
 		printf("    IPv4 addresses:\n");
 		vec_foreach(addr, ipd_v4->addr) {
 			u_int32_t bc;
@@ -164,7 +164,7 @@ static int vpp_intf_convert_one_if(u32 ifi)
 	 */
 	if (ipd_v6
 	    && vec_len(ipd_v6->addr) > 0
-	    && ipd_v6[ifi].present) {
+	    && ipd_v6->present) {
 		printf("    IPv6 addresses:\n");
 		vec_foreach(addr, ipd_v6->addr) {
 			memset(addrbuf, 0, sizeof(addrbuf));
