@@ -25,6 +25,14 @@ dnl -----------------------------------
 AC_CANONICAL_BUILD()
 AC_CANONICAL_HOST()
 
+OS_ID=$( grep '^ID=' /etc/os-release | cut -f2- -d= | sed -e 's/\"//g' )
+AM_CONDITIONAL([OS_IS_DEBIAN], [ test ${OS_ID} = ubuntu -o ${OS_ID} = debian ])
+AM_CONDITIONAL([OS_IS_CENTOS], \
+	[ test ${OS_ID} = centos \
+		-o ${OS_ID} = rhel \
+		-o ${OS_ID} = fedora \
+		-o ${OS_ID} = opensuse ])
+
 AS_IF([test "$host" != "$build"], [
   if test "$srcdir" = "."; then
     AC_MSG_ERROR([cross-compilation is only possible with builddir separate from srcdir.  create a separate directory and run as .../path-to-frr/configure.])

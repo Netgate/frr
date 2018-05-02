@@ -19,8 +19,16 @@ endif
 ## endif ZEBRA
 endif
 
+OS_LIB_DIR =
+if OS_IS_CENTOS
+    OS_LIB_DIR += lib64
+endif
+if OS_IS_DEBIAN
+    OS_LIB_DIR += lib
+endif
+
 LIBVPPMGMT_INCLUDE_DIR	= ${LIBVPPMGMT_DIR}/usr/include
-LIBVPPMGMT_LIB_DIR	= ${LIBVPPMGMT_DIR}/usr/lib64
+LIBVPPMGMT_LIB_DIR	= ${LIBVPPMGMT_DIR}/usr/$(strip $(OS_LIB_DIR))
 
 VPP_INCLUDE_DIR		= ${VPP_DIR}/build-root/install-vpp-native/vpp/include
 VPP_LIB_DIR		= ${VPP_DIR}/build-root/install-vpp-native/vpp/lib64
@@ -36,6 +44,7 @@ zebra_zebra_LDADD	+= -lvlibmemoryclient
 zebra_zebra_LDADD	+= -lsvm
 zebra_zebra_LDADD	+= -lvppinfra
 zebra_zebra_LDADD	+= -lvlib
+zebra_zebra_LDADD	+= -lvnet
 zebra_zebra_LDADD	+= -lpthread -lm -lrt
 
 zebra_zebra_SOURCES = \
