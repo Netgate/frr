@@ -238,6 +238,63 @@ static void vpp_rt_add_v4_route(ip_fib_details_t *v4_route,
 }
 
 
+/*
+ * Return true if the fib_path is flagged as DROP.
+ */
+static vpp_route_is_drop(ip_fib_path_t *fib_path)
+{
+	if (!fib_path)
+		return 0;
+
+	return fib_path[0].is_drop;
+}
+
+
+/*
+ * Determine if the IPv4 route is one of VPP's default routes:
+ *
+ *    0.0.0.0/0		-> DROP
+ *    0.0.0.0/32	-> DROP
+ *    224.0.0.0/4	-> DROP
+ *    240.0.0.0/4	-> DROP
+ *    255.255.255.255/32-> DROP
+ *
+ * Returns 1 if the route is one of the above default routes.
+ */
+
+static int vpp_is_ipv4_default_route(ip_fib_details_t *v4_route)
+{
+	if (v4_route->address[0] == 0) {
+		if (v4_route->address[1] == 0
+		    && v4_route->address[2] == 0
+		    && v4_route->address[3] == 0
+		    && (v4_route->address_length == 0
+			|| v4_route->address_length == 32)) {
+			return vpp_route_is_drop(v4_route->fib_path_vec);
+		}
+
+	} else if (v4_route->address[0] == 224
+		   || v4_route->address[0] == 240) {
+		if (v4_route->address[1] == 0
+		    && v4_route->address[2] == 0
+		    && v4_route->address[3] == 0
+		    && v4_route->address_length == 32) {
+			return vpp_route_is_drop(v4_route->fib_path_vec);
+		}
+
+	} else if (v4_route->address[0] == 255) {
+		if (v4_route->address[1] == 255
+		    && v4_route->address[2] == 255
+		    && v4_route->address[3] == 255
+		    && v4_route->address_length == 32) {
+			return vpp_route_is_drop(v4_route->fib_path_vec);
+		}
+	}
+
+	return 0;
+}
+
+
 static void vpp_rt_add_ipv4(ip_fib_details_t *v4_routes,
 			    struct zebra_ns *zns)
 {
@@ -256,7 +313,9 @@ static void vpp_rt_add_ipv4(ip_fib_details_t *v4_routes,
 
 	for (r = 0; r < n_routes; ++r) {
 		v4_route = vec_elt_at_index(v4_routes, r);
-		vpp_rt_add_v4_route(v4_route, zns);
+		if (!vpp_is_ipv4_default_route(v4_route)) {
+			vpp_rt_add_v4_route(v4_route, zns);
+		}
 	}
 }
 
