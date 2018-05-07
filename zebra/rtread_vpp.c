@@ -273,22 +273,8 @@ static int vpp_is_ipv4_default_route(ip_fib_details_t *v4_route)
 			return vpp_route_is_drop(v4_route->fib_path_vec);
 		}
 
-	} else if (v4_route->address[0] == 224
-		   || v4_route->address[0] == 240) {
-		if (v4_route->address[1] == 0
-		    && v4_route->address[2] == 0
-		    && v4_route->address[3] == 0
-		    && v4_route->address_length == 32) {
-			return vpp_route_is_drop(v4_route->fib_path_vec);
-		}
-
-	} else if (v4_route->address[0] == 255) {
-		if (v4_route->address[1] == 255
-		    && v4_route->address[2] == 255
-		    && v4_route->address[3] == 255
-		    && v4_route->address_length == 32) {
-			return vpp_route_is_drop(v4_route->fib_path_vec);
-		}
+	} else if (v4_route->address[0] >= 224) {
+		return 1;
 	}
 
 	return 0;
