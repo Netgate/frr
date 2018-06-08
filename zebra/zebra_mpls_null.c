@@ -1,4 +1,5 @@
 /*
+ * Copyright 2017-2018 Rubicon Communications, LLC
  * Copyright (C) 2016 by Open Source Routing.
  *
  * This file is part of GNU Zebra.
@@ -22,7 +23,7 @@
 #include "zebra/rt.h"
 #include "zebra/zebra_mpls.h"
 
-#if !defined(HAVE_NETLINK) && !defined(OPEN_BSD)
+#if !defined(HAVE_NETLINK) && !defined(OPEN_BSD) && !defined(HAVE_LIBVPPMGMT)
 
 void kernel_add_lsp(zebra_lsp_t *lsp)
 {

@@ -19,7 +19,34 @@ endif
 ## endif ZEBRA
 endif
 
+OS_LIB_DIR =
+if OS_IS_CENTOS
+    OS_LIB_DIR += lib64
+endif
+if OS_IS_DEBIAN
+    OS_LIB_DIR += lib
+endif
+
+LIBVPPMGMT_INCLUDE_DIR	= ${LIBVPPMGMT_DIR}/usr/include
+LIBVPPMGMT_LIB_DIR	= ${LIBVPPMGMT_DIR}/usr/$(strip $(OS_LIB_DIR))
+
+VPP_INCLUDE_DIR		= ${VPP_DIR}/build-root/install-vpp-native/vpp/include
+VPP_LIB_DIR		= ${VPP_DIR}/build-root/install-vpp-native/vpp/lib64
+
+AM_CFLAGS	+= -I${LIBVPPMGMT_INCLUDE_DIR}
+AM_CFLAGS	+= -I${VPP_INCLUDE_DIR}
+
 zebra_zebra_LDADD = lib/libfrr.la $(LIBCAP)
+zebra_zebra_LDADD	+= -L${LIBVPPMGMT_LIB_DIR}
+zebra_zebra_LDADD	+= -L${VPP_LIB_DIR}
+zebra_zebra_LDADD	+= -lvppmgmt
+zebra_zebra_LDADD	+= -lvlibmemoryclient
+zebra_zebra_LDADD	+= -lsvm
+zebra_zebra_LDADD	+= -lvppinfra
+zebra_zebra_LDADD	+= -lvlib
+zebra_zebra_LDADD	+= -lvnet
+zebra_zebra_LDADD	+= -lpthread -lm -lrt
+
 zebra_zebra_SOURCES = \
 	zebra/connected.c \
 	zebra/debug.c \
@@ -27,6 +54,7 @@ zebra_zebra_SOURCES = \
 	zebra/if_ioctl_solaris.c \
 	zebra/if_netlink.c \
 	zebra/if_sysctl.c \
+	zebra/if_vpp.c \
 	zebra/interface.c \
 	zebra/ioctl.c \
 	zebra/ioctl_solaris.c \
@@ -35,16 +63,19 @@ zebra_zebra_SOURCES = \
 	zebra/ipforward_sysctl.c \
 	zebra/kernel_netlink.c \
 	zebra/kernel_socket.c \
+	zebra/kernel_vpp.c \
 	zebra/label_manager.c \
 	zebra/main.c \
 	zebra/redistribute.c \
 	zebra/router-id.c \
 	zebra/rt_netlink.c \
 	zebra/rt_socket.c \
+	zebra/rt_vpp.c \
 	zebra/rtadv.c \
 	zebra/rtread_getmsg.c \
 	zebra/rtread_netlink.c \
 	zebra/rtread_sysctl.c \
+	zebra/rtread_vpp.c \
 	zebra/zebra_l2.c \
 	zebra/zebra_memory.c \
 	zebra/zebra_mpls.c \
@@ -52,6 +83,7 @@ zebra_zebra_SOURCES = \
 	zebra/zebra_mpls_openbsd.c \
 	zebra/zebra_mpls_null.c \
 	zebra/zebra_mpls_vty.c \
+	zebra/zebra_mpls_vpp.c \
 	zebra/zebra_mroute.c \
 	zebra/zebra_ns.c \
 	zebra/zebra_ptm.c \
@@ -87,6 +119,7 @@ noinst_HEADERS += \
 	zebra/router-id.h \
 	zebra/rt.h \
 	zebra/rt_netlink.h \
+	zebra/rt_vpp.h \
 	zebra/rtadv.h \
 	zebra/zebra_fpm_private.h \
 	zebra/zebra_l2.h \

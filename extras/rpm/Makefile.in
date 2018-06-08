@@ -1,0 +1,51 @@
+PACKAGE = @PACKAGE@
+PACKAGE_VERSION = @PACKAGE_VERSION@
+VPP_DIR = @VPP_DIR@
+LIBVPPMGMT_DIR = @LIBVPPMGMT_DIR@
+
+TARBALL=$(shell realpath ../../$(PACKAGE)-$(PACKAGE_VERSION).tar.gz)
+BASENAME=$(shell basename $(TARBALL) | sed -e s/.tar.\*//)
+VERSION=$(shell echo $(BASENAME) | cut -f2 -d-)
+RELEASE=$(shell echo $(BASENAME) | cut -f3- -d- | sed -e s/-/_/g)
+BR=$(shell realpath $(CURDIR)/../../build-root)
+RPMBUILD=$(BR)/rpmbuild
+
+ifneq ($(strip ${VPP_DIR}),)
+	VPP_DEF=--define "vpp_dir $(VPP_DIR)"
+endif
+
+ifneq ($(strip ${LIBVPPMGMT_DIR}),)
+	LIBVPPMGMT_DEF=--define "libvppmgmt_dir $(LIBVPPMGMT_DIR)"
+endif
+
+all: RPM
+
+spec:
+	@echo $(TARBALL)
+	mkdir -p $(RPMBUILD)/{RPMS,SRPMS,BUILD,SOURCES,SPECS}
+	cp $(TARBALL) $(RPMBUILD)/SOURCES/$(PACKAGE)-$(VERSION)-$(RELEASE).tar.gz
+	cp ../../redhat/$(PACKAGE).spec $(RPMBUILD)/SPECS
+
+srpm: spec
+	rpmbuild -bs \
+	  $(VPP_DEF) \
+	  $(LIBVPPMGMT_DEF) \
+	  --define "_topdir $(RPMBUILD)" \
+	  --define "package_dirname $(BASENAME)" \
+	  --define "_version $(VERSION)" \
+	  --define "_release $(RELEASE)" \
+	  --define 'with_nhrpd 0' \
+	  $(RPMBUILD)/SPECS/$(PACKAGE).spec
+	mv $$(find $(RPMBUILD)/SRPMS -name \*.src.rpm -type f) $(BR)
+
+RPM: spec
+	rpmbuild -bb \
+	  $(VPP_DEF) \
+	  $(LIBVPPMGMT_DEF) \
+	  --define "_topdir $(RPMBUILD)" \
+	  --define "package_dirname $(BASENAME)" \
+	  --define "_version $(VERSION)" \
+	  --define "_release $(RELEASE)" \
+	  --define 'with_nhrpd 0' \
+	  $(RPMBUILD)/SPECS/$(PACKAGE).spec
+	mv $$(find $(RPMBUILD)/RPMS -name \*.rpm -type f) $(BR)

@@ -1,3 +1,5 @@
+%{!?_topdir: %define _topdir %(pwd)}
+
 # configure options
 #
 # Some can be overriden on rpmbuild commandline with:
@@ -26,6 +28,8 @@
 %{!?with_watchfrr:      %global  with_watchfrr      1 }
 %{!?with_bgp_vnc:       %global  with_bgp_vnc       0 }
 %{!?with_pimd:          %global  with_pimd          1 }
+%{!?libvppmgmt_dir:	%global  libvppmgmt_dir     / }
+%{!?vpp_dir:		%global  vpp_dir            / }
 
 # path defines
 %define     _sysconfdir   /etc/frr
@@ -126,11 +130,11 @@
 
 Summary: Routing daemon
 Name:           frr
-Version:        %{rpmversion}
-Release:        @CONFDATE@%{release_rev}%{?dist}
+Version:        %{_version}
+Release:        %{_release}
 License:        GPLv2+
 Group:          System Environment/Daemons
-Source0:        http://www.frrouting.org/releases/frr/%{name}-%{frrversion}.tar.gz
+Source:         %{name}-%{version}-%{release}.tar.gz
 URL:            http://www.frrouting.org
 Requires(pre):  /sbin/install-info
 Requires(preun): /sbin/install-info
@@ -297,6 +301,12 @@ developing OSPF-API and frr applications.
 %if "%{initsystem}" == "systemd"
     --enable-systemd=yes \
 %endif
+%if "%{libvppmgmt_dir}" != "/"
+    --with-libvppmgmtdir=%libvppmgmt_dir \
+%endif
+%if "%{vpp_dir}" != "/"
+    --with-vppdir=%vpp_dir \
+%endif
     --enable-poll=yes
 
 make %{?_smp_mflags} MAKEINFO="makeinfo --no-split"
@@ -362,6 +372,12 @@ if getent passwd %frr_user >/dev/null ; then : ; else \
  /usr/sbin/useradd  -u %frr_uid -g %frr_gid \
   -M -r -s /sbin/nologin -c "FRRouting suite" \
   -d %_localstatedir %frr_user 2> /dev/null || : ; \
+fi
+if getent passwd frr >/dev/null ; then \
+    /usr/sbin/groupadd -f -r vpp > /dev/null ; \
+    /usr/sbin/groupadd -f -r root > /dev/null ; \
+    /sbin/usermod -a -G vpp,root frr || : ; \
+    else : ; \
 fi
 %if 0%{?vty_group:1}
 /usr/sbin/usermod -a -G %vty_group %frr_user

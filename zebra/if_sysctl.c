@@ -1,5 +1,6 @@
 /*
  * Get interface's address and mask information by sysctl() function.
+ * Copyright 2017-2018 Rubicon Communications, LLC
  * Copyright (C) 1997, 98 Kunihiro Ishiguro
  *
  * This file is part of GNU Zebra.
@@ -21,7 +22,7 @@
 
 #include <zebra.h>
 
-#if !defined(GNU_LINUX) && !defined(OPEN_BSD) && !defined(SUNOS_5)
+#if !defined(GNU_LINUX) && !defined(OPEN_BSD) && !defined(SUNOS_5) && !defined(HAVE_LIBVPPMGMT)
 
 #include "if.h"
 #include "sockunion.h"

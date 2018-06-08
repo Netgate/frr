@@ -7,7 +7,7 @@
 ##
 AC_PREREQ(2.60)
 
-AC_INIT(frr, 3.1-dev, [https://github.com/frrouting/frr/issues])
+AC_INIT(frr,[m4_esyscmd([./extras/scripts/version])])
 PACKAGE_URL="https://frrouting.org/"
 AC_SUBST(PACKAGE_URL)
 PACKAGE_FULLNAME="FRRouting"
@@ -24,6 +24,14 @@ dnl Get hostname and other information.
 dnl -----------------------------------
 AC_CANONICAL_BUILD()
 AC_CANONICAL_HOST()
+
+OS_ID=$( grep '^ID=' /etc/os-release | cut -f2- -d= | sed -e 's/\"//g' )
+AM_CONDITIONAL([OS_IS_DEBIAN], [ test ${OS_ID} = ubuntu -o ${OS_ID} = debian ])
+AM_CONDITIONAL([OS_IS_CENTOS], \
+	[ test ${OS_ID} = centos \
+		-o ${OS_ID} = rhel \
+		-o ${OS_ID} = fedora \
+		-o ${OS_ID} = opensuse ])
 
 AS_IF([test "$host" != "$build"], [
   if test "$srcdir" = "."; then
@@ -90,6 +98,17 @@ AC_ARG_WITH([moduledir], [AS_HELP_STRING([--with-moduledir=DIR], [module directo
 	moduledir="\${libdir}/frr/modules"
 ])
 AC_SUBST([moduledir], [$moduledir])
+
+AC_ARG_WITH([libvppmgmtdir], [AS_HELP_STRING([--with-libvppmgmtdir=DIR], [use libvppmgmt in DIR for build])], [
+   LIBVPPMGMT_DIR="$withval"
+])
+AC_SUBST(LIBVPPMGMT_DIR)
+
+AC_ARG_WITH([vppdir], [AS_HELP_STRING([--with-vppdir=DIR], [use VPP in DIR for build])], [
+   VPP_DIR="$withval"
+])
+AC_SUBST(VPP_DIR)
+
 
 AC_ARG_ENABLE(tcmalloc,
 	AS_HELP_STRING([--enable-tcmalloc], [Turn on tcmalloc]),
@@ -864,7 +883,7 @@ case "$host_os" in
     AC_MSG_RESULT([Linux])
 
     AC_DEFINE(GNU_LINUX,,GNU Linux)
-    AC_DEFINE(HAVE_NETLINK,,netlink)
+    AC_DEFINE(HAVE_LIBVPPMGMT,,libvppmgmt)
     AC_DEFINE(LINUX_IPV6,1,Linux IPv6 stack)
 
     dnl Linux has a compilation problem with mixing
@@ -1894,7 +1913,9 @@ AC_CONFIG_FILES([Makefile
 	  doc/frr-args.8
 	  pkgsrc/bgpd.sh pkgsrc/ospf6d.sh pkgsrc/ospfd.sh
 	  pkgsrc/ripd.sh pkgsrc/ripngd.sh pkgsrc/zebra.sh
-	  pkgsrc/eigrpd.sh])
+	  pkgsrc/eigrpd.sh
+	  extras/rpm/Makefile
+])
 
 if test "${enable_bgp_vnc}" != "no"; then
    if test "${with_rfp_path}" != "bgpd/rfp-example" ; then

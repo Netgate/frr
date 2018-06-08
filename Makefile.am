@@ -114,3 +114,25 @@ EXTRA_DIST += \
 ACLOCAL_AMFLAGS = -I m4
 
 noinst_HEADERS += defaults.h
+
+#### include version information in the distibution tarball
+EXTRA_DIST += extras/scripts/version extras/scripts/.version
+
+extras/scripts/.version:
+	rm -f extras/scripts/.version
+	sh extras/scripts/version > extras/scripts/.tmpversion
+	mv extras/scripts/.tmpversion extras/scripts/.version
+
+dist-hook:
+	rm -f extras/scripts/.version
+
+DISTCLEANFILES = extras/scripts/.version *.tar.gz
+
+clean-local:
+	@rm -rf build-root
+
+pkg-srpm: dist
+	make -C extras/rpm srpm
+
+pkg-rpm: dist
+	make -C extras/rpm

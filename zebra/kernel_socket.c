@@ -1,4 +1,5 @@
 /* Kernel communication using routing socket.
+ * Copyright 2017-2018 Rubicon Communications, LLC
  * Copyright (C) 1999 Kunihiro Ishiguro
  *
  * This file is part of GNU Zebra.
@@ -20,6 +21,7 @@
 
 #include <zebra.h>
 
+#ifndef HAVE_LIBVPPMGMT
 #ifndef HAVE_NETLINK
 
 #include <net/if_types.h>
@@ -1417,3 +1419,4 @@ void kernel_terminate(struct zebra_ns *zns)
 }
 
 #endif /* !HAVE_NETLINK */
+#endif

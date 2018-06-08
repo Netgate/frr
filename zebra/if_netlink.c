@@ -1,5 +1,6 @@
 /*
  * Interface looking up by netlink.
+ * Copyright 2017-2018 Rubicon Communications, LLC
  * Copyright (C) 1998 Kunihiro Ishiguro
  *
  * This file is part of GNU Zebra.
@@ -21,6 +22,7 @@
 
 #include <zebra.h>
 
+#ifdef HAVE_NETLINK
 #ifdef GNU_LINUX
 
 /* The following definition is to workaround an issue in the Linux kernel
@@ -1249,3 +1251,4 @@ void interface_list(struct zebra_ns *zns)
 }
 
 #endif /* GNU_LINUX */
+#endif

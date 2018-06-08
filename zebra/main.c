@@ -1,4 +1,5 @@
 /* zebra daemon main routine.
+ * Copyright 2017-2018 Rubicon Communications, LLC
  * Copyright (C) 1997, 98 Kunihiro Ishiguro
  *
  * This file is part of GNU Zebra.
@@ -47,6 +48,9 @@
 #include "zebra/redistribute.h"
 #include "zebra/zebra_mpls.h"
 #include "zebra/label_manager.h"
+
+#include <vppmgmt/vpp_mgmt_api.h>
+
 
 #define ZEBRA_PTM_SUPPORT
 
@@ -336,7 +340,9 @@ int main(int argc, char **argv)
 	*  The notifications from kernel will show originating PID equal
 	*  to that after daemon() completes (if ever called).
 	*/
+	vmgmt_disconnect();
 	frr_config_fork();
+	kernel_init(NULL);
 
 	/* Clean up rib -- before fork (?) */
 	/* rib_weed_tables (); */

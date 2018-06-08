@@ -1,5 +1,6 @@
 /*
  * Kernel routing table readup by netlink
+ * Copyright 2017-2018 Rubicon Communications, LLC
  * Copyright (C) 1998 Kunihiro Ishiguro
  *
  * This file is part of GNU Zebra.
@@ -21,6 +22,7 @@
 
 #include <zebra.h>
 
+#ifdef HAVE_NETLINK
 #ifdef GNU_LINUX
 
 #include "vty.h"
@@ -54,3 +56,4 @@ void neigh_read_for_vlan(struct zebra_ns *zns, struct interface *vlan_if)
 }
 
 #endif /* GNU_LINUX */
+#endif

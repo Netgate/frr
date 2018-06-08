@@ -1,5 +1,6 @@
 /*
  * Common ioctl functions.
+ * Copyright 2017-2018 Rubicon Communications, LLC
  * Copyright (C) 1997, 98 Kunihiro Ishiguro
  *
  * This file is part of GNU Zebra.
@@ -33,6 +34,7 @@
 #include "zebra/rt.h"
 #include "zebra/interface.h"
 
+#ifndef HAVE_LIBVPPMGMT
 #ifndef SUNOS_5
 
 #ifdef HAVE_BSD_LINK_DETECT
@@ -578,3 +580,4 @@ int if_prefix_delete_ipv6(struct interface *ifp, struct connected *ifc)
 #endif /* LINUX_IPV6 */
 
 #endif /* !SUNOS_5 */
+#endif

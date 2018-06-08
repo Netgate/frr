@@ -1,4 +1,5 @@
 /* Interface related header.
+ * Copyright 2017-2018 Rubicon Communications, LLC
  * Copyright (C) 1997, 98, 99 Kunihiro Ishiguro
  *
  * This file is part of GNU Zebra.
@@ -100,7 +101,7 @@ enum zebra_link_type {
    #define IFNAMSIZ        16
 */
 
-#define INTERFACE_NAMSIZ      20
+#define INTERFACE_NAMSIZ      64
 #define INTERFACE_HWADDR_MAX  20
 
 typedef signed int ifindex_t;

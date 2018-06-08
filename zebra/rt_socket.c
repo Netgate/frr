@@ -21,6 +21,7 @@
 
 #include <zebra.h>
 
+#ifndef HAVE_LIBVPPMGMT
 #ifndef HAVE_NETLINK
 
 #ifdef __OpenBSD__
@@ -474,3 +475,4 @@ extern int kernel_interface_set_master(struct interface *master,
 }
 
 #endif /* !HAVE_NETLINK */
+#endif
