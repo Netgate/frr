@@ -1,4 +1,5 @@
 /* Kernel communication using routing socket.
+ * Copyright 2017-2018 Rubicon Communications, LLC
  * Copyright (C) 1999 Kunihiro Ishiguro
  *
  * This file is part of GNU Zebra.

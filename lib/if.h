@@ -1,4 +1,5 @@
 /* Interface related header.
+ * Copyright 2017-2018 Rubicon Communications, LLC
  * Copyright (C) 1997, 98, 99 Kunihiro Ishiguro
  *
  * This file is part of GNU Zebra.
