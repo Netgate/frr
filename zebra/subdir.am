@@ -43,6 +43,8 @@ zebra_zebra_LDADD	+= -lvppmgmt
 zebra_zebra_LDADD	+= -lvppinfra
 zebra_zebra_LDADD	+= -lpthread -lm -lrt
 
+zebra_zebra_LDFLAGS	= -Wl,-rpath-link ${VPP_LIB_DIR}
+
 zebra_zebra_SOURCES = \
 	zebra/connected.c \
 	zebra/debug.c \
