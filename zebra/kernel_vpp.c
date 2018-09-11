@@ -31,6 +31,8 @@
 #include "zebra/interface.h"
 #include "zebra/debug.h"
 
+#include <vppinfra/mem.h>
+
 #include <vppmgmt/vpp_mgmt_api.h>
 
 #include "zebra/rt_vpp.h"
@@ -42,6 +44,8 @@ unsigned int debug;		/* FIXME -- remove form libvppmgmt */
 void kernel_init(struct zebra_ns *zns)
 {
 	int ret;
+
+	clib_mem_init(NULL, 64 << 20);
 
 	ret = vmgmt_init((char *) "route_daemon", 1);
 	if (ret < 0) {
