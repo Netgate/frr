@@ -1786,7 +1786,7 @@ AM_CONDITIONAL([ZEROMQ], test "x$ZEROMQ" = "xtrue")
 dnl ----------
 dnl configure date
 dnl ----------
-CONFDATE=`date '+%Y%m%d'`
+CONFDATE=20180101
 AC_SUBST(CONFDATE)
 
 dnl ------------------------------
