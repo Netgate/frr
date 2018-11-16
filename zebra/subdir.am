@@ -27,25 +27,27 @@ if OS_IS_DEBIAN
     OS_LIB_DIR += lib
 endif
 
+zebra_zebra_LDADD = lib/libfrr.la $(LIBCAP)
+
+if LIBVPPMGMT_DIR_SET
 LIBVPPMGMT_INCLUDE_DIR	= ${LIBVPPMGMT_DIR}/usr/include
 LIBVPPMGMT_LIB_DIR	= ${LIBVPPMGMT_DIR}/usr/$(strip $(OS_LIB_DIR))
-
-VPP_INCLUDE_DIR		= ${VPP_DIR}/build-root/install-vpp-native/vpp/include
-VPP_LIB_DIR		= ${VPP_DIR}/build-root/install-vpp-native/vpp/lib64
-
-AM_CFLAGS	+= -I${LIBVPPMGMT_INCLUDE_DIR}
-AM_CFLAGS	+= -I${VPP_INCLUDE_DIR}
-
-zebra_zebra_LDADD = lib/libfrr.la $(LIBCAP)
+AM_CFLAGS		+= -I${LIBVPPMGMT_INCLUDE_DIR}
 zebra_zebra_LDADD	+= -L${LIBVPPMGMT_LIB_DIR}
+endif
+
+if VPP_DIR_SET
+VPP_INCLUDE_DIR	= ${VPP_DIR}/build-root/install-vpp-native/vpp/include
+VPP_LIB_DIR	= ${VPP_DIR}/build-root/install-vpp-native/vpp/lib
+AM_CFLAGS	+= -I${VPP_INCLUDE_DIR}
 zebra_zebra_LDADD	+= -L${VPP_LIB_DIR}
+zebra_zebra_LDFLAGS	= -Wl,-rpath-link ${VPP_LIB_DIR}
+endif
+
 zebra_zebra_LDADD	+= -lvppmgmt
-zebra_zebra_LDADD	+= -lvlibmemoryclient
-zebra_zebra_LDADD	+= -lsvm
 zebra_zebra_LDADD	+= -lvppinfra
-zebra_zebra_LDADD	+= -lvlib
-zebra_zebra_LDADD	+= -lvnet
 zebra_zebra_LDADD	+= -lpthread -lm -lrt
+
 
 zebra_zebra_SOURCES = \
 	zebra/connected.c \

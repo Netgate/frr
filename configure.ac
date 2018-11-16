@@ -103,11 +103,13 @@ AC_ARG_WITH([libvppmgmtdir], [AS_HELP_STRING([--with-libvppmgmtdir=DIR], [use li
    LIBVPPMGMT_DIR="$withval"
 ])
 AC_SUBST(LIBVPPMGMT_DIR)
+AM_CONDITIONAL([LIBVPPMGMT_DIR_SET], [test "x$LIBVPPMGMT_DIR" != "x" ])
 
 AC_ARG_WITH([vppdir], [AS_HELP_STRING([--with-vppdir=DIR], [use VPP in DIR for build])], [
    VPP_DIR="$withval"
 ])
 AC_SUBST(VPP_DIR)
+AM_CONDITIONAL([VPP_DIR_SET], [test "x$VPP_DIR" != "x" ])
 
 
 AC_ARG_ENABLE(tcmalloc,
@@ -1784,7 +1786,7 @@ AM_CONDITIONAL([ZEROMQ], test "x$ZEROMQ" = "xtrue")
 dnl ----------
 dnl configure date
 dnl ----------
-CONFDATE=`date '+%Y%m%d'`
+CONFDATE=20180101
 AC_SUBST(CONFDATE)
 
 dnl ------------------------------
