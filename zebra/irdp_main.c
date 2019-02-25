@@ -28,7 +28,7 @@
  */
 
 /*
- * Thanks to Jens Låås at Swedish University of Agricultural Sciences
+ * Thanks to Jens Laas at Swedish University of Agricultural Sciences
  * for reviewing and tests.
  */
 
@@ -51,6 +51,7 @@
 #include "thread.h"
 #include "privs.h"
 #include "libfrr.h"
+#include "lib_errors.h"
 #include "version.h"
 #include "zebra/interface.h"
 #include "zebra/rtadv.h"
@@ -80,16 +81,12 @@ int irdp_sock_init(void)
 	int save_errno;
 	int sock;
 
-	if (zserv_privs.change(ZPRIVS_RAISE))
-		zlog_err("irdp_sock_init: could not raise privs, %s",
-			 safe_strerror(errno));
+	frr_elevate_privs(&zserv_privs) {
 
-	sock = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
-	save_errno = errno;
+		sock = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+		save_errno = errno;
 
-	if (zserv_privs.change(ZPRIVS_LOWER))
-		zlog_err("irdp_sock_init: could not lower privs, %s",
-			 safe_strerror(errno));
+	}
 
 	if (sock < 0) {
 		zlog_warn("IRDP: can't create irdp socket %s",
@@ -146,7 +143,7 @@ static int make_advertisement_packet(struct interface *ifp, struct prefix *p,
 	struct irdp_interface *irdp = zi->irdp;
 	int size;
 	int pref;
-	u_int16_t checksum;
+	uint16_t checksum;
 
 	pref = get_pref(irdp, p);
 
@@ -177,8 +174,8 @@ static void irdp_send(struct interface *ifp, struct prefix *p, struct stream *s)
 	struct zebra_if *zi = ifp->info;
 	struct irdp_interface *irdp = zi->irdp;
 	char buf[PREFIX_STRLEN];
-	u_int32_t dst;
-	u_int32_t ttl = 1;
+	uint32_t dst;
+	uint32_t ttl = 1;
 
 	if (!irdp)
 		return;
@@ -210,7 +207,7 @@ static void irdp_advertisement(struct interface *ifp, struct prefix *p)
 
 int irdp_send_thread(struct thread *t_advert)
 {
-	u_int32_t timer, tmp;
+	uint32_t timer, tmp;
 	struct interface *ifp = THREAD_ARG(t_advert);
 	struct zebra_if *zi = ifp->info;
 	struct irdp_interface *irdp = zi->irdp;
@@ -288,7 +285,7 @@ void process_solicit(struct interface *ifp)
 {
 	struct zebra_if *zi = ifp->info;
 	struct irdp_interface *irdp = zi->irdp;
-	u_int32_t timer;
+	uint32_t timer;
 
 	if (!irdp)
 		return;
@@ -353,9 +350,5 @@ static int irdp_module_init(void)
 	return 0;
 }
 
-FRR_MODULE_SETUP(
-	.name = "zebra_irdp",
-	.version = FRR_VERSION,
-	.description = "zebra IRDP module",
-	.init = irdp_module_init,
-)
+FRR_MODULE_SETUP(.name = "zebra_irdp", .version = FRR_VERSION,
+		 .description = "zebra IRDP module", .init = irdp_module_init, )

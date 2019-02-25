@@ -37,6 +37,8 @@
 #include "checksum.h"
 #include "md5.h"
 #include "table.h"
+#include "srcdest_table.h"
+#include "lib_errors.h"
 
 #include "isisd/dict.h"
 #include "isisd/isis_constants.h"
@@ -55,15 +57,12 @@
 #include "isisd/isis_mt.h"
 #include "isisd/isis_tlvs.h"
 
-/* staticly assigned vars for printing purposes */
-char lsp_bits_string[200]; /* FIXME: enough ? */
-
 static int lsp_l1_refresh(struct thread *thread);
 static int lsp_l2_refresh(struct thread *thread);
 static int lsp_l1_refresh_pseudo(struct thread *thread);
 static int lsp_l2_refresh_pseudo(struct thread *thread);
 
-int lsp_id_cmp(u_char *id1, u_char *id2)
+int lsp_id_cmp(uint8_t *id1, uint8_t *id2)
 {
 	return memcmp(id1, id2, ISIS_SYS_ID_LEN + 2);
 }
@@ -77,7 +76,7 @@ dict_t *lsp_db_init(void)
 	return dict;
 }
 
-struct isis_lsp *lsp_search(u_char *id, dict_t *lspdb)
+struct isis_lsp *lsp_search(uint8_t *id, dict_t *lspdb)
 {
 	dnode_t *node;
 
@@ -87,7 +86,7 @@ struct isis_lsp *lsp_search(u_char *id, dict_t *lspdb)
 	zlog_debug("searching db");
 	for (dn = dict_first(lspdb); dn; dn = dict_next(lspdb, dn)) {
 		zlog_debug("%s\t%pX",
-			   rawlspid_print((u_char *)dnode_getkey(dn)),
+			   rawlspid_print((uint8_t *)dnode_getkey(dn)),
 			   dnode_get(dn));
 	}
 #endif /* EXTREME DEBUG */
@@ -176,7 +175,7 @@ static void lsp_remove_frags(struct list *frags, dict_t *lspdb)
 	return;
 }
 
-void lsp_search_and_destroy(u_char *id, dict_t *lspdb)
+void lsp_search_and_destroy(uint8_t *id, dict_t *lspdb)
 {
 	dnode_t *node;
 	struct isis_lsp *lsp;
@@ -286,7 +285,7 @@ static void put_lsp_hdr(struct isis_lsp *lsp, size_t *len_pointer, bool keep)
 		(lsp->level == IS_LEVEL_1) ? L1_LINK_STATE : L2_LINK_STATE;
 	struct isis_lsp_hdr *hdr = &lsp->hdr;
 	struct stream *stream = lsp->pdu;
-	size_t orig_getp, orig_endp;
+	size_t orig_getp = 0, orig_endp = 0;
 
 	if (keep) {
 		orig_getp = stream_get_getp(lsp->pdu);
@@ -392,9 +391,9 @@ static void lsp_seqno_update(struct isis_lsp *lsp0)
 	return;
 }
 
-static u_int8_t lsp_bits_generate(int level, int overload_bit, int attached_bit)
+static uint8_t lsp_bits_generate(int level, int overload_bit, int attached_bit)
 {
-	u_int8_t lsp_bits = 0;
+	uint8_t lsp_bits = 0;
 	if (level == IS_LEVEL_1)
 		lsp_bits = IS_LEVEL_1;
 	else
@@ -455,7 +454,8 @@ void lsp_update(struct isis_lsp *lsp, struct isis_lsp_hdr *hdr,
 		struct isis_area *area, int level, bool confusion)
 {
 	if (lsp->own_lsp) {
-		zlog_err(
+		flog_err(
+			LIB_ERR_DEVELOPMENT,
 			"ISIS-Upd (%s): BUG updating LSP %s still marked as own LSP",
 			area->area_tag, rawlspid_print(lsp->hdr.lsp_id));
 		lsp_clear_data(lsp);
@@ -498,7 +498,7 @@ struct isis_lsp *lsp_new_from_recv(struct isis_lsp_hdr *hdr,
 	return lsp;
 }
 
-struct isis_lsp *lsp_new(struct isis_area *area, u_char *lsp_id,
+struct isis_lsp *lsp_new(struct isis_area *area, uint8_t *lsp_id,
 			 uint16_t rem_lifetime, uint32_t seqno,
 			 uint8_t lsp_bits, uint16_t checksum,
 			 struct isis_lsp *lsp0, int level)
@@ -541,7 +541,7 @@ void lsp_insert(struct isis_lsp *lsp, dict_t *lspdb)
 /*
  * Build a list of LSPs with non-zero ht bounded by start and stop ids
  */
-void lsp_build_list_nonzero_ht(u_char *start_id, u_char *stop_id,
+void lsp_build_list_nonzero_ht(uint8_t *start_id, uint8_t *stop_id,
 			       struct list *list, dict_t *lspdb)
 {
 	dnode_t *first, *last, *curr;
@@ -584,10 +584,10 @@ static void lsp_set_time(struct isis_lsp *lsp)
 		stream_putw_at(lsp->pdu, 10, lsp->hdr.rem_lifetime);
 }
 
-static void lspid_print(u_char *lsp_id, u_char *trg, char dynhost, char frag)
+static void lspid_print(uint8_t *lsp_id, uint8_t *trg, char dynhost, char frag)
 {
 	struct isis_dynhn *dyn = NULL;
-	u_char id[SYSID_STRLEN];
+	uint8_t id[SYSID_STRLEN];
 
 	if (dynhost)
 		dyn = dynhn_find_by_id(lsp_id);
@@ -608,12 +608,15 @@ static void lspid_print(u_char *lsp_id, u_char *trg, char dynhost, char frag)
 }
 
 /* Convert the lsp attribute bits to attribute string */
-static const char *lsp_bits2string(uint8_t lsp_bits)
+static const char *lsp_bits2string(uint8_t lsp_bits, char *buf, size_t buf_size)
 {
-	char *pos = lsp_bits_string;
+	char *pos = buf;
 
 	if (!lsp_bits)
 		return " none";
+
+	if (buf_size < 2 * 3)
+		return " error";
 
 	/* we only focus on the default metric */
 	pos += sprintf(pos, "%d/",
@@ -622,18 +625,17 @@ static const char *lsp_bits2string(uint8_t lsp_bits)
 	pos += sprintf(pos, "%d/",
 		       ISIS_MASK_LSP_PARTITION_BIT(lsp_bits) ? 1 : 0);
 
-	pos += sprintf(pos, "%d", ISIS_MASK_LSP_OL_BIT(lsp_bits) ? 1 : 0);
+	sprintf(pos, "%d", ISIS_MASK_LSP_OL_BIT(lsp_bits) ? 1 : 0);
 
-	*(pos) = '\0';
-
-	return lsp_bits_string;
+	return buf;
 }
 
 /* this function prints the lsp on show isis database */
 void lsp_print(struct isis_lsp *lsp, struct vty *vty, char dynhost)
 {
-	u_char LSPid[255];
+	uint8_t LSPid[255];
 	char age_out[8];
+	char b[200];
 
 	lspid_print(lsp->hdr.lsp_id, LSPid, dynhost, 1);
 	vty_out(vty, "%-21s%c  ", LSPid, lsp->own_lsp ? '*' : ' ');
@@ -646,7 +648,7 @@ void lsp_print(struct isis_lsp *lsp, struct vty *vty, char dynhost)
 		vty_out(vty, "%7s   ", age_out);
 	} else
 		vty_out(vty, " %5" PRIu16 "    ", lsp->hdr.rem_lifetime);
-	vty_out(vty, "%s\n", lsp_bits2string(lsp->hdr.lsp_bits));
+	vty_out(vty, "%s\n", lsp_bits2string(lsp->hdr.lsp_bits, b, sizeof(b)));
 }
 
 void lsp_print_detail(struct isis_lsp *lsp, struct vty *vty, char dynhost)
@@ -685,9 +687,9 @@ int lsp_print_all(struct vty *vty, dict_t *lspdb, char detail, char dynhost)
 	return lsp_count;
 }
 
-static u_int16_t lsp_rem_lifetime(struct isis_area *area, int level)
+static uint16_t lsp_rem_lifetime(struct isis_area *area, int level)
 {
-	u_int16_t rem_lifetime;
+	uint16_t rem_lifetime;
 
 	/* Add jitter to configured LSP lifetime */
 	rem_lifetime =
@@ -704,11 +706,11 @@ static u_int16_t lsp_rem_lifetime(struct isis_area *area, int level)
 	return rem_lifetime;
 }
 
-static u_int16_t lsp_refresh_time(struct isis_lsp *lsp, u_int16_t rem_lifetime)
+static uint16_t lsp_refresh_time(struct isis_lsp *lsp, uint16_t rem_lifetime)
 {
 	struct isis_area *area = lsp->area;
 	int level = lsp->level;
-	u_int16_t refresh_time;
+	uint16_t refresh_time;
 
 	/* Add jitter to LSP refresh time */
 	refresh_time =
@@ -766,18 +768,28 @@ static void lsp_build_ext_reach_ipv6(struct isis_lsp *lsp,
 		return;
 
 	for (struct route_node *rn = route_top(er_table); rn;
-	     rn = route_next(rn)) {
+	     rn = srcdest_route_next(rn)) {
 		if (!rn->info)
 			continue;
-
-		struct prefix_ipv6 *ipv6 = (struct prefix_ipv6 *)&rn->p;
 		struct isis_ext_info *info = rn->info;
+
+		struct prefix_ipv6 *p, *src_p;
+		srcdest_rnode_prefixes(rn, (const struct prefix **)&p,
+				       (const struct prefix **)&src_p);
 
 		uint32_t metric = info->metric;
 		if (info->metric > MAX_WIDE_PATH_METRIC)
 			metric = MAX_WIDE_PATH_METRIC;
-		isis_tlvs_add_ipv6_reach(
-			lsp->tlvs, isis_area_ipv6_topology(area), ipv6, metric);
+
+		if (!src_p || !src_p->prefixlen) {
+			isis_tlvs_add_ipv6_reach(lsp->tlvs,
+						 isis_area_ipv6_topology(area),
+						 p, metric);
+		} else if (isis_area_ipv6_dstsrc_enabled(area)) {
+			isis_tlvs_add_ipv6_dstsrc_reach(lsp->tlvs,
+							ISIS_MT_IPV6_DSTSRC,
+							p, src_p, metric);
+		}
 	}
 }
 
@@ -1034,7 +1046,8 @@ static void lsp_build(struct isis_lsp *lsp, struct isis_area *area)
 			break;
 		case CIRCUIT_T_P2P: {
 			struct isis_adjacency *nei = circuit->u.p2p.neighbor;
-			if (nei && (level & nei->circuit_t)) {
+			if (nei && nei->adj_state == ISIS_ADJ_UP
+			    && (level & nei->circuit_t)) {
 				uint8_t ne_id[7];
 				memcpy(ne_id, nei->sysid, ISIS_SYS_ID_LEN);
 				LSP_PSEUDO_ID(ne_id) = 0;
@@ -1052,6 +1065,7 @@ static void lsp_build(struct isis_lsp *lsp, struct isis_area *area)
 					uint8_t subtlv_len;
 
 					if (IS_MPLS_TE(isisMplsTE)
+					    && circuit->interface != NULL
 					    && HAS_LINK_PARAMS(
 						       circuit->interface))
 						/* Update Local and Remote IP
@@ -1106,7 +1120,8 @@ static void lsp_build(struct isis_lsp *lsp, struct isis_area *area)
 	struct list *fragments = isis_fragment_tlvs(tlvs, tlv_space);
 	if (!fragments) {
 		zlog_warn("BUG: could not fragment own LSP:");
-		log_multiline(LOG_WARNING, "    ", "%s", isis_format_tlvs(tlvs));
+		log_multiline(LOG_WARNING, "    ", "%s",
+			      isis_format_tlvs(tlvs));
 		isis_free_tlvs(tlvs);
 		return;
 	}
@@ -1119,8 +1134,9 @@ static void lsp_build(struct isis_lsp *lsp, struct isis_area *area)
 			if (LSP_FRAGMENT(frag->hdr.lsp_id) == 255) {
 				if (!fragment_overflow) {
 					fragment_overflow = true;
-					zlog_warn("ISIS (%s): Too much information for 256 fragments",
-						  area->area_tag);
+					zlog_warn(
+						"ISIS (%s): Too much information for 256 fragments",
+						area->area_tag);
 				}
 				isis_free_tlvs(tlvs);
 				continue;
@@ -1144,9 +1160,9 @@ static void lsp_build(struct isis_lsp *lsp, struct isis_area *area)
 int lsp_generate(struct isis_area *area, int level)
 {
 	struct isis_lsp *oldlsp, *newlsp;
-	u_int32_t seq_num = 0;
-	u_char lspid[ISIS_SYS_ID_LEN + 2];
-	u_int16_t rem_lifetime, refresh_time;
+	uint32_t seq_num = 0;
+	uint8_t lspid[ISIS_SYS_ID_LEN + 2];
+	uint16_t rem_lifetime, refresh_time;
 
 	if ((area == NULL) || (area->is_type & level) != level)
 		return ISIS_ERROR;
@@ -1214,8 +1230,8 @@ static int lsp_regenerate(struct isis_area *area, int level)
 	dict_t *lspdb;
 	struct isis_lsp *lsp, *frag;
 	struct listnode *node;
-	u_char lspid[ISIS_SYS_ID_LEN + 2];
-	u_int16_t rem_lifetime, refresh_time;
+	uint8_t lspid[ISIS_SYS_ID_LEN + 2];
+	uint16_t rem_lifetime, refresh_time;
 
 	if ((area == NULL) || (area->is_type & level) != level)
 		return ISIS_ERROR;
@@ -1228,8 +1244,9 @@ static int lsp_regenerate(struct isis_area *area, int level)
 	lsp = lsp_search(lspid, lspdb);
 
 	if (!lsp) {
-		zlog_err("ISIS-Upd (%s): lsp_regenerate: no L%d LSP found!",
-			 area->area_tag, level);
+		flog_err(LIB_ERR_DEVELOPMENT,
+			  "ISIS-Upd (%s): lsp_regenerate: no L%d LSP found!",
+			  area->area_tag, level);
 		return ISIS_ERROR;
 	}
 
@@ -1321,7 +1338,7 @@ static int lsp_l2_refresh(struct thread *thread)
 int lsp_regenerate_schedule(struct isis_area *area, int level, int all_pseudo)
 {
 	struct isis_lsp *lsp;
-	u_char id[ISIS_SYS_ID_LEN + 2];
+	uint8_t id[ISIS_SYS_ID_LEN + 2];
 	time_t now, diff;
 	long timeout;
 	struct listnode *cnode;
@@ -1518,8 +1535,8 @@ int lsp_generate_pseudo(struct isis_circuit *circuit, int level)
 {
 	dict_t *lspdb = circuit->area->lspdb[level - 1];
 	struct isis_lsp *lsp;
-	u_char lsp_id[ISIS_SYS_ID_LEN + 2];
-	u_int16_t rem_lifetime, refresh_time;
+	uint8_t lsp_id[ISIS_SYS_ID_LEN + 2];
+	uint16_t rem_lifetime, refresh_time;
 
 	if ((circuit->is_type & level) != level
 	    || (circuit->state != C_STATE_UP)
@@ -1580,8 +1597,8 @@ static int lsp_regenerate_pseudo(struct isis_circuit *circuit, int level)
 {
 	dict_t *lspdb = circuit->area->lspdb[level - 1];
 	struct isis_lsp *lsp;
-	u_char lsp_id[ISIS_SYS_ID_LEN + 2];
-	u_int16_t rem_lifetime, refresh_time;
+	uint8_t lsp_id[ISIS_SYS_ID_LEN + 2];
+	uint16_t rem_lifetime, refresh_time;
 
 	if ((circuit->is_type & level) != level
 	    || (circuit->state != C_STATE_UP)
@@ -1596,8 +1613,9 @@ static int lsp_regenerate_pseudo(struct isis_circuit *circuit, int level)
 	lsp = lsp_search(lsp_id, lspdb);
 
 	if (!lsp) {
-		zlog_err("lsp_regenerate_pseudo: no l%d LSP %s found!", level,
-			 rawlspid_print(lsp_id));
+		flog_err(LIB_ERR_DEVELOPMENT,
+			  "lsp_regenerate_pseudo: no l%d LSP %s found!", level,
+			  rawlspid_print(lsp_id));
 		return ISIS_ERROR;
 	}
 
@@ -1638,7 +1656,7 @@ static int lsp_regenerate_pseudo(struct isis_circuit *circuit, int level)
 static int lsp_l1_refresh_pseudo(struct thread *thread)
 {
 	struct isis_circuit *circuit;
-	u_char id[ISIS_SYS_ID_LEN + 2];
+	uint8_t id[ISIS_SYS_ID_LEN + 2];
 
 	circuit = THREAD_ARG(thread);
 
@@ -1660,7 +1678,7 @@ static int lsp_l1_refresh_pseudo(struct thread *thread)
 static int lsp_l2_refresh_pseudo(struct thread *thread)
 {
 	struct isis_circuit *circuit;
-	u_char id[ISIS_SYS_ID_LEN + 2];
+	uint8_t id[ISIS_SYS_ID_LEN + 2];
 
 	circuit = THREAD_ARG(thread);
 
@@ -1682,7 +1700,7 @@ static int lsp_l2_refresh_pseudo(struct thread *thread)
 int lsp_regenerate_schedule_pseudo(struct isis_circuit *circuit, int level)
 {
 	struct isis_lsp *lsp;
-	u_char lsp_id[ISIS_SYS_ID_LEN + 2];
+	uint8_t lsp_id[ISIS_SYS_ID_LEN + 2];
 	time_t now, diff;
 	long timeout;
 	int lvl;
@@ -1793,8 +1811,8 @@ int lsp_tick(struct thread *thread)
 	struct listnode *lspnode, *cnode;
 	dnode_t *dnode, *dnode_next;
 	int level;
-	u_int16_t rem_lifetime;
-        time_t now = monotime(NULL);
+	uint16_t rem_lifetime;
+	time_t now = monotime(NULL);
 
 	lsp_list = list_new();
 
@@ -1887,7 +1905,8 @@ int lsp_tick(struct thread *thread)
 						    && ISIS_CHECK_FLAG(
 							       lsp->SRMflags,
 							       circuit)) {
-							isis_circuit_queue_lsp(circuit, lsp);
+							isis_circuit_queue_lsp(
+								circuit, lsp);
 						}
 					}
 				}
@@ -1901,7 +1920,7 @@ int lsp_tick(struct thread *thread)
 	return ISIS_OK;
 }
 
-void lsp_purge_pseudo(u_char *id, struct isis_circuit *circuit, int level)
+void lsp_purge_pseudo(uint8_t *id, struct isis_circuit *circuit, int level)
 {
 	struct isis_lsp *lsp;
 

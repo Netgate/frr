@@ -34,8 +34,9 @@
  * code documentation in it.
  */
 
-/* ignore harmless bug in old versions of flex */
+/* ignore harmless bugs in old versions of flex */
 #pragma GCC diagnostic ignored "-Wsign-compare"
+#pragma GCC diagnostic ignored "-Wunused-value"
 
 #include "config.h"
 #include <Python.h>
@@ -131,6 +132,9 @@ SPECIAL		[(),]
 "DEFUN_NOSH"			value = strdup(yytext); return DEFUNNY;
 "DEFUN_HIDDEN"			value = strdup(yytext); return DEFUNNY;
 "DEFPY"				value = strdup(yytext); return DEFUNNY;
+"DEFPY_NOSH"			value = strdup(yytext); return DEFUNNY;
+"DEFPY_ATTR"			value = strdup(yytext); return DEFUNNY;
+"DEFPY_HIDDEN"			value = strdup(yytext); return DEFUNNY;
 "ALIAS"				value = strdup(yytext); return DEFUNNY;
 "ALIAS_HIDDEN"			value = strdup(yytext); return DEFUNNY;
 "install_element"		value = strdup(yytext); return INSTALL;

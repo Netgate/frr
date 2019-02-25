@@ -23,6 +23,7 @@
 #include "vty.h"
 #include "stream.h"
 #include "zebra/zserv.h"
+#include "zebra/zapi_msg.h"
 #include "zebra/zebra_ptm_redistribute.h"
 #include "zebra/zebra_memory.h"
 
@@ -38,10 +39,9 @@ static int zsend_interface_bfd_update(int cmd, struct zserv *client,
 	if (!client->ifinfo)
 		return 0;
 
-	s = client->obuf;
-	stream_reset(s);
+	s = stream_new(ZEBRA_MAX_PACKET_SIZ);
 
-	zserv_create_header(s, cmd, vrf_id);
+	zclient_create_header(s, cmd, vrf_id);
 	if (ifp)
 		stream_putl(s, ifp->ifindex);
 	else
@@ -66,7 +66,7 @@ static int zsend_interface_bfd_update(int cmd, struct zserv *client,
 	stream_putw_at(s, 0, stream_get_endp(s));
 
 	client->if_bfd_cnt++;
-	return zebra_server_send_message(client);
+	return zserv_send_message(client, s);
 }
 
 void zebra_interface_bfd_update(struct interface *ifp, struct prefix *dp,
@@ -93,17 +93,15 @@ static int zsend_bfd_peer_replay(int cmd, struct zserv *client)
 {
 	struct stream *s;
 
-	s = client->obuf;
-	stream_reset(s);
+	s = stream_new(ZEBRA_MAX_PACKET_SIZ);
 
-	zserv_create_header(
-		s, cmd, VRF_DEFAULT); // Pending: adjust when multi-vrf bfd work
+	zclient_create_header(s, cmd, VRF_DEFAULT);
 
 	/* Write packet size. */
 	stream_putw_at(s, 0, stream_get_endp(s));
 
 	client->bfd_peer_replay_cnt++;
-	return zebra_server_send_message(client);
+	return zserv_send_message(client, s);
 }
 
 void zebra_bfd_peer_replay_req(void)

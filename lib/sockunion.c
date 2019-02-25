@@ -26,6 +26,7 @@
 #include "memory.h"
 #include "log.h"
 #include "jhash.h"
+#include "lib_errors.h"
 
 DEFINE_MTYPE_STATIC(LIB, SOCKUNION, "Socket union")
 
@@ -45,6 +46,9 @@ const char *inet_sutop(const union sockunion *su, char *str)
 int str2sockunion(const char *str, union sockunion *su)
 {
 	int ret;
+
+	if (str == NULL)
+		return -1;
 
 	memset(su, 0, sizeof(union sockunion));
 
@@ -362,14 +366,10 @@ int sockopt_mark_default(int sock, int mark, struct zebra_privs_t *cap)
 #ifdef SO_MARK
 	int ret;
 
-	if (cap->change(ZPRIVS_RAISE))
-		zlog_err("routing_socket: Can't raise privileges");
-
-	ret = setsockopt(sock, SOL_SOCKET, SO_MARK, &mark, sizeof(mark));
-
-	if (cap->change(ZPRIVS_LOWER))
-		zlog_err("routing_socket: Can't lower privileges");
-
+	frr_elevate_privs(cap) {
+		ret = setsockopt(sock, SOL_SOCKET, SO_MARK, &mark,
+				 sizeof(mark));
+	}
 	return ret;
 #else
 	return 0;
@@ -486,18 +486,18 @@ size_t sockunion_get_addrlen(const union sockunion *su)
 	return family2addrsize(sockunion_family(su));
 }
 
-const u_char *sockunion_get_addr(const union sockunion *su)
+const uint8_t *sockunion_get_addr(const union sockunion *su)
 {
 	switch (sockunion_family(su)) {
 	case AF_INET:
-		return (const u_char *)&su->sin.sin_addr.s_addr;
+		return (const uint8_t *)&su->sin.sin_addr.s_addr;
 	case AF_INET6:
-		return (const u_char *)&su->sin6.sin6_addr;
+		return (const uint8_t *)&su->sin6.sin6_addr;
 	}
 	return NULL;
 }
 
-void sockunion_set(union sockunion *su, int family, const u_char *addr,
+void sockunion_set(union sockunion *su, int family, const uint8_t *addr,
 		   size_t bytes)
 {
 	if (family2addrsize(family) != bytes)
@@ -622,10 +622,10 @@ static int in6addr_cmp(const struct in6_addr *addr1,
 		       const struct in6_addr *addr2)
 {
 	unsigned int i;
-	const u_char *p1, *p2;
+	const uint8_t *p1, *p2;
 
-	p1 = (const u_char *)addr1;
-	p2 = (const u_char *)addr2;
+	p1 = (const uint8_t *)addr1;
+	p2 = (const uint8_t *)addr2;
 
 	for (i = 0; i < sizeof(struct in6_addr); i++) {
 		if (p1[i] > p2[i])

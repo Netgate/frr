@@ -51,28 +51,27 @@ enum blackhole_type {
 };
 
 /* IPV[46] -> IPV[46]_IFINDEX */
-#define NEXTHOP_FIRSTHOPTYPE(type) \
-	((type) == NEXTHOP_TYPE_IFINDEX || (type) == NEXTHOP_TYPE_BLACKHOLE) \
-		? (type) : ((type) | 1)
-
-/* Nexthop label structure. */
-struct nexthop_label {
-	u_int8_t num_labels;
-	u_int8_t reserved[3];
-	mpls_label_t label[0]; /* 1 or more labels. */
-};
+#define NEXTHOP_FIRSTHOPTYPE(type)                                             \
+	((type) == NEXTHOP_TYPE_IFINDEX || (type) == NEXTHOP_TYPE_BLACKHOLE)   \
+		? (type)                                                       \
+		: ((type) | 1)
 
 /* Nexthop structure. */
 struct nexthop {
 	struct nexthop *next;
 	struct nexthop *prev;
 
+	/*
+	 * What vrf is this nexthop associated with?
+	 */
+	vrf_id_t vrf_id;
+
 	/* Interface index. */
 	ifindex_t ifindex;
 
 	enum nexthop_types_t type;
 
-	u_char flags;
+	uint8_t flags;
 #define NEXTHOP_FLAG_ACTIVE     (1 << 0) /* This nexthop is alive. */
 #define NEXTHOP_FLAG_FIB        (1 << 1) /* FIB nexthop. */
 #define NEXTHOP_FLAG_RECURSIVE  (1 << 2) /* Recursive nexthop. */
@@ -80,9 +79,10 @@ struct nexthop {
 #define NEXTHOP_FLAG_MATCHED    (1 << 4) /* Already matched vs a nexthop */
 #define NEXTHOP_FLAG_FILTERED   (1 << 5) /* rmap filtered, used by static only */
 #define NEXTHOP_FLAG_DUPLICATE  (1 << 6) /* nexthop duplicates another active one */
-#define NEXTHOP_IS_ACTIVE(flags) \
-	(CHECK_FLAG(flags, NEXTHOP_FLAG_ACTIVE) \
-		&& !CHECK_FLAG(flags, NEXTHOP_FLAG_DUPLICATE))
+#define NEXTHOP_FLAG_EVPN_RVTEP (1 << 7) /* EVPN remote vtep nexthop */
+#define NEXTHOP_IS_ACTIVE(flags)                                               \
+	(CHECK_FLAG(flags, NEXTHOP_FLAG_ACTIVE)                                \
+	 && !CHECK_FLAG(flags, NEXTHOP_FLAG_DUPLICATE))
 
 	/* Nexthop address */
 	union {
@@ -106,53 +106,44 @@ struct nexthop {
 	enum lsp_types_t nh_label_type;
 
 	/* Label(s) associated with this nexthop. */
-	struct nexthop_label *nh_label;
+	struct mpls_label_stack *nh_label;
 };
 
-/* The following for loop allows to iterate over the nexthop
- * structure of routes.
- *
- * head:      The pointer to the first nexthop in the chain.
- *
- * nexthop:   The pointer to the current nexthop, either in the
- *            top-level chain or in a resolved chain.
- */
-#define ALL_NEXTHOPS(head, nexthop)                                            \
-	(nexthop) = (head);                                                    \
-	(nexthop);                                                             \
-	(nexthop) = nexthop_next(nexthop)
-
-extern int zebra_rnh_ip_default_route;
-extern int zebra_rnh_ipv6_default_route;
-
-static inline int nh_resolve_via_default(int family)
-{
-	if (((family == AF_INET) && zebra_rnh_ip_default_route)
-	    || ((family == AF_INET6) && zebra_rnh_ipv6_default_route))
-		return 1;
-	else
-		return 0;
-}
-
 struct nexthop *nexthop_new(void);
-void nexthop_add(struct nexthop **target, struct nexthop *nexthop);
 
-void copy_nexthops(struct nexthop **tnh, struct nexthop *nh,
-		   struct nexthop *rparent);
 void nexthop_free(struct nexthop *nexthop);
 void nexthops_free(struct nexthop *nexthop);
 
-void nexthop_add_labels(struct nexthop *, enum lsp_types_t, u_int8_t,
+void nexthop_add_labels(struct nexthop *, enum lsp_types_t, uint8_t,
 			mpls_label_t *);
 void nexthop_del_labels(struct nexthop *);
+
+/*
+ * Hash a nexthop. Suitable for use with hash tables.
+ *
+ * This function uses the following values when computing the hash:
+ * - vrf_id
+ * - ifindex
+ * - type
+ * - gate
+ *
+ * nexthop
+ *    The nexthop to hash
+ *
+ * Returns:
+ *    32-bit hash of nexthop
+ */
+uint32_t nexthop_hash(struct nexthop *nexthop);
+
+extern bool nexthop_same(const struct nexthop *nh1, const struct nexthop *nh2);
 
 extern const char *nexthop_type_to_str(enum nexthop_types_t nh_type);
 extern int nexthop_same_no_recurse(const struct nexthop *next1,
 				   const struct nexthop *next2);
 extern int nexthop_labels_match(struct nexthop *nh1, struct nexthop *nh2);
-extern int nexthop_same_firsthop (struct nexthop *next1, struct nexthop *next2);
+extern int nexthop_same_firsthop(struct nexthop *next1, struct nexthop *next2);
 
-extern const char *nexthop2str(struct nexthop *nexthop, char *str, int size);
+extern const char *nexthop2str(const struct nexthop *nexthop, char *str, int size);
 extern struct nexthop *nexthop_next(struct nexthop *nexthop);
 extern unsigned int nexthop_level(struct nexthop *nexthop);
 #endif /*_LIB_NEXTHOP_H */

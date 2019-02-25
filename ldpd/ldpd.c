@@ -42,6 +42,7 @@
 #include "filter.h"
 #include "qobj.h"
 #include "libfrr.h"
+#include "lib_errors.h"
 
 static void		 ldpd_shutdown(void);
 static pid_t		 start_child(enum ldpd_process, char *, int, int);
@@ -187,6 +188,22 @@ FRR_DAEMON_INFO(ldpd, LDP,
 	.privs = &ldpd_privs,
 )
 
+static int ldp_config_fork_apply(struct thread *t)
+{
+	/*
+	 * So the frr_config_fork() function schedules
+	 * the read of the vty config( if there is a
+	 * non-integrated config ) to be after the
+	 * end of startup and we are starting the
+	 * main process loop.  We need to schedule
+	 * the application of this if necessary
+	 * after the read in of the config.
+	 */
+	ldp_config_apply(NULL, vty_conf);
+
+	return 0;
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -195,6 +212,7 @@ main(int argc, char *argv[])
 	int			 pipe_parent2ldpe[2], pipe_parent2ldpe_sync[2];
 	int			 pipe_parent2lde[2], pipe_parent2lde_sync[2];
 	char			*ctl_sock_name;
+	struct thread           *thread = NULL;
 
 	ldpd_process = PROC_MAIN;
 	log_procname = log_procnames[ldpd_process];
@@ -331,7 +349,7 @@ main(int argc, char *argv[])
 	frr_config_fork();
 
 	/* apply configuration */
-	ldp_config_apply(NULL, vty_conf);
+	thread_add_event(master, ldp_config_fork_apply, NULL, 0, &thread);
 
 	/* setup pipes to children */
 	if ((iev_ldpe = calloc(1, sizeof(struct imsgev))) == NULL ||
@@ -406,16 +424,32 @@ ldpd_shutdown(void)
 	free(vty_conf);
 
 	log_debug("waiting for children to terminate");
-	do {
+
+	while (true) {
+		/* Wait for child process. */
 		pid = wait(&status);
 		if (pid == -1) {
-			if (errno != EINTR && errno != ECHILD)
-				fatal("wait");
-		} else if (WIFSIGNALED(status))
+			/* We got interrupted, try again. */
+			if (errno == EINTR)
+				continue;
+			/* No more processes were found. */
+			if (errno != ECHILD)
+				break;
+
+			/* Unhandled errno condition. */
+			fatal("wait");
+			/* UNREACHABLE */
+		}
+
+		/* We found something, lets announce it. */
+		if (WIFSIGNALED(status))
 			log_warnx("%s terminated; signal %d",
-			    (pid == lde_pid) ? "label decision engine" :
-			    "ldp engine", WTERMSIG(status));
-	} while (pid != -1 || (pid == -1 && errno == EINTR));
+				  (pid == lde_pid ? "label decision engine"
+						  : "ldp engine"),
+				  WTERMSIG(status));
+
+		/* Repeat until there are no more child processes. */
+	}
 
 	free(iev_ldpe);
 	free(iev_lde);
@@ -450,8 +484,9 @@ start_child(enum ldpd_process p, char *argv0, int fd_async, int fd_sync)
 
 	nullfd = open("/dev/null", O_RDONLY | O_NOCTTY);
 	if (nullfd == -1) {
-		zlog_err("%s: failed to open /dev/null: %s", __func__,
-			 safe_strerror(errno));
+		flog_err_sys(LIB_ERR_SYSTEM_CALL,
+			     "%s: failed to open /dev/null: %s", __func__,
+			     safe_strerror(errno));
 	} else {
 		dup2(nullfd, 0);
 		dup2(nullfd, 1);
@@ -1066,13 +1101,17 @@ ldp_config_reset_main(struct ldpd_conf *conf)
 	struct iface		*iface;
 	struct nbr_params	*nbrp;
 
-	while ((iface = RB_ROOT(iface_head, &conf->iface_tree)) != NULL) {
+	while (!RB_EMPTY(iface_head, &conf->iface_tree)) {
+		iface = RB_ROOT(iface_head, &conf->iface_tree);
+
 		QOBJ_UNREG(iface);
 		RB_REMOVE(iface_head, &conf->iface_tree, iface);
 		free(iface);
 	}
 
-	while ((nbrp = RB_ROOT(nbrp_head, &conf->nbrp_tree)) != NULL) {
+	while (!RB_EMPTY(nbrp_head, &conf->nbrp_tree)) {
+		nbrp = RB_ROOT(nbrp_head, &conf->nbrp_tree);
+
 		QOBJ_UNREG(nbrp);
 		RB_REMOVE(nbrp_head, &conf->nbrp_tree, nbrp);
 		free(nbrp);
@@ -1128,20 +1167,25 @@ ldp_config_reset_l2vpns(struct ldpd_conf *conf)
 	struct l2vpn_if		*lif;
 	struct l2vpn_pw		*pw;
 
-	while ((l2vpn = RB_ROOT(l2vpn_head, &conf->l2vpn_tree)) != NULL) {
-		while ((lif = RB_ROOT(l2vpn_if_head,
-		    &l2vpn->if_tree)) != NULL) {
+	while (!RB_EMPTY(l2vpn_head, &conf->l2vpn_tree)) {
+		l2vpn = RB_ROOT(l2vpn_head, &conf->l2vpn_tree);
+		while (!RB_EMPTY(l2vpn_if_head, &l2vpn->if_tree)) {
+			lif = RB_ROOT(l2vpn_if_head, &l2vpn->if_tree);
+
 			QOBJ_UNREG(lif);
 			RB_REMOVE(l2vpn_if_head, &l2vpn->if_tree, lif);
 			free(lif);
 		}
-		while ((pw = RB_ROOT(l2vpn_pw_head, &l2vpn->pw_tree)) != NULL) {
+		while (!RB_EMPTY(l2vpn_pw_head, &l2vpn->pw_tree)) {
+			pw = RB_ROOT(l2vpn_pw_head, &l2vpn->pw_tree);
+
 			QOBJ_UNREG(pw);
 			RB_REMOVE(l2vpn_pw_head, &l2vpn->pw_tree, pw);
 			free(pw);
 		}
-		while ((pw = RB_ROOT(l2vpn_pw_head,
-		    &l2vpn->pw_inactive_tree)) != NULL) {
+		while (!RB_EMPTY(l2vpn_pw_head, &l2vpn->pw_inactive_tree)) {
+			pw = RB_ROOT(l2vpn_pw_head, &l2vpn->pw_inactive_tree);
+
 			QOBJ_UNREG(pw);
 			RB_REMOVE(l2vpn_pw_head, &l2vpn->pw_inactive_tree, pw);
 			free(pw);
@@ -1160,19 +1204,27 @@ ldp_clear_config(struct ldpd_conf *xconf)
 	struct nbr_params	*nbrp;
 	struct l2vpn		*l2vpn;
 
-	while ((iface = RB_ROOT(iface_head, &xconf->iface_tree)) != NULL) {
+	while (!RB_EMPTY(iface_head, &xconf->iface_tree)) {
+		iface = RB_ROOT(iface_head, &xconf->iface_tree);
+
 		RB_REMOVE(iface_head, &xconf->iface_tree, iface);
 		free(iface);
 	}
-	while ((tnbr = RB_ROOT(tnbr_head, &xconf->tnbr_tree)) != NULL) {
+	while (!RB_EMPTY(tnbr_head, &xconf->tnbr_tree)) {
+		tnbr = RB_ROOT(tnbr_head, &xconf->tnbr_tree);
+
 		RB_REMOVE(tnbr_head, &xconf->tnbr_tree, tnbr);
 		free(tnbr);
 	}
-	while ((nbrp = RB_ROOT(nbrp_head, &xconf->nbrp_tree)) != NULL) {
+	while (!RB_EMPTY(nbrp_head, &xconf->nbrp_tree)) {
+		nbrp = RB_ROOT(nbrp_head, &xconf->nbrp_tree);
+
 		RB_REMOVE(nbrp_head, &xconf->nbrp_tree, nbrp);
 		free(nbrp);
 	}
-	while ((l2vpn = RB_ROOT(l2vpn_head, &xconf->l2vpn_tree)) != NULL) {
+	while (!RB_EMPTY(l2vpn_head, &xconf->l2vpn_tree)) {
+		l2vpn = RB_ROOT(l2vpn_head, &xconf->l2vpn_tree);
+
 		RB_REMOVE(l2vpn_head, &xconf->l2vpn_tree, l2vpn);
 		l2vpn_del(l2vpn);
 	}

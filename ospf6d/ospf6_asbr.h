@@ -39,7 +39,7 @@ struct ospf6_external_info {
 	int type;
 
 	/* Originating Link State ID */
-	u_int32_t id;
+	uint32_t id;
 
 	struct in6_addr forwarding;
 
@@ -51,7 +51,7 @@ struct ospf6_external_info {
 /* AS-External-LSA */
 #define OSPF6_AS_EXTERNAL_LSA_MIN_SIZE         4U /* w/o IPv6 prefix */
 struct ospf6_as_external_lsa {
-	u_int32_t bits_metric;
+	uint32_t bits_metric;
 
 	struct ospf6_prefix prefix;
 	/* followed by none or one forwarding address */
@@ -71,14 +71,15 @@ struct ospf6_as_external_lsa {
 	}
 
 extern void ospf6_asbr_lsa_add(struct ospf6_lsa *lsa);
-extern void ospf6_asbr_lsa_remove(struct ospf6_lsa *lsa);
+extern void ospf6_asbr_lsa_remove(struct ospf6_lsa *lsa,
+				  struct ospf6_route *asbr_entry);
 extern void ospf6_asbr_lsentry_add(struct ospf6_route *asbr_entry);
 extern void ospf6_asbr_lsentry_remove(struct ospf6_route *asbr_entry);
 
 extern int ospf6_asbr_is_asbr(struct ospf6 *o);
 extern void ospf6_asbr_redistribute_add(int type, ifindex_t ifindex,
 					struct prefix *prefix,
-					u_int nexthop_num,
+					unsigned int nexthop_num,
 					struct in6_addr *nexthop,
 					route_tag_t tag);
 extern void ospf6_asbr_redistribute_remove(int type, ifindex_t ifindex,
@@ -93,5 +94,8 @@ extern void ospf6_asbr_send_externals_to_area(struct ospf6_area *);
 
 extern int config_write_ospf6_debug_asbr(struct vty *vty);
 extern void install_element_ospf6_debug_asbr(void);
+extern void ospf6_asbr_update_route_ecmp_path(struct ospf6_route *old,
+					      struct ospf6_route *route);
+extern void ospf6_asbr_distribute_list_update(int type);
 
 #endif /* OSPF6_ASBR_H */

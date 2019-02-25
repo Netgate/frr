@@ -24,6 +24,7 @@
 #include <lib/vty.h>
 #include <lib/vrf.h>
 #include <lib/plist.h>
+#include <lib/lib_errors.h>
 
 #include "pimd.h"
 #include "pim_ssm.h"
@@ -48,7 +49,7 @@ static void pim_ssm_range_reevaluate(struct pim_instance *pim)
 	 * disappear in time for SSM groups.
 	 */
 	pim_upstream_register_reevaluate(pim);
-	igmp_source_forward_reevaluate_all();
+	igmp_source_forward_reevaluate_all(pim);
 }
 
 void pim_ssm_prefix_list_update(struct pim_instance *pim,
@@ -72,8 +73,9 @@ static int pim_is_grp_standard_ssm(struct prefix *group)
 
 	if (first) {
 		if (!str2prefix(PIM_SSM_STANDARD_RANGE, &group_ssm))
-			zlog_err("%s: Failure to Read Group Address: %s",
-				 __PRETTY_FUNCTION__, PIM_SSM_STANDARD_RANGE);
+			flog_err(LIB_ERR_DEVELOPMENT,
+				  "%s: Failure to Read Group Address: %s",
+				  __PRETTY_FUNCTION__, PIM_SSM_STANDARD_RANGE);
 
 		first = 0;
 	}
@@ -146,6 +148,11 @@ void *pim_ssm_init(void)
 
 void pim_ssm_terminate(struct pim_ssm *ssm)
 {
-	if (ssm && ssm->plist_name)
+	if (!ssm)
+		return;
+
+	if (ssm->plist_name)
 		XFREE(MTYPE_PIM_FILTER_NAME, ssm->plist_name);
+
+	XFREE(MTYPE_PIM_SSM_INFO, ssm);
 }

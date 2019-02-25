@@ -34,6 +34,7 @@
 #include "privs.h"
 #include "vrf.h"
 #include "vty.h"
+#include "lib_errors.h"
 
 #include "zebra/interface.h"
 #include "zebra/ioctl_solaris.h"
@@ -58,29 +59,26 @@ static int interface_list_ioctl(int af)
 	size_t needed, lastneeded = 0;
 	char *buf = NULL;
 
-	if (zserv_privs.change(ZPRIVS_RAISE))
-		zlog_err("Can't raise privileges");
+	frr_elevate_privs(&zserv_privs) {
+		sock = socket(af, SOCK_DGRAM, 0);
+	}
 
-	sock = socket(af, SOCK_DGRAM, 0);
 	if (sock < 0) {
 		zlog_warn("Can't make %s socket stream: %s",
 			  (af == AF_INET ? "AF_INET" : "AF_INET6"),
 			  safe_strerror(errno));
-
-		if (zserv_privs.change(ZPRIVS_LOWER))
-			zlog_err("Can't lower privileges");
-
 		return -1;
 	}
 
-calculate_lifc_len: /* must hold privileges to enter here */
-	lifn.lifn_family = af;
-	lifn.lifn_flags = LIFC_NOXMIT; /* we want NOXMIT interfaces too */
-	ret = ioctl(sock, SIOCGLIFNUM, &lifn);
-	save_errno = errno;
+calculate_lifc_len:
+	frr_elevate_privs(&zserv_privs) {
+		lifn.lifn_family = af;
+		lifn.lifn_flags = LIFC_NOXMIT;
+		/* we want NOXMIT interfaces too */
+		ret = ioctl(sock, SIOCGLIFNUM, &lifn);
+		save_errno = errno;
 
-	if (zserv_privs.change(ZPRIVS_LOWER))
-		zlog_err("Can't lower privileges");
+	}
 
 	if (ret < 0) {
 		zlog_warn("interface_list_ioctl: SIOCGLIFNUM failed %s",
@@ -100,11 +98,7 @@ calculate_lifc_len: /* must hold privileges to enter here */
 	if (needed > lastneeded || needed < lastneeded / 2) {
 		if (buf != NULL)
 			XFREE(MTYPE_TMP, buf);
-		if ((buf = XMALLOC(MTYPE_TMP, needed)) == NULL) {
-			zlog_warn("interface_list_ioctl: malloc failed");
-			close(sock);
-			return -1;
-		}
+		buf = XMALLOC(MTYPE_TMP, needed);
 	}
 	lastneeded = needed;
 
@@ -113,26 +107,17 @@ calculate_lifc_len: /* must hold privileges to enter here */
 	lifconf.lifc_len = needed;
 	lifconf.lifc_buf = buf;
 
-	if (zserv_privs.change(ZPRIVS_RAISE))
-		zlog_err("Can't raise privileges");
-
-	ret = ioctl(sock, SIOCGLIFCONF, &lifconf);
+	frr_elevate_privs(&zserv_privs) {
+		ret = ioctl(sock, SIOCGLIFCONF, &lifconf);
+	}
 
 	if (ret < 0) {
 		if (errno == EINVAL)
-			goto calculate_lifc_len; /* deliberately hold privileges
-						    */
+			goto calculate_lifc_len;
 
 		zlog_warn("SIOCGLIFCONF: %s", safe_strerror(errno));
-
-		if (zserv_privs.change(ZPRIVS_LOWER))
-			zlog_err("Can't lower privileges");
-
 		goto end;
 	}
-
-	if (zserv_privs.change(ZPRIVS_LOWER))
-		zlog_err("Can't lower privileges");
 
 	/* Allocate interface. */
 	lifreq = lifconf.lifc_req;
@@ -252,7 +237,7 @@ static int if_get_addr(struct interface *ifp, struct sockaddr *addr,
 	struct lifreq lifreq;
 	struct sockaddr_storage mask, dest;
 	char *dest_pnt = NULL;
-	u_char prefixlen = 0;
+	uint8_t prefixlen = 0;
 	afi_t af;
 	int flags = 0;
 
@@ -315,7 +300,7 @@ static int if_get_addr(struct interface *ifp, struct sockaddr *addr,
 		connected_add_ipv4(ifp, flags, &SIN(addr)->sin_addr, prefixlen,
 				   (struct in_addr *)dest_pnt, label);
 	else if (af == AF_INET6)
-		connected_add_ipv6(ifp, flags, &SIN6(addr)->sin6_addr,
+		connected_add_ipv6(ifp, flags, &SIN6(addr)->sin6_addr, NULL,
 				   prefixlen, label);
 
 	return 0;

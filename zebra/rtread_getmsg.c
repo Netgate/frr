@@ -77,7 +77,7 @@ static void handle_route_entry(mib2_ipRouteEntry_t *routeEntry)
 	struct prefix prefix;
 	struct in_addr tmpaddr;
 	struct nexthop nh;
-	u_char zebra_flags = 0;
+	uint8_t zebra_flags = 0;
 
 	if (routeEntry->ipRouteInfo.re_ire_type & IRE_CACHETABLE)
 		return;
@@ -94,6 +94,7 @@ static void handle_route_entry(mib2_ipRouteEntry_t *routeEntry)
 	prefix.prefixlen = ip_masklen(tmpaddr);
 
 	memset(&nh, 0, sizeof(nh));
+	nh.vrf_id = VRF_DEFAULT;
 	nh.type = NEXTHOP_TYPE_IPV4;
 	nh.gate.ipv4.s_addr = routeEntry->ipRouteNextHop;
 
@@ -259,6 +260,10 @@ void neigh_read(struct zebra_ns *zns)
 }
 
 void neigh_read_for_vlan(struct zebra_ns *zns, struct interface *vlan_if)
+{
+}
+
+void kernel_read_pbr_rules(struct zebra_ns *zns)
 {
 }
 

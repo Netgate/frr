@@ -25,6 +25,7 @@
 #include "sockunion.h"
 #include "sockopt.h"
 #include "privs.h"
+#include "lib_errors.h"
 
 #include "libospf.h"
 #include "ospf6_proto.h"
@@ -38,9 +39,9 @@ struct in6_addr alldrouters6;
 /* setsockopt MulticastLoop to off */
 static void ospf6_reset_mcastloop(void)
 {
-	u_int off = 0;
+	unsigned int off = 0;
 	if (setsockopt(ospf6_sock, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, &off,
-		       sizeof(u_int))
+		       sizeof(unsigned int))
 	    < 0)
 		zlog_warn("Network: reset IPV6_MULTICAST_LOOP failed: %s",
 			  safe_strerror(errno));
@@ -75,18 +76,14 @@ static void ospf6_set_checksum(void)
 /* Make ospf6d's server socket. */
 int ospf6_serv_sock(void)
 {
-	if (ospf6d_privs.change(ZPRIVS_RAISE))
-		zlog_err("ospf6_serv_sock: could not raise privs");
+	frr_elevate_privs(&ospf6d_privs) {
 
-	ospf6_sock = socket(AF_INET6, SOCK_RAW, IPPROTO_OSPFIGP);
-	if (ospf6_sock < 0) {
-		zlog_warn("Network: can't create OSPF6 socket.");
-		if (ospf6d_privs.change(ZPRIVS_LOWER))
-			zlog_err("ospf_sock_init: could not lower privs");
-		return -1;
+		ospf6_sock = socket(AF_INET6, SOCK_RAW, IPPROTO_OSPFIGP);
+		if (ospf6_sock < 0) {
+			zlog_warn("Network: can't create OSPF6 socket.");
+			return -1;
+		}
 	}
-	if (ospf6d_privs.change(ZPRIVS_LOWER))
-		zlog_err("ospf_sock_init: could not lower privs");
 
 /* set socket options */
 #if 1
@@ -120,8 +117,10 @@ int ospf6_sso(ifindex_t ifindex, struct in6_addr *group, int option)
 	ret = setsockopt(ospf6_sock, IPPROTO_IPV6, option, &mreq6,
 			 sizeof(mreq6));
 	if (ret < 0) {
-		zlog_err("Network: setsockopt (%d) on ifindex %d failed: %s",
-			 option, ifindex, safe_strerror(errno));
+		flog_err_sys(
+			LIB_ERR_SOCKET,
+			"Network: setsockopt (%d) on ifindex %d failed: %s",
+			option, ifindex, safe_strerror(errno));
 		return ret;
 	}
 
@@ -156,7 +155,7 @@ int ospf6_sendmsg(struct in6_addr *src, struct in6_addr *dst,
 	struct cmsghdr *scmsgp;
 	union {
 		struct cmsghdr hdr;
-		u_char buf[CMSG_SPACE(sizeof(struct in6_pktinfo))];
+		uint8_t buf[CMSG_SPACE(sizeof(struct in6_pktinfo))];
 	} cmsgbuf;
 	struct in6_pktinfo *pktinfo;
 	struct sockaddr_in6 dst_sin6;
@@ -212,7 +211,7 @@ int ospf6_recvmsg(struct in6_addr *src, struct in6_addr *dst,
 	int retval;
 	struct msghdr rmsghdr;
 	struct cmsghdr *rcmsgp;
-	u_char cmsgbuf[CMSG_SPACE(sizeof(struct in6_pktinfo))];
+	uint8_t cmsgbuf[CMSG_SPACE(sizeof(struct in6_pktinfo))];
 	struct in6_pktinfo *pktinfo;
 	struct sockaddr_in6 src_sin6;
 

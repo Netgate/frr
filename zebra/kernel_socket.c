@@ -41,12 +41,15 @@
 #include "rib.h"
 #include "privs.h"
 #include "vrf.h"
+#include "lib_errors.h"
 
+#include "zebra/rt.h"
 #include "zebra/interface.h"
 #include "zebra/zserv.h"
 #include "zebra/debug.h"
 #include "zebra/kernel_socket.h"
 #include "zebra/rib.h"
+#include "zebra/zebra_errors.h"
 
 extern struct zebra_privs_t zserv_privs;
 
@@ -169,7 +172,7 @@ static inline void rta_copy(union sockunion *dest, caddr_t src)
 
 #define RTA_NAME_GET(DEST, RTA, RTMADDRS, PNT, LEN)                            \
 	if ((RTMADDRS) & (RTA)) {                                              \
-		u_char *pdest = (u_char *)(DEST);                              \
+		uint8_t *pdest = (uint8_t *)(DEST);                            \
 		int len = SAROUNDUP((PNT));                                    \
 		struct sockaddr_dl *sdl = (struct sockaddr_dl *)(PNT);         \
 		if (IS_ZEBRA_DEBUG_KERNEL)                                     \
@@ -408,8 +411,9 @@ int ifm_read(struct if_msghdr *ifm)
 
 	/* paranoia: sanity check structure */
 	if (ifm->ifm_msglen < sizeof(struct if_msghdr)) {
-		zlog_err("ifm_read: ifm->ifm_msglen %d too short\n",
-			 ifm->ifm_msglen);
+		flog_err(ZEBRA_ERR_NETLINK_LENGTH_ERROR,
+			  "ifm_read: ifm->ifm_msglen %d too short\n",
+			  ifm->ifm_msglen);
 		return -1;
 	}
 
@@ -772,10 +776,11 @@ int ifam_read(struct ifa_msghdr *ifam)
 
 		if (ifam->ifam_type == RTM_NEWADDR)
 			connected_add_ipv6(ifp, flags, &addr.sin6.sin6_addr,
+					   NULL,
 					   ip6_masklen(mask.sin6.sin6_addr),
 					   (isalias ? ifname : NULL));
 		else
-			connected_delete_ipv6(ifp, &addr.sin6.sin6_addr,
+			connected_delete_ipv6(ifp, &addr.sin6.sin6_addr, NULL,
 					      ip6_masklen(mask.sin6.sin6_addr));
 		break;
 	default:
@@ -865,7 +870,7 @@ static int rtm_read_mesg(struct rt_msghdr *rtm, union sockunion *dest,
 void rtm_read(struct rt_msghdr *rtm)
 {
 	int flags;
-	u_char zebra_flags;
+	uint8_t zebra_flags;
 	union sockunion dest, mask, gate;
 	char ifname[INTERFACE_NAMSIZ + 1];
 	short ifnlen = 0;
@@ -908,6 +913,8 @@ void rtm_read(struct rt_msghdr *rtm)
 		SET_FLAG(zebra_flags, ZEBRA_FLAG_STATIC);
 
 	memset(&nh, 0, sizeof(nh));
+
+	nh.vrf_id = VRF_DEFAULT;
 	/* This is a reject or blackhole route */
 	if (flags & RTF_REJECT) {
 		nh.type = NEXTHOP_TYPE_BLACKHOLE;
@@ -1041,7 +1048,7 @@ void rtm_read(struct rt_msghdr *rtm)
 		if (rtm->rtm_type == RTM_CHANGE)
 			rib_delete(AFI_IP, SAFI_UNICAST, VRF_DEFAULT,
 				   ZEBRA_ROUTE_KERNEL, 0, zebra_flags, &p, NULL,
-				   NULL, 0, 0, true);
+				   NULL, 0, 0, 0, true);
 
 		if (!nh.type) {
 			nh.type = NEXTHOP_TYPE_IPV4;
@@ -1056,7 +1063,7 @@ void rtm_read(struct rt_msghdr *rtm)
 		else
 			rib_delete(AFI_IP, SAFI_UNICAST, VRF_DEFAULT,
 				   ZEBRA_ROUTE_KERNEL, 0, zebra_flags, &p, NULL,
-				   &nh, 0, 0, true);
+				   &nh, 0, 0, 0, true);
 	}
 	if (dest.sa.sa_family == AF_INET6) {
 		/* One day we might have a debug section here like one in the
@@ -1087,7 +1094,7 @@ void rtm_read(struct rt_msghdr *rtm)
 		if (rtm->rtm_type == RTM_CHANGE)
 			rib_delete(AFI_IP6, SAFI_UNICAST, VRF_DEFAULT,
 				   ZEBRA_ROUTE_KERNEL, 0, zebra_flags, &p, NULL,
-				   NULL, 0, 0, true);
+				   NULL, 0, 0, 0, true);
 
 		if (!nh.type) {
 			nh.type = ifindex ? NEXTHOP_TYPE_IPV6_IFINDEX
@@ -1104,7 +1111,7 @@ void rtm_read(struct rt_msghdr *rtm)
 		else
 			rib_delete(AFI_IP6, SAFI_UNICAST, VRF_DEFAULT,
 				   ZEBRA_ROUTE_KERNEL, 0, zebra_flags, &p, NULL,
-				   &nh, 0, 0, true);
+				   &nh, 0, 0, 0, true);
 	}
 }
 
@@ -1196,7 +1203,7 @@ int rtm_write(int message, union sockunion *dest, union sockunion *mask,
 		msg.rtm.rtm_flags |= RTF_MPLS;
 
 		if (mpls->smpls.smpls_label
-		    != htonl(MPLS_IMP_NULL_LABEL << MPLS_LABEL_OFFSET))
+		    != htonl(MPLS_LABEL_IMPLICIT_NULL << MPLS_LABEL_OFFSET))
 			msg.rtm.rtm_mpls = MPLS_OP_PUSH;
 	}
 #endif
@@ -1380,14 +1387,11 @@ static int kernel_read(struct thread *thread)
 /* Make routing socket. */
 static void routing_socket(struct zebra_ns *zns)
 {
-	if (zserv_privs.change(ZPRIVS_RAISE))
-		zlog_err("routing_socket: Can't raise privileges");
-
-	routing_sock = socket(AF_ROUTE, SOCK_RAW, 0);
+	frr_elevate_privs(&zserv_privs) {
+		routing_sock = ns_socket(AF_ROUTE, SOCK_RAW, 0, zns->ns_id);
+	}
 
 	if (routing_sock < 0) {
-		if (zserv_privs.change(ZPRIVS_LOWER))
-			zlog_err("routing_socket: Can't lower privileges");
 		zlog_warn("Can't init kernel routing socket");
 		return;
 	}
@@ -1398,9 +1402,6 @@ static void routing_socket(struct zebra_ns *zns)
 	 */
 	/*if (fcntl (routing_sock, F_SETFL, O_NONBLOCK) < 0)
 	  zlog_warn ("Can't set O_NONBLOCK to routing socket");*/
-
-	if (zserv_privs.change(ZPRIVS_LOWER))
-		zlog_err("routing_socket: Can't lower privileges");
 
 	/* kernel_read needs rewrite. */
 	thread_add_read(zebrad.master, kernel_read, NULL, routing_sock, NULL);

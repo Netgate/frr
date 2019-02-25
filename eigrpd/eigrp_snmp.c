@@ -167,16 +167,16 @@ oid eigrp_oid[] = {EIGRPMIB};
 #define UINTEGER                ASN_UNSIGNED
 
 /* Hook functions. */
-static u_char *eigrpVpnEntry(struct variable *, oid *, size_t *, int, size_t *,
-			     WriteMethod **);
-static u_char *eigrpTraffStatsEntry(struct variable *, oid *, size_t *, int,
-				    size_t *, WriteMethod **);
-static u_char *eigrpTopologyEntry(struct variable *, oid *, size_t *, int,
-				  size_t *, WriteMethod **);
-static u_char *eigrpPeerEntry(struct variable *, oid *, size_t *, int, size_t *,
+static uint8_t *eigrpVpnEntry(struct variable *, oid *, size_t *, int, size_t *,
 			      WriteMethod **);
-static u_char *eigrpInterfaceEntry(struct variable *, oid *, size_t *, int,
+static uint8_t *eigrpTraffStatsEntry(struct variable *, oid *, size_t *, int,
+				     size_t *, WriteMethod **);
+static uint8_t *eigrpTopologyEntry(struct variable *, oid *, size_t *, int,
 				   size_t *, WriteMethod **);
+static uint8_t *eigrpPeerEntry(struct variable *, oid *, size_t *, int,
+			       size_t *, WriteMethod **);
+static uint8_t *eigrpInterfaceEntry(struct variable *, oid *, size_t *, int,
+				    size_t *, WriteMethod **);
 
 
 struct variable eigrp_variables[] = {
@@ -514,9 +514,8 @@ eigrp_snmp_nbr_lookup_next(struct in_addr *nbr_addr, unsigned int *ifindex,
 	struct listnode *node, *nnode, *node2, *nnode2;
 	struct eigrp_interface *ei;
 	struct eigrp_neighbor *nbr;
-	struct route_node *rn;
 	struct eigrp_neighbor *min = NULL;
-	struct eigrp *eigrp = eigrp;
+	struct eigrp *eigrp;
 
 	eigrp = eigrp_lookup();
 
@@ -573,7 +572,7 @@ static struct eigrp_neighbor *eigrpNbrLookup(struct variable *v, oid *name,
 		first = 0;
 		len = *length - v->namelen;
 
-		if (len <= 0)
+		if (len == 0)
 			first = 1;
 
 		if (len > IN_ADDR_SIZE)
@@ -599,9 +598,9 @@ static struct eigrp_neighbor *eigrpNbrLookup(struct variable *v, oid *name,
 }
 
 
-static u_char *eigrpVpnEntry(struct variable *v, oid *name, size_t *length,
-			     int exact, size_t *var_len,
-			     WriteMethod **write_method)
+static uint8_t *eigrpVpnEntry(struct variable *v, oid *name, size_t *length,
+			      int exact, size_t *var_len,
+			      WriteMethod **write_method)
 {
 	struct eigrp *eigrp;
 
@@ -657,9 +656,9 @@ static uint32_t eigrp_neighbor_count(struct eigrp *eigrp)
 }
 
 
-static u_char *eigrpTraffStatsEntry(struct variable *v, oid *name,
-				    size_t *length, int exact, size_t *var_len,
-				    WriteMethod **write_method)
+static uint8_t *eigrpTraffStatsEntry(struct variable *v, oid *name,
+				     size_t *length, int exact, size_t *var_len,
+				     WriteMethod **write_method)
 {
 	struct eigrp *eigrp;
 	struct eigrp_interface *ei;
@@ -913,13 +912,11 @@ static u_char *eigrpTraffStatsEntry(struct variable *v, oid *name,
 	return NULL;
 }
 
-static u_char *eigrpTopologyEntry(struct variable *v, oid *name, size_t *length,
-				  int exact, size_t *var_len,
-				  WriteMethod **write_method)
+static uint8_t *eigrpTopologyEntry(struct variable *v, oid *name,
+				   size_t *length, int exact, size_t *var_len,
+				   WriteMethod **write_method)
 {
 	struct eigrp *eigrp;
-	struct eigrp_interface *ei;
-	struct listnode *node, *nnode;
 
 	eigrp = eigrp_lookup();
 
@@ -1061,13 +1058,12 @@ static u_char *eigrpTopologyEntry(struct variable *v, oid *name, size_t *length,
 	return NULL;
 }
 
-static u_char *eigrpPeerEntry(struct variable *v, oid *name, size_t *length,
-			      int exact, size_t *var_len,
-			      WriteMethod **write_method)
+static uint8_t *eigrpPeerEntry(struct variable *v, oid *name, size_t *length,
+			       int exact, size_t *var_len,
+			       WriteMethod **write_method)
 {
 	struct eigrp *eigrp;
 	struct eigrp_interface *ei;
-	struct listnode *node, *nnode;
 	struct eigrp_neighbor *nbr;
 	struct in_addr nbr_addr;
 	unsigned int ifindex;
@@ -1194,16 +1190,14 @@ static u_char *eigrpPeerEntry(struct variable *v, oid *name, size_t *length,
 	return NULL;
 }
 
-static u_char *eigrpInterfaceEntry(struct variable *v, oid *name,
-				   size_t *length, int exact, size_t *var_len,
-				   WriteMethod **write_method)
+static uint8_t *eigrpInterfaceEntry(struct variable *v, oid *name,
+				    size_t *length, int exact, size_t *var_len,
+				    WriteMethod **write_method)
 {
 	struct eigrp *eigrp;
-	struct eigrp_interface *ei;
 	struct listnode *node, *nnode;
 	struct keychain *keychain;
 	struct list *keylist;
-	int counter;
 
 	eigrp = eigrp_lookup();
 
@@ -1383,13 +1377,13 @@ static u_char *eigrpInterfaceEntry(struct variable *v, oid *name,
 		   on this interface. */
 		keylist = keychain_list_get();
 		for (ALL_LIST_ELEMENTS(keylist, node, nnode, keychain)) {
-			return (u_char *)keychain->name;
+			return (uint8_t *)keychain->name;
 		}
 		if (eigrp && keychain) {
 			*var_len = str_len(keychain->name);
-			return (u_char *)keychain->name;
+			return (uint8_t *)keychain->name;
 		} else
-			return (u_char *)"TEST";
+			return (uint8_t *)"TEST";
 		break;
 	default:
 		return NULL;

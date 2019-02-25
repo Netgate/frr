@@ -25,6 +25,7 @@
 #include <zebra.h>
 #include "vty.h"
 #include "linklist.h"
+#include "pim_igmp_stats.h"
 
 /*
   The following sizes are likely to support
@@ -37,6 +38,8 @@
 #define PIM_IGMP_V1_MEMBERSHIP_REPORT (0x12)
 #define PIM_IGMP_V2_MEMBERSHIP_REPORT (0x16)
 #define PIM_IGMP_V2_LEAVE_GROUP       (0x17)
+#define PIM_IGMP_MTRACE_RESPONSE      (0x1E)
+#define PIM_IGMP_MTRACE_QUERY_REQUEST (0x1F)
 #define PIM_IGMP_V3_MEMBERSHIP_REPORT (0x22)
 
 #define IGMP_V3_REPORT_HEADER_SIZE    (8)
@@ -88,8 +91,12 @@ struct igmp_sock {
 	int querier_robustness_variable; /* QRV */
 	int startup_query_count;
 
+	bool mtrace_only;
+
 	struct list *igmp_group_list; /* list of struct igmp_group */
 	struct hash *igmp_group_hash;
+
+	struct igmp_stats rx_stats;
 };
 
 struct igmp_sock *pim_igmp_sock_lookup_ifaddr(struct list *igmp_sock_list,
@@ -97,7 +104,8 @@ struct igmp_sock *pim_igmp_sock_lookup_ifaddr(struct list *igmp_sock_list,
 struct igmp_sock *igmp_sock_lookup_by_fd(struct list *igmp_sock_list, int fd);
 struct igmp_sock *pim_igmp_sock_add(struct list *igmp_sock_list,
 				    struct in_addr ifaddr,
-				    struct interface *ifp);
+				    struct interface *ifp,
+				    bool mtrace_only);
 void igmp_sock_delete(struct igmp_sock *igmp);
 void igmp_sock_free(struct igmp_sock *igmp);
 void igmp_sock_delete_all(struct interface *ifp);

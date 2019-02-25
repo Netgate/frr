@@ -44,8 +44,7 @@
 #include "pim_ssm.h"
 #include "pim_rp.h"
 
-RB_GENERATE(pim_ifchannel_rb, pim_ifchannel,
-	    pim_ifp_rb, pim_ifchannel_compare);
+RB_GENERATE(pim_ifchannel_rb, pim_ifchannel, pim_ifp_rb, pim_ifchannel_compare);
 
 int pim_ifchannel_compare(const struct pim_ifchannel *ch1,
 			  const struct pim_ifchannel *ch2)
@@ -125,11 +124,6 @@ static void pim_ifchannel_find_new_children(struct pim_ifchannel *ch)
 	}
 }
 
-void pim_ifchannel_free(struct pim_ifchannel *ch)
-{
-	XFREE(MTYPE_PIM_IFCHANNEL, ch);
-}
-
 void pim_ifchannel_delete(struct pim_ifchannel *ch)
 {
 	struct pim_interface *pim_ifp;
@@ -142,9 +136,8 @@ void pim_ifchannel_delete(struct pim_ifchannel *ch)
 			mask = PIM_OIF_FLAG_PROTO_IGMP;
 
 		/* SGRpt entry could have empty oil */
-		if (ch->upstream->channel_oil)
-			pim_channel_del_oif(ch->upstream->channel_oil,
-					    ch->interface, mask);
+		pim_channel_del_oif(ch->upstream->channel_oil, ch->interface,
+				    mask);
 		/*
 		 * Do we have any S,G's that are inheriting?
 		 * Nuke from on high too.
@@ -181,7 +174,16 @@ void pim_ifchannel_delete(struct pim_ifchannel *ch)
 	   ifchannel list is empty before deleting upstream_del
 	   ref count will take care of it.
 	*/
-	pim_upstream_del(pim_ifp->pim, ch->upstream, __PRETTY_FUNCTION__);
+	if (ch->upstream->ref_count > 0)
+		pim_upstream_del(pim_ifp->pim, ch->upstream,
+			__PRETTY_FUNCTION__);
+
+	else
+		zlog_warn("%s: Avoiding deletion of upstream with ref_count %d "
+			"from ifchannel(%s): %s", __PRETTY_FUNCTION__,
+			ch->upstream->ref_count, ch->interface->name,
+			ch->sg_str);
+
 	ch->upstream = NULL;
 
 	THREAD_OFF(ch->t_ifjoin_expiry_timer);
@@ -199,7 +201,7 @@ void pim_ifchannel_delete(struct pim_ifchannel *ch)
 		zlog_debug("%s: ifchannel entry %s is deleted ",
 			   __PRETTY_FUNCTION__, ch->sg_str);
 
-	pim_ifchannel_free(ch);
+	XFREE(MTYPE_PIM_IFCHANNEL, ch);
 }
 
 void pim_ifchannel_delete_all(struct interface *ifp)
@@ -211,8 +213,9 @@ void pim_ifchannel_delete_all(struct interface *ifp)
 	if (!pim_ifp)
 		return;
 
-	while ((ch = RB_ROOT(pim_ifchannel_rb,
-			     &pim_ifp->ifchannel_rb)) != NULL) {
+	while (!RB_EMPTY(pim_ifchannel_rb, &pim_ifp->ifchannel_rb)) {
+		ch = RB_ROOT(pim_ifchannel_rb, &pim_ifp->ifchannel_rb);
+
 		pim_ifchannel_delete(ch);
 	}
 }
@@ -525,12 +528,6 @@ struct pim_ifchannel *pim_ifchannel_add(struct interface *ifp,
 	pim_ifp = ifp->info;
 
 	ch = XCALLOC(MTYPE_PIM_IFCHANNEL, sizeof(*ch));
-	if (!ch) {
-		zlog_warn(
-			"%s: pim_ifchannel_new() failure for (S,G)=%s on interface %s",
-			__PRETTY_FUNCTION__, pim_str_sg_dump(sg), ifp->name);
-		return NULL;
-	}
 
 	ch->flags = 0;
 	if ((source_flags & PIM_ENCODE_RPT_BIT)
@@ -561,26 +558,6 @@ struct pim_ifchannel *pim_ifchannel_add(struct interface *ifp,
 	up = pim_upstream_add(pim_ifp->pim, sg, NULL, up_flags,
 			      __PRETTY_FUNCTION__, ch);
 
-	if (!up) {
-		zlog_err(
-			"%s: could not attach upstream (S,G)=%s on interface %s",
-			__PRETTY_FUNCTION__, pim_str_sg_dump(sg), ifp->name);
-
-		if (ch->parent)
-			listnode_delete(ch->parent->sources, ch);
-
-		pim_ifchannel_remove_children(ch);
-		if (ch->sources)
-			list_delete_and_null(&ch->sources);
-
-		THREAD_OFF(ch->t_ifjoin_expiry_timer);
-		THREAD_OFF(ch->t_ifjoin_prune_pending_timer);
-		THREAD_OFF(ch->t_ifassert_timer);
-
-		RB_REMOVE(pim_ifchannel_rb, &pim_ifp->ifchannel_rb, ch);
-		XFREE(MTYPE_PIM_IFCHANNEL, ch);
-		return NULL;
-	}
 	ch->upstream = up;
 
 	listnode_add_sort(up->ifchannels, ch);
@@ -641,11 +618,10 @@ static int on_ifjoin_prune_pending_timer(struct thread *t)
 	ch = THREAD_ARG(t);
 
 	if (PIM_DEBUG_TRACE)
-		zlog_debug("%s: IFCHANNEL%s %s Prune Pending Timer Popped",
-			   __PRETTY_FUNCTION__,
-			   pim_str_sg_dump(&ch->sg),
-			   pim_ifchannel_ifjoin_name(ch->ifjoin_state,
-						     ch->flags));
+		zlog_debug(
+			"%s: IFCHANNEL%s %s Prune Pending Timer Popped",
+			__PRETTY_FUNCTION__, pim_str_sg_dump(&ch->sg),
+			pim_ifchannel_ifjoin_name(ch->ifjoin_state, ch->flags));
 
 	if (ch->ifjoin_state == PIM_IFJOIN_PRUNE_PENDING) {
 		ifp = ch->interface;
@@ -661,9 +637,8 @@ static int on_ifjoin_prune_pending_timer(struct thread *t)
 				rpf.source_nexthop.interface = ifp;
 				rpf.rpf_addr.u.prefix4 =
 					pim_ifp->primary_address;
-				pim_jp_agg_single_upstream_send(&rpf,
-								ch->upstream,
-								0);
+				pim_jp_agg_single_upstream_send(
+					&rpf, ch->upstream, 0);
 			}
 
 			ifjoin_to_noinfo(ch, true);
@@ -680,8 +655,7 @@ static int on_ifjoin_prune_pending_timer(struct thread *t)
 								 ch->upstream);
 
 				pim_jp_agg_single_upstream_send(&parent->rpf,
-								parent,
-								true);
+								parent, true);
 			}
 		}
 		/* from here ch may have been deleted */
@@ -1373,8 +1347,7 @@ void pim_ifchannel_set_star_g_join_state(struct pim_ifchannel *ch, int eom,
 			if (child->ifjoin_state == PIM_IFJOIN_PRUNE_PENDING_TMP)
 				THREAD_OFF(child->t_ifjoin_prune_pending_timer);
 			THREAD_OFF(child->t_ifjoin_expiry_timer);
-			struct pim_upstream *parent =
-				child->upstream->parent;
+			struct pim_upstream *parent = child->upstream->parent;
 
 			PIM_IF_FLAG_UNSET_S_G_RPT(child->flags);
 			child->ifjoin_state = PIM_IFJOIN_NOINFO;
@@ -1382,19 +1355,16 @@ void pim_ifchannel_set_star_g_join_state(struct pim_ifchannel *ch, int eom,
 			if (I_am_RP(pim, child->sg.grp)) {
 				pim_channel_add_oif(
 					child->upstream->channel_oil,
-					ch->interface,
-					PIM_OIF_FLAG_PROTO_STAR);
-				pim_upstream_switch(
-					pim, child->upstream,
-					PIM_UPSTREAM_JOINED);
+					ch->interface, PIM_OIF_FLAG_PROTO_STAR);
+				pim_upstream_switch(pim, child->upstream,
+						    PIM_UPSTREAM_JOINED);
 				pim_jp_agg_single_upstream_send(
-					&child->upstream->rpf,
-					child->upstream, true);
+					&child->upstream->rpf, child->upstream,
+					true);
 			}
 			if (parent)
-				pim_jp_agg_single_upstream_send(
-					&parent->rpf,
-					parent, true);
+				pim_jp_agg_single_upstream_send(&parent->rpf,
+								parent, true);
 
 			delete_on_noinfo(child);
 			break;

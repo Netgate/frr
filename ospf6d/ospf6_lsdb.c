@@ -173,8 +173,8 @@ void ospf6_lsdb_remove(struct ospf6_lsa *lsa, struct ospf6_lsdb *lsdb)
 	ospf6_lsdb_count_assert(lsdb);
 }
 
-struct ospf6_lsa *ospf6_lsdb_lookup(u_int16_t type, u_int32_t id,
-				    u_int32_t adv_router,
+struct ospf6_lsa *ospf6_lsdb_lookup(uint16_t type, uint32_t id,
+				    uint32_t adv_router,
 				    struct ospf6_lsdb *lsdb)
 {
 	struct route_node *node;
@@ -196,8 +196,8 @@ struct ospf6_lsa *ospf6_lsdb_lookup(u_int16_t type, u_int32_t id,
 	return (struct ospf6_lsa *)node->info;
 }
 
-struct ospf6_lsa *ospf6_lsdb_lookup_next(u_int16_t type, u_int32_t id,
-					 u_int32_t adv_router,
+struct ospf6_lsa *ospf6_lsdb_lookup_next(uint16_t type, uint32_t id,
+					 uint32_t adv_router,
 					 struct ospf6_lsdb *lsdb)
 {
 	struct route_node *node;
@@ -334,6 +334,7 @@ int ospf6_lsdb_maxage_remover(struct ospf6_lsdb *lsdb)
 		}
 		if (IS_OSPF6_DEBUG_LSA_TYPE(lsa->header->type))
 			zlog_debug("Remove MaxAge %s", lsa->name);
+
 		if (CHECK_FLAG(lsa->flag, OSPF6_LSA_SEQWRAPPED)) {
 			UNSET_FLAG(lsa->flag, OSPF6_LSA_SEQWRAPPED);
 			/*
@@ -354,7 +355,7 @@ int ospf6_lsdb_maxage_remover(struct ospf6_lsdb *lsdb)
 }
 
 void ospf6_lsdb_show(struct vty *vty, enum ospf_lsdb_show_level level,
-		     u_int16_t *type, u_int32_t *id, u_int32_t *adv_router,
+		     uint16_t *type, uint32_t *id, uint32_t *adv_router,
 		     struct ospf6_lsdb *lsdb)
 {
 	struct ospf6_lsa *lsa;
@@ -391,8 +392,7 @@ void ospf6_lsdb_show(struct vty *vty, enum ospf_lsdb_show_level level,
 		ospf6_lsa_show_summary_header(vty);
 
 	end = ospf6_lsdb_head(lsdb, !!type + !!(type && adv_router),
-			      type ? *type : 0,
-			      adv_router ? *adv_router : 0,
+			      type ? *type : 0, adv_router ? *adv_router : 0,
 			      &lsa);
 	while (lsa) {
 		if ((!adv_router || lsa->header->adv_router == *adv_router)
@@ -403,11 +403,11 @@ void ospf6_lsdb_show(struct vty *vty, enum ospf_lsdb_show_level level,
 	}
 }
 
-u_int32_t ospf6_new_ls_id(u_int16_t type, u_int32_t adv_router,
-			  struct ospf6_lsdb *lsdb)
+uint32_t ospf6_new_ls_id(uint16_t type, uint32_t adv_router,
+			 struct ospf6_lsdb *lsdb)
 {
 	struct ospf6_lsa *lsa;
-	u_int32_t id = 1, tmp_id;
+	uint32_t id = 1, tmp_id;
 
 	/* This routine is curently invoked only for Inter-Prefix LSAs for
 	 * non-summarized routes (no area/range).
@@ -424,13 +424,13 @@ u_int32_t ospf6_new_ls_id(u_int16_t type, u_int32_t adv_router,
 		id++;
 	}
 
-	return ((u_int32_t)htonl(id));
+	return ((uint32_t)htonl(id));
 }
 
 /* Decide new LS sequence number to originate.
    note return value is network byte order */
-u_int32_t ospf6_new_ls_seqnum(u_int16_t type, u_int32_t id,
-			      u_int32_t adv_router, struct ospf6_lsdb *lsdb)
+uint32_t ospf6_new_ls_seqnum(uint16_t type, uint32_t id, uint32_t adv_router,
+			     struct ospf6_lsdb *lsdb)
 {
 	struct ospf6_lsa *lsa;
 	signed long seqnum = 0;
@@ -442,5 +442,5 @@ u_int32_t ospf6_new_ls_seqnum(u_int16_t type, u_int32_t id,
 	else
 		seqnum = (signed long)ntohl(lsa->header->seqnum) + 1;
 
-	return ((u_int32_t)htonl(seqnum));
+	return ((uint32_t)htonl(seqnum));
 }

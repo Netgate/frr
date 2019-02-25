@@ -86,3 +86,5 @@ compile_commands.json
 .version
 build-root
 !extras/rpm/Makefile.in
+# clippy generated source
+*_clippy.c

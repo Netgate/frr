@@ -35,6 +35,7 @@
 #include "zebra/zserv.h"
 #include "zebra/zebra_ns.h"
 #include "zebra/zebra_vrf.h"
+#include "zebra/zebra_errors.h"
 
 #include "fpm/fpm.h"
 #include "zebra_fpm_private.h"
@@ -713,7 +714,14 @@ static int zfpm_read_cb(struct thread *thread)
 		nbyte = stream_read_try(ibuf, zfpm_g->sock,
 					FPM_MSG_HDR_LEN - already);
 		if (nbyte == 0 || nbyte == -1) {
-			zfpm_connection_down("closed socket in read");
+			if (nbyte == -1) {
+				char buffer[1024];
+
+				sprintf(buffer, "closed socket in read(%d): %s",
+					errno, safe_strerror(errno));
+				zfpm_connection_down(buffer);
+			} else
+				zfpm_connection_down("closed socket in read");
 			return 0;
 		}
 
@@ -743,7 +751,14 @@ static int zfpm_read_cb(struct thread *thread)
 		nbyte = stream_read_try(ibuf, zfpm_g->sock, msg_len - already);
 
 		if (nbyte == 0 || nbyte == -1) {
-			zfpm_connection_down("failed to read message");
+			if (nbyte == -1) {
+				char buffer[1024];
+
+				sprintf(buffer, "failed to read message(%d) %s",
+					errno, safe_strerror(errno));
+				zfpm_connection_down(buffer);
+			} else
+				zfpm_connection_down("failed to read message");
 			return 0;
 		}
 
@@ -1503,7 +1518,9 @@ static inline void zfpm_init_message_format(const char *format)
 
 	if (!strcmp("netlink", format)) {
 		if (!have_netlink) {
-			zlog_err("FPM netlink message format is not available");
+			flog_err(
+				ZEBRA_ERR_NETLINK_NOT_AVAILABLE,
+				"FPM netlink message format is not available");
 			return;
 		}
 		zfpm_g->message_format = ZFPM_MSG_FORMAT_NETLINK;
@@ -1512,7 +1529,8 @@ static inline void zfpm_init_message_format(const char *format)
 
 	if (!strcmp("protobuf", format)) {
 		if (!have_protobuf) {
-			zlog_err(
+			flog_err(
+				ZEBRA_ERR_PROTOBUF_NOT_AVAILABLE,
 				"FPM protobuf message format is not available");
 			return;
 		}
@@ -1538,9 +1556,8 @@ static int fpm_remote_srv_write(struct vty *vty)
 	in.s_addr = zfpm_g->fpm_server;
 
 	if ((zfpm_g->fpm_server != FPM_DEFAULT_IP
-		&& zfpm_g->fpm_server != INADDR_ANY)
-	    || (zfpm_g->fpm_port != FPM_DEFAULT_PORT
-		&& zfpm_g->fpm_port != 0))
+	     && zfpm_g->fpm_server != INADDR_ANY)
+	    || (zfpm_g->fpm_port != FPM_DEFAULT_PORT && zfpm_g->fpm_port != 0))
 		vty_out(vty, "fpm connection ip %s port %d\n", inet_ntoa(in),
 			zfpm_g->fpm_port);
 

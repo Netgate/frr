@@ -51,11 +51,33 @@ DEFINE_QOBJ_TYPE(ospf_interface)
 DEFINE_HOOK(ospf_vl_add, (struct ospf_vl_data * vd), (vd))
 DEFINE_HOOK(ospf_vl_delete, (struct ospf_vl_data * vd), (vd))
 
+int ospf_interface_neighbor_count(struct ospf_interface *oi)
+{
+	int count = 0;
+	struct route_node *rn;
+	struct ospf_neighbor *nbr = NULL;
+
+	for (rn = route_top(oi->nbrs); rn; rn = route_next(rn)) {
+		nbr = rn->info;
+		if (nbr) {
+			/* Do not show myself. */
+			if (nbr == oi->nbr_self)
+				continue;
+			/* Down state is not shown. */
+			if (nbr->state == NSM_Down)
+				continue;
+			count++;
+		}
+	}
+
+	return count;
+}
+
 int ospf_if_get_output_cost(struct ospf_interface *oi)
 {
 	/* If all else fails, use default OSPF cost */
-	u_int32_t cost;
-	u_int32_t bw, refbw;
+	uint32_t cost;
+	uint32_t bw, refbw;
 
 	/* ifp speed and bw can be 0 in some platforms, use ospf default bw
 	   if bw is configured under interface it would be used.
@@ -74,7 +96,7 @@ int ospf_if_get_output_cost(struct ospf_interface *oi)
 	/* See if a cost can be calculated from the zebra processes
 	   interface bandwidth field. */
 	else {
-		cost = (u_int32_t)((double)refbw / (double)bw + (double)0.5);
+		cost = (uint32_t)((double)refbw / (double)bw + (double)0.5);
 		if (cost < 1)
 			cost = 1;
 		else if (cost > 65535)
@@ -86,7 +108,7 @@ int ospf_if_get_output_cost(struct ospf_interface *oi)
 
 void ospf_if_recalculate_output_cost(struct interface *ifp)
 {
-	u_int32_t newcost;
+	uint32_t newcost;
 	struct route_node *rn;
 
 	for (rn = route_top(IF_OIFS(ifp)); rn; rn = route_next(rn)) {
@@ -241,6 +263,9 @@ struct ospf_interface *ospf_if_new(struct ospf *ospf, struct interface *ifp,
 	ospf_opaque_type9_lsa_init(oi);
 
 	oi->ospf = ospf;
+
+	ospf_if_stream_set(oi);
+
 	QOBJ_REG(oi, ospf_interface);
 
 	if (IS_DEBUG_OSPF_EVENT)
@@ -299,6 +324,9 @@ void ospf_if_cleanup(struct ospf_interface *oi)
 void ospf_if_free(struct ospf_interface *oi)
 {
 	ospf_if_down(oi);
+
+	if (oi->obuf)
+		ospf_fifo_free(oi->obuf);
 
 	assert(oi->state == ISM_Down);
 
@@ -437,7 +465,7 @@ struct ospf_interface *ospf_if_lookup_recv_if(struct ospf *ospf,
 		if (oi->type == OSPF_IFTYPE_VIRTUALLINK)
 			continue;
 
-		if (if_is_loopback(oi->ifp))
+		if (if_is_loopback(oi->ifp) || if_is_vrf(oi->ifp))
 			continue;
 
 		if (CHECK_FLAG(oi->connected->flags, ZEBRA_IFA_UNNUMBERED))
@@ -474,9 +502,8 @@ void ospf_if_stream_unset(struct ospf_interface *oi)
 	struct ospf *ospf = oi->ospf;
 
 	if (oi->obuf) {
-		ospf_fifo_free(oi->obuf);
-		oi->obuf = NULL;
-
+		/* flush the interface packet queue */
+		ospf_fifo_flush(oi->obuf);
 		/*reset protocol stats */
 		ospf_if_reset_stats(oi);
 
@@ -495,9 +522,6 @@ static struct ospf_if_params *ospf_new_if_params(void)
 	struct ospf_if_params *oip;
 
 	oip = XCALLOC(MTYPE_OSPF_IF_PARAMS, sizeof(struct ospf_if_params));
-
-	if (!oip)
-		return NULL;
 
 	UNSET_IF_PARAM(oip, output_cost_cmd);
 	UNSET_IF_PARAM(oip, transmit_delay);
@@ -681,7 +705,7 @@ static int ospf_if_delete_hook(struct interface *ifp)
 
 int ospf_if_is_enable(struct ospf_interface *oi)
 {
-	if (!if_is_loopback(oi->ifp))
+	if (!(if_is_loopback(oi->ifp) || if_is_vrf(oi->ifp)))
 		if (if_is_up(oi->ifp))
 			return 1;
 
@@ -759,7 +783,6 @@ int ospf_if_up(struct ospf_interface *oi)
 	if (oi->type == OSPF_IFTYPE_LOOPBACK)
 		OSPF_ISM_EVENT_SCHEDULE(oi, ISM_LoopInd);
 	else {
-		ospf_if_stream_set(oi);
 		OSPF_ISM_EVENT_SCHEDULE(oi, ISM_InterfaceUp);
 	}
 
@@ -803,7 +826,7 @@ void ospf_vl_data_free(struct ospf_vl_data *vl_data)
 	XFREE(MTYPE_OSPF_VL_DATA, vl_data);
 }
 
-u_int vlink_count = 0;
+unsigned int vlink_count = 0;
 
 struct ospf_interface *ospf_vl_new(struct ospf *ospf,
 				   struct ospf_vl_data *vl_data)
@@ -827,10 +850,11 @@ struct ospf_interface *ospf_vl_new(struct ospf *ospf,
 	}
 
 	if (IS_DEBUG_OSPF_EVENT)
-		zlog_debug("ospf_vl_new(): creating pseudo zebra interface vrf id %u",
-			   ospf->vrf_id);
+		zlog_debug(
+			"ospf_vl_new(): creating pseudo zebra interface vrf id %u",
+			ospf->vrf_id);
 
-	snprintf(ifname, sizeof(ifname), "VLINK%d", vlink_count);
+	snprintf(ifname, sizeof(ifname), "VLINK%u", vlink_count);
 	vi = if_create(ifname, ospf->vrf_id);
 	/*
 	 * if_create sets ZEBRA_INTERFACE_LINKDETECTION
@@ -1151,7 +1175,7 @@ void ospf_crypt_key_add(struct list *crypt, struct crypt_key *ck)
 	listnode_add(crypt, ck);
 }
 
-struct crypt_key *ospf_crypt_key_lookup(struct list *auth_crypt, u_char key_id)
+struct crypt_key *ospf_crypt_key_lookup(struct list *auth_crypt, uint8_t key_id)
 {
 	struct listnode *node;
 	struct crypt_key *ck;
@@ -1163,7 +1187,7 @@ struct crypt_key *ospf_crypt_key_lookup(struct list *auth_crypt, u_char key_id)
 	return NULL;
 }
 
-int ospf_crypt_key_delete(struct list *auth_crypt, u_char key_id)
+int ospf_crypt_key_delete(struct list *auth_crypt, uint8_t key_id)
 {
 	struct listnode *node, *nnode;
 	struct crypt_key *ck;
@@ -1179,11 +1203,11 @@ int ospf_crypt_key_delete(struct list *auth_crypt, u_char key_id)
 	return 0;
 }
 
-u_char ospf_default_iftype(struct interface *ifp)
+uint8_t ospf_default_iftype(struct interface *ifp)
 {
 	if (if_is_pointopoint(ifp))
 		return OSPF_IFTYPE_POINTOPOINT;
-	else if (if_is_loopback(ifp))
+	else if (if_is_loopback(ifp) || if_is_vrf(ifp))
 		return OSPF_IFTYPE_LOOPBACK;
 	else
 		return OSPF_IFTYPE_BROADCAST;

@@ -78,7 +78,7 @@ int str2esi(const char *str, struct eth_segment_id *id)
 char *esi2str(struct eth_segment_id *id)
 {
 	char *ptr;
-	u_char *val;
+	uint8_t *val;
 
 	if (!id)
 		return NULL;
@@ -105,15 +105,73 @@ char *ecom_mac2str(char *ecom_mac)
 	return prefix_mac2str((struct ethaddr *)en, NULL, 0);
 }
 
+/* Fetch router-mac from extended community */
+void bgp_attr_rmac(struct attr *attr, struct ethaddr *rmac)
+{
+	int i = 0;
+	struct ecommunity *ecom;
+
+	ecom = attr->ecommunity;
+	if (!ecom || !ecom->size)
+		return;
+
+	/* If there is a router mac extended community, set RMAC in attr */
+	for (i = 0; i < ecom->size; i++) {
+		uint8_t *pnt = NULL;
+		uint8_t type = 0;
+		uint8_t sub_type = 0;
+
+		pnt = (ecom->val + (i * ECOMMUNITY_SIZE));
+		type = *pnt++;
+		sub_type = *pnt++;
+
+		if (!(type == ECOMMUNITY_ENCODE_EVPN
+		      && sub_type == ECOMMUNITY_EVPN_SUBTYPE_ROUTERMAC))
+			continue;
+
+		memcpy(rmac, pnt, ETH_ALEN);
+	}
+}
+
+/*
+ * return true if attr contains default gw extended community
+ */
+uint8_t bgp_attr_default_gw(struct attr *attr)
+{
+	struct ecommunity *ecom;
+	int i;
+
+	ecom = attr->ecommunity;
+	if (!ecom || !ecom->size)
+		return 0;
+
+	/* If there is a default gw extendd community return true otherwise
+	 * return 0 */
+	for (i = 0; i < ecom->size; i++) {
+		uint8_t *pnt;
+		uint8_t type, sub_type;
+
+		pnt = (ecom->val + (i * ECOMMUNITY_SIZE));
+		type = *pnt++;
+		sub_type = *pnt++;
+
+		if ((type == ECOMMUNITY_ENCODE_OPAQUE
+		     && sub_type == ECOMMUNITY_EVPN_SUBTYPE_DEF_GW))
+			return 1;
+	}
+
+	return 0;
+}
+
 /*
  * Fetch and return the sequence number from MAC Mobility extended
  * community, if present, else 0.
  */
-u_int32_t bgp_attr_mac_mobility_seqnum(struct attr *attr, u_char *sticky)
+uint32_t bgp_attr_mac_mobility_seqnum(struct attr *attr, uint8_t *sticky)
 {
 	struct ecommunity *ecom;
 	int i;
-	u_char flags = 0;
+	uint8_t flags = 0;
 
 	ecom = attr->ecommunity;
 	if (!ecom || !ecom->size)
@@ -126,9 +184,9 @@ u_int32_t bgp_attr_mac_mobility_seqnum(struct attr *attr, u_char *sticky)
 	 * one.
 	 */
 	for (i = 0; i < ecom->size; i++) {
-		u_char *pnt;
-		u_char type, sub_type;
-		u_int32_t seq_num;
+		uint8_t *pnt;
+		uint8_t type, sub_type;
+		uint32_t seq_num;
 
 		pnt = (ecom->val + (i * ECOMMUNITY_SIZE));
 		type = *pnt++;
@@ -152,6 +210,39 @@ u_int32_t bgp_attr_mac_mobility_seqnum(struct attr *attr, u_char *sticky)
 	return 0;
 }
 
+/*
+ * return true if attr contains router flag extended community
+ */
+void bgp_attr_evpn_na_flag(struct attr *attr, uint8_t *router_flag)
+{
+	struct ecommunity *ecom;
+	int i;
+	uint8_t val;
+
+	ecom = attr->ecommunity;
+	if (!ecom || !ecom->size)
+		return;
+
+	/* If there is a evpn na extendd community set router_flag */
+	for (i = 0; i < ecom->size; i++) {
+		uint8_t *pnt;
+		uint8_t type, sub_type;
+
+		pnt = (ecom->val + (i * ECOMMUNITY_SIZE));
+		type = *pnt++;
+		sub_type = *pnt++;
+
+		if (type == ECOMMUNITY_ENCODE_EVPN &&
+		    sub_type == ECOMMUNITY_EVPN_SUBTYPE_ND) {
+			val = *pnt++;
+			if (val & ECOMMUNITY_EVPN_SUBTYPE_ND_ROUTER_FLAG) {
+				*router_flag = 1;
+				break;
+			}
+		}
+	}
+}
+
 /* dst prefix must be AF_INET or AF_INET6 prefix, to forge EVPN prefix */
 extern int bgp_build_evpn_prefix(int evpn_type, uint32_t eth_tag,
 				 struct prefix *dst)
@@ -169,18 +260,20 @@ extern int bgp_build_evpn_prefix(int evpn_type, uint32_t eth_tag,
 	dst->family = AF_EVPN;
 	p_evpn_p->route_type = evpn_type;
 	if (evpn_type == BGP_EVPN_IP_PREFIX_ROUTE) {
-		p_evpn_p->eth_tag = eth_tag;
-		p_evpn_p->ip_prefix_length = p2.prefixlen;
+		p_evpn_p->prefix_addr.eth_tag = eth_tag;
+		p_evpn_p->prefix_addr.ip_prefix_length = p2.prefixlen;
 		if (src->family == AF_INET) {
-			SET_IPADDR_V4(&p_evpn_p->ip);
-			memcpy(&p_evpn_p->ip.ipaddr_v4, &src->u.prefix4,
+			SET_IPADDR_V4(&p_evpn_p->prefix_addr.ip);
+			memcpy(&p_evpn_p->prefix_addr.ip.ipaddr_v4,
+			       &src->u.prefix4,
 			       sizeof(struct in_addr));
-			dst->prefixlen = (u_char)PREFIX_LEN_ROUTE_TYPE_5_IPV4;
+			dst->prefixlen = (uint8_t)PREFIX_LEN_ROUTE_TYPE_5_IPV4;
 		} else {
-			SET_IPADDR_V6(&p_evpn_p->ip);
-			memcpy(&p_evpn_p->ip.ipaddr_v6, &src->u.prefix6,
+			SET_IPADDR_V6(&p_evpn_p->prefix_addr.ip);
+			memcpy(&p_evpn_p->prefix_addr.ip.ipaddr_v6,
+			       &src->u.prefix6,
 			       sizeof(struct in6_addr));
-			dst->prefixlen = (u_char)PREFIX_LEN_ROUTE_TYPE_5_IPV6;
+			dst->prefixlen = (uint8_t)PREFIX_LEN_ROUTE_TYPE_5_IPV6;
 		}
 	} else
 		return -1;

@@ -24,6 +24,7 @@
 #include "memory.h"
 #include "frr_zmq.h"
 #include "log.h"
+#include "lib_errors.h"
 
 DEFINE_MTYPE_STATIC(LIB, ZEROMQ_CB, "ZeroMQ callback")
 
@@ -140,7 +141,8 @@ static int frrzmq_read_msg(struct thread *t)
 	return 0;
 
 out_err:
-	zlog_err("ZeroMQ read error: %s(%d)", strerror(errno), errno);
+	flog_err(LIB_ERR_ZMQ, "ZeroMQ read error: %s(%d)", strerror(errno),
+		  errno);
 	if (cb->read.cb_error)
 		cb->read.cb_error(cb->read.arg, cb->zmqsock);
 	return 1;
@@ -174,9 +176,10 @@ int funcname_frrzmq_thread_add_read(struct thread_master *master,
 		cb = *cbp;
 	else {
 		cb = XCALLOC(MTYPE_ZEROMQ_CB, sizeof(struct frrzmq_cb));
-		cb->write.cancelled = 1;
 		if (!cb)
 			return -1;
+
+		cb->write.cancelled = 1;
 		*cbp = cb;
 	}
 
@@ -252,7 +255,8 @@ static int frrzmq_write_msg(struct thread *t)
 	return 0;
 
 out_err:
-	zlog_err("ZeroMQ write error: %s(%d)", strerror(errno), errno);
+	flog_err(LIB_ERR_ZMQ, "ZeroMQ write error: %s(%d)", strerror(errno),
+		  errno);
 	if (cb->write.cb_error)
 		cb->write.cb_error(cb->write.arg, cb->zmqsock);
 	return 1;
@@ -282,9 +286,10 @@ int funcname_frrzmq_thread_add_write(struct thread_master *master,
 		cb = *cbp;
 	else {
 		cb = XCALLOC(MTYPE_ZEROMQ_CB, sizeof(struct frrzmq_cb));
-		cb->read.cancelled = 1;
 		if (!cb)
 			return -1;
+
+		cb->read.cancelled = 1;
 		*cbp = cb;
 	}
 
@@ -338,6 +343,7 @@ void frrzmq_check_events(struct frrzmq_cb **cbp, struct cb_core *core,
 	if (!cb || !cb->zmqsock)
 		return;
 
+	len = sizeof(events);
 	if (zmq_getsockopt(cb->zmqsock, ZMQ_EVENTS, &events, &len))
 		return;
 	if (events & event && core->thread && !core->cancelled) {

@@ -233,7 +233,7 @@ int bgp_damp_withdraw(struct bgp_info *binfo, struct bgp_node *rn, afi_t afi,
 	/* Remove the route from a reuse list if it is on one.  */
 	if (CHECK_FLAG(bdi->binfo->flags, BGP_INFO_DAMPED)) {
 		/* If decay rate isn't equal to 0, reinsert brn. */
-		if (bdi->penalty != last_penalty) {
+		if (bdi->penalty != last_penalty && bdi->index >= 0) {
 			bgp_reuse_list_delete(bdi);
 			bgp_reuse_list_add(bdi);
 		}
@@ -523,7 +523,7 @@ void bgp_config_write_damp(struct vty *vty)
 }
 
 static const char *bgp_get_reuse_time(unsigned int penalty, char *buf,
-				      size_t len, u_char use_json,
+				      size_t len, uint8_t use_json,
 				      json_object *json)
 {
 	time_t reuse_time = 0;
@@ -542,7 +542,7 @@ static const char *bgp_get_reuse_time(unsigned int penalty, char *buf,
 	} else
 		reuse_time = 0;
 
-/* Making formatted timer strings. */
+	/* Making formatted timer strings. */
 	if (reuse_time == 0) {
 		if (use_json)
 			json_object_int_add(json, "reuseTimerMsecs", 0);
@@ -641,7 +641,7 @@ void bgp_damp_info_vty(struct vty *vty, struct bgp_info *binfo,
 }
 
 const char *bgp_damp_reuse_time_vty(struct vty *vty, struct bgp_info *binfo,
-				    char *timebuf, size_t len, u_char use_json,
+				    char *timebuf, size_t len, uint8_t use_json,
 				    json_object *json)
 {
 	struct bgp_damp_info *bdi;

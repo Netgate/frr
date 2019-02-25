@@ -43,21 +43,33 @@ struct isis_route_info {
 #define ISIS_ROUTE_FLAG_ACTIVE       0x01  /* active route for the prefix */
 #define ISIS_ROUTE_FLAG_ZEBRA_SYNCED 0x02  /* set when route synced to zebra */
 #define ISIS_ROUTE_FLAG_ZEBRA_RESYNC 0x04  /* set when route needs to sync */
-	u_char flag;
-	u_int32_t cost;
-	u_int32_t depth;
+	uint8_t flag;
+	uint32_t cost;
+	uint32_t depth;
 	struct list *nexthops;
 	struct list *nexthops6;
 };
 
-struct isis_route_info *isis_route_create(struct prefix *prefix, u_int32_t cost,
-					  u_int32_t depth,
+struct isis_route_info *isis_route_create(struct prefix *prefix,
+					  struct prefix_ipv6 *src_p,
+					  uint32_t cost,
+					  uint32_t depth,
 					  struct list *adjacencies,
-					  struct isis_area *area, int level);
+					  struct isis_area *area,
+					  struct route_table *table);
 
-void isis_route_validate(struct isis_area *area);
+/* Walk the given table and install new routes to zebra and remove old ones.
+ * route status is tracked using ISIS_ROUTE_FLAG_ACTIVE */
+void isis_route_verify_table(struct isis_area *area,
+			     struct route_table *table);
+
+/* Same as isis_route_verify_table, but merge L1 and L2 routes before */
+void isis_route_verify_merge(struct isis_area *area,
+			     struct route_table *level1_table,
+			     struct route_table *level2_table);
+
+/* Unset ISIS_ROUTE_FLAG_ACTIVE on all routes. Used before running spf. */
 void isis_route_invalidate_table(struct isis_area *area,
 				 struct route_table *table);
-void isis_route_invalidate(struct isis_area *area);
 
 #endif /* _ZEBRA_ISIS_ROUTE_H */

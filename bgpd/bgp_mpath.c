@@ -46,7 +46,7 @@
  * Record maximum-paths configuration for BGP instance
  */
 int bgp_maximum_paths_set(struct bgp *bgp, afi_t afi, safi_t safi, int peertype,
-			  u_int16_t maxpaths, u_int16_t options)
+			  uint16_t maxpaths, uint16_t options)
 {
 	if (!bgp || (afi >= AFI_MAX) || (safi >= SAFI_MAX))
 		return -1;
@@ -93,6 +93,26 @@ int bgp_maximum_paths_unset(struct bgp *bgp, afi_t afi, safi_t safi,
 }
 
 /*
+ * bgp_interface_same
+ *
+ * Return true if ifindex for ifp1 and ifp2 are the same, else return false.
+ */
+static int bgp_interface_same(struct interface *ifp1, struct interface *ifp2)
+{
+	if (!ifp1 && !ifp2)
+		return 1;
+
+	if (!ifp1 && ifp2)
+		return 0;
+
+	if (ifp1 && !ifp2)
+		return 0;
+
+	return (ifp1->ifindex == ifp2->ifindex);
+}
+
+
+/*
  * bgp_info_nexthop_cmp
  *
  * Compare the nexthops of two paths. Return value is less than, equal to,
@@ -121,16 +141,18 @@ int bgp_info_nexthop_cmp(struct bgp_info *bi1, struct bgp_info *bi2)
 					&bi2->attr->mp_nexthop_global);
 				break;
 			case BGP_ATTR_NHLEN_IPV6_GLOBAL_AND_LL:
-				addr1 = (bi1->attr->mp_nexthop_prefer_global) ?
-					bi1->attr->mp_nexthop_global
-					: bi1->attr->mp_nexthop_local;
-				addr2 = (bi2->attr->mp_nexthop_prefer_global) ?
-					bi2->attr->mp_nexthop_global
-					: bi2->attr->mp_nexthop_local;
+				addr1 = (bi1->attr->mp_nexthop_prefer_global)
+						? bi1->attr->mp_nexthop_global
+						: bi1->attr->mp_nexthop_local;
+				addr2 = (bi2->attr->mp_nexthop_prefer_global)
+						? bi2->attr->mp_nexthop_global
+						: bi2->attr->mp_nexthop_local;
 
-				if (!bi1->attr->mp_nexthop_prefer_global &&
-				    !bi2->attr->mp_nexthop_prefer_global)
-					compare = !(bi1->peer->ifindex == bi2->peer->ifindex);
+				if (!bi1->attr->mp_nexthop_prefer_global
+				    && !bi2->attr->mp_nexthop_prefer_global)
+					compare = !bgp_interface_same(
+						bi1->peer->ifp, bi2->peer->ifp);
+
 				if (!compare)
 					compare = IPV6_ADDR_CMP(&addr1, &addr2);
 				break;
@@ -348,7 +370,7 @@ struct bgp_info *bgp_info_mpath_first(struct bgp_info *binfo)
  *
  * Given the bestpath bgp_info, return the number of multipath entries
  */
-u_int32_t bgp_info_mpath_count(struct bgp_info *binfo)
+uint32_t bgp_info_mpath_count(struct bgp_info *binfo)
 {
 	if (!binfo->mpath)
 		return 0;
@@ -360,7 +382,7 @@ u_int32_t bgp_info_mpath_count(struct bgp_info *binfo)
  *
  * Sets the count of multipaths into bestpath's mpath element
  */
-static void bgp_info_mpath_count_set(struct bgp_info *binfo, u_int32_t count)
+static void bgp_info_mpath_count_set(struct bgp_info *binfo, uint32_t count)
 {
 	struct bgp_info_mpath *mpath;
 	if (!count && !binfo->mpath)
@@ -410,7 +432,7 @@ void bgp_info_mpath_update(struct bgp_node *rn, struct bgp_info *new_best,
 			   struct bgp_info *old_best, struct list *mp_list,
 			   struct bgp_maxpaths_cfg *mpath_cfg)
 {
-	u_int16_t maxpaths, mpath_count, old_mpath_count;
+	uint16_t maxpaths, mpath_count, old_mpath_count;
 	struct listnode *mp_node, *mp_next_node;
 	struct bgp_info *cur_mpath, *new_mpath, *next_mpath, *prev_mpath;
 	int mpath_changed, debug;
@@ -449,7 +471,7 @@ void bgp_info_mpath_update(struct bgp_node *rn, struct bgp_info *new_best,
 		zlog_debug(
 			"%s: starting mpath update, newbest %s num candidates %d old-mpath-count %d",
 			pfx_buf, new_best ? new_best->peer->host : "NONE",
-			listcount(mp_list), old_mpath_count);
+			mp_list ? listcount(mp_list) : 0, old_mpath_count);
 
 	/*
 	 * We perform an ordered walk through both lists in parallel.
@@ -570,6 +592,8 @@ void bgp_info_mpath_update(struct bgp_node *rn, struct bgp_info *new_best,
 			 */
 			new_mpath = listgetdata(mp_node);
 			list_delete_node(mp_list, mp_node);
+			assert(new_mpath);
+			assert(prev_mpath);
 			if ((mpath_count < maxpaths) && (new_mpath != new_best)
 			    && bgp_info_nexthop_cmp(prev_mpath, new_mpath)) {
 				if (new_mpath == next_mpath)
@@ -655,7 +679,7 @@ void bgp_info_mpath_aggregate_update(struct bgp_info *new_best,
 	struct aspath *aspath;
 	struct aspath *asmerge;
 	struct attr *new_attr, *old_attr;
-	u_char origin;
+	uint8_t origin;
 	struct community *community, *commerge;
 	struct ecommunity *ecomm, *ecommerge;
 	struct lcommunity *lcomm, *lcommerge;

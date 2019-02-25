@@ -31,6 +31,7 @@
 #include "memory.h"
 #include "linklist.h"
 #include "version.h"
+#include "lib_errors.h"
 
 static int agentx_enabled = 0;
 
@@ -141,16 +142,20 @@ static int agentx_log_callback(int major, int minor, void *serverarg,
 		msg[strlen(msg) - 1] = '\0';
 	switch (slm->priority) {
 	case LOG_EMERG:
-		zlog_err("snmp[emerg]: %s", msg ? msg : slm->msg);
+		flog_err(LIB_ERR_SNMP,
+			  "snmp[emerg]: %s", msg ? msg : slm->msg);
 		break;
 	case LOG_ALERT:
-		zlog_err("snmp[alert]: %s", msg ? msg : slm->msg);
+		flog_err(LIB_ERR_SNMP,
+			  "snmp[alert]: %s", msg ? msg : slm->msg);
 		break;
 	case LOG_CRIT:
-		zlog_err("snmp[crit]: %s", msg ? msg : slm->msg);
+		flog_err(LIB_ERR_SNMP,
+			  "snmp[crit]: %s", msg ? msg : slm->msg);
 		break;
 	case LOG_ERR:
-		zlog_err("snmp[err]: %s", msg ? msg : slm->msg);
+		flog_err(LIB_ERR_SNMP,
+			  "snmp[err]: %s", msg ? msg : slm->msg);
 		break;
 	case LOG_WARNING:
 		zlog_warn("snmp[warning]: %s", msg ? msg : slm->msg);
@@ -230,7 +235,7 @@ int smux_trap(struct variable *vp, size_t vp_len, const oid *ename,
 	      size_t enamelen, const oid *name, size_t namelen,
 	      const oid *iname, size_t inamelen,
 	      const struct trap_object *trapobj, size_t trapobjlen,
-	      u_char sptrap)
+	      uint8_t sptrap)
 {
 	oid objid_snmptrap[] = {1, 3, 6, 1, 6, 3, 1, 1, 4, 1, 0};
 	size_t objid_snmptrap_len = sizeof objid_snmptrap / sizeof(oid);
@@ -248,7 +253,7 @@ int smux_trap(struct variable *vp, size_t vp_len, const oid *ename,
 	notification_oid_len = enamelen + 1;
 	snmp_varlist_add_variable(&notification_vars, objid_snmptrap,
 				  objid_snmptrap_len, ASN_OBJECT_ID,
-				  (u_char *)notification_oid,
+				  (uint8_t *)notification_oid,
 				  notification_oid_len * sizeof(oid));
 
 	/* Provided bindings */
@@ -256,7 +261,7 @@ int smux_trap(struct variable *vp, size_t vp_len, const oid *ename,
 		unsigned int j;
 		oid oid[MAX_OID_LEN];
 		size_t oid_len, onamelen;
-		u_char *val;
+		uint8_t *val;
 		size_t val_len;
 		WriteMethod *wm = NULL;
 		struct variable cvp;

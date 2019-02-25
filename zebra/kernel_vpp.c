@@ -1,11 +1,11 @@
 /*
  * Copyright 2017-2018, Rubicon Communications, LLC.
- * 
+ *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
  * Free Software Foundation; either version 2 of the License, or (at your
  * option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
  * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
@@ -40,6 +40,7 @@
 
 unsigned int debug;		/* FIXME -- remove form libvppmgmt */
 
+extern struct zebra_privs_t zserv_privs;
 
 void kernel_init(struct zebra_ns *zns)
 {
@@ -47,20 +48,28 @@ void kernel_init(struct zebra_ns *zns)
 
 	clib_mem_init(NULL, 64 << 20);
 
-	ret = vmgmt_init((char *) "route_daemon", 1);
-	if (ret < 0) {
-		zlog_err("vmgmt_init failed with status %d", ret);
-	} else {
-		zlog_info("vmgmt_init success");
+	frr_elevate_privs(&zserv_privs) {
+
+		ret = vmgmt_init((char *) "route_daemon", 1);
+		if (ret < 0) {
+			zlog_err("vmgmt_init failed with status %d", ret);
+		} else {
+			zlog_info("vmgmt_init success");
+		}
+		vmgmt_intf_event_register(vpp_link_change);
+
 	}
-	vmgmt_intf_event_register(vpp_link_change);
 }
 
 
 void kernel_terminate(struct zebra_ns *zns)
 {
-	vmgmt_disconnect();
-	zlog_info("vmgmt_disconnect success");
+	frr_elevate_privs(&zserv_privs) {
+		vmgmt_disconnect();
+		zlog_info("vmgmt_disconnect success");
+		return;
+	}
+	zlog_info("vmgmt_disconnect failed to obtain priv escalation");
 }
 
 #endif

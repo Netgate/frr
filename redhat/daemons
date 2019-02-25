@@ -34,7 +34,7 @@
 # When using "vtysh" such a config file is also needed. It should be owned by
 # group "frrvty" and set to ug=rw,o= though. Check /etc/pam.d/frr, too.
 #
-watchfrr_enable=no
+watchfrr_enable=yes
 watchfrr_options=("-b_" "-r/usr/lib/frr/frr_restart_%s" "-s/usr/lib/frr/frr_start_%s" "-k/usr/lib/frr/frr_stop_%s")
 #
 zebra=no
@@ -50,6 +50,10 @@ nhrpd=no
 eigrpd=no
 babeld=no
 sharpd=no
+pbrd=no
+staticd=no
+bfdd=no
+
 #
 # Command line options for the daemons
 #
@@ -66,6 +70,9 @@ nhrpd_options=("-A 127.0.0.1")
 eigrpd_options=("-A 127.0.0.1")
 babeld_options=("-A 127.0.0.1")
 sharpd_options=("-A 127.0.0.1")
+pbrd_options=("-A 127.0.0.1")
+staticd_options=("-A 127.0.0.1")
+bfdd_options=("-A 127.0.0.1")
 
 #
 # If the vtysh_enable is yes, then the unified config is read

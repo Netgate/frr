@@ -25,11 +25,13 @@
 #include "config.h"
 #endif /* HAVE_CONFIG_H */
 
+#include "compiler.h"
+
 #ifdef SUNOS_5
 #define _XPG4_2
-typedef unsigned int u_int32_t;
-typedef unsigned short u_int16_t;
-typedef unsigned char u_int8_t;
+typedef unsigned int uint32_t;
+typedef unsigned short uint16_t;
+typedef unsigned char uint8_t;
 #endif /* SUNOS_5 */
 
 #include <unistd.h>
@@ -127,10 +129,10 @@ typedef unsigned char u_int8_t;
 #endif
 
 #ifndef HAVE_LIBCRYPT
-#   ifdef HAVE_LIBCRYPTO
-#      include <openssl/des.h>
+#ifdef HAVE_LIBCRYPTO
+#include <openssl/des.h>
 #      define crypt DES_crypt
-#   endif
+#endif
 #endif
 
 #include "openbsd-tree.h"
@@ -232,28 +234,13 @@ typedef unsigned char u_int8_t;
 #include "zassert.h"
 
 #ifndef HAVE_STRLCAT
-size_t strlcat(char *__restrict dest, const char *__restrict src, size_t size);
+size_t strlcat(char *__restrict dest,
+	       const char *__restrict src, size_t destsize);
 #endif
 #ifndef HAVE_STRLCPY
-size_t strlcpy(char *__restrict dest, const char *__restrict src, size_t size);
+size_t strlcpy(char *__restrict dest,
+	       const char *__restrict src, size_t destsize);
 #endif
-
-#ifdef HAVE_BROKEN_CMSG_FIRSTHDR
-/* This bug is present in Solaris 8 and pre-patch Solaris 9 <sys/socket.h>;
-   please refer to http://bugzilla.quagga.net/show_bug.cgi?id=142 */
-
-/* Check that msg_controllen is large enough. */
-#define ZCMSG_FIRSTHDR(mhdr)                                                   \
-	(((size_t)((mhdr)->msg_controllen) >= sizeof(struct cmsghdr))          \
-		 ? CMSG_FIRSTHDR(mhdr)                                         \
-		 : (struct cmsghdr *)NULL)
-
-#warning "CMSG_FIRSTHDR is broken on this platform, using a workaround"
-
-#else  /* HAVE_BROKEN_CMSG_FIRSTHDR */
-#define ZCMSG_FIRSTHDR(M) CMSG_FIRSTHDR(M)
-#endif /* HAVE_BROKEN_CMSG_FIRSTHDR */
-
 
 /* GCC have printf type attribute check.  */
 #ifdef __GNUC__
@@ -361,6 +348,22 @@ struct in_pktinfo {
 		_a < _b ? _a : _b;                                             \
 	})
 
+#ifndef offsetof
+#ifdef __compiler_offsetof
+#define offsetof(TYPE,MEMBER) __compiler_offsetof(TYPE,MEMBER)
+#else
+#define offsetof(TYPE, MEMBER) ((size_t) &((TYPE *)0)->MEMBER)
+#endif
+#endif
+
+#ifndef container_of
+#define container_of(ptr, type, member)                                        \
+	({                                                                     \
+		const typeof(((type *)0)->member) *__mptr = (ptr);             \
+		(type *)((char *)__mptr - offsetof(type, member));             \
+	})
+#endif
+
 #define ZEBRA_NUM_OF(x) (sizeof (x) / sizeof (x[0]))
 
 /* For old definition. */
@@ -376,6 +379,12 @@ struct in_pktinfo {
  * Zserv headers to be distinguished from each other.
  */
 #define ZEBRA_HEADER_MARKER              254
+
+/*
+ * The compiler.h header is used for anyone using the CPP_NOTICE
+ * since this is universally needed, let's add it to zebra.h
+ */
+#include "compiler.h"
 
 /* Zebra route's types are defined in route_types.h */
 #include "route_types.h"
@@ -402,13 +411,15 @@ extern const char *zserv_command_string(unsigned int command);
 #define strmatch(a,b) (!strcmp((a), (b)))
 
 /* Zebra message flags */
-#define ZEBRA_FLAG_INTERNAL           0x01
+#define ZEBRA_FLAG_ALLOW_RECURSION    0x01
 #define ZEBRA_FLAG_SELFROUTE          0x02
 #define ZEBRA_FLAG_IBGP               0x08
 #define ZEBRA_FLAG_SELECTED           0x10
 #define ZEBRA_FLAG_STATIC             0x40
 #define ZEBRA_FLAG_SCOPE_LINK         0x100
 #define ZEBRA_FLAG_FIB_OVERRIDE       0x200
+#define ZEBRA_FLAG_EVPN_ROUTE         0x400
+#define ZEBRA_FLAG_RR_USE_DISTANCE    0x800
 /* ZEBRA_FLAG_BLACKHOLE was 0x04 */
 /* ZEBRA_FLAG_REJECT was 0x80 */
 
@@ -430,7 +441,8 @@ typedef enum {
 	SAFI_ENCAP = 4,
 	SAFI_EVPN = 5,
 	SAFI_LABELED_UNICAST = 6,
-	SAFI_MAX = 7
+	SAFI_FLOWSPEC = 7,
+	SAFI_MAX = 8
 } safi_t;
 
 /*
@@ -458,7 +470,8 @@ typedef enum {
 	IANA_SAFI_LABELED_UNICAST = 4,
 	IANA_SAFI_ENCAP = 7,
 	IANA_SAFI_EVPN = 70,
-	IANA_SAFI_MPLS_VPN = 128
+	IANA_SAFI_MPLS_VPN = 128,
+	IANA_SAFI_FLOWSPEC = 133
 } iana_safi_t;
 
 /* Default Administrative Distance of each protocol. */
@@ -479,13 +492,24 @@ typedef enum {
 #define SET_FLAG(V,F)        (V) |= (F)
 #define UNSET_FLAG(V,F)      (V) &= ~(F)
 #define RESET_FLAG(V)        (V) = 0
+#define COND_FLAG(V, F, C)   ((C) ? (SET_FLAG(V, F)) : (UNSET_FLAG(V, F)))
+
+/* Atomic flag manipulation macros. */
+#define CHECK_FLAG_ATOMIC(PV, F)                                               \
+	((atomic_load_explicit(PV, memory_order_seq_cst)) & (F))
+#define SET_FLAG_ATOMIC(PV, F)                                                 \
+	((atomic_fetch_or_explicit(PV, (F), memory_order_seq_cst)))
+#define UNSET_FLAG_ATOMIC(PV, F)                                               \
+	((atomic_fetch_and_explicit(PV, ~(F), memory_order_seq_cst)))
+#define RESET_FLAG_ATOMIC(PV)                                                  \
+	((atomic_store_explicit(PV, 0, memory_order_seq_cst)))
 
 /* Zebra types. Used in Zserv message header. */
-typedef u_int16_t zebra_size_t;
-typedef u_int16_t zebra_command_t;
+typedef uint16_t zebra_size_t;
+typedef uint16_t zebra_command_t;
 
 /* VRF ID type. */
-typedef u_int16_t vrf_id_t;
+typedef uint32_t vrf_id_t;
 
 typedef uint32_t route_tag_t;
 #define ROUTE_TAG_MAX UINT32_MAX
@@ -534,6 +558,8 @@ static inline safi_t safi_iana2int(iana_safi_t safi)
 		return SAFI_EVPN;
 	case IANA_SAFI_LABELED_UNICAST:
 		return SAFI_LABELED_UNICAST;
+	case IANA_SAFI_FLOWSPEC:
+		return SAFI_FLOWSPEC;
 	default:
 		return SAFI_MAX;
 	}
@@ -554,6 +580,8 @@ static inline iana_safi_t safi_int2iana(safi_t safi)
 		return IANA_SAFI_EVPN;
 	case SAFI_LABELED_UNICAST:
 		return IANA_SAFI_LABELED_UNICAST;
+	case SAFI_FLOWSPEC:
+		return IANA_SAFI_FLOWSPEC;
 	default:
 		return IANA_SAFI_RESERVED;
 	}

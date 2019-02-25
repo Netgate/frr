@@ -37,6 +37,7 @@
 #include "bgpd/bgp_attr.h"
 #include "bgpd/bgp_nexthop.h"
 #include "bgpd/bgp_mpath.h"
+#include "bgpd/bgp_evpn.h"
 
 #define VT100_RESET "\x1b[0m"
 #define VT100_RED "\x1b[31m"
@@ -103,11 +104,13 @@ static struct bgp *bgp_create_fake(as_t *as, const char *name)
 	bgp->group = list_new();
 	// bgp->group->cmp = (int (*)(void *, void *)) peer_group_cmp;
 
+	bgp_evpn_init(bgp);
 	for (afi = AFI_IP; afi < AFI_MAX; afi++)
 		for (safi = SAFI_UNICAST; safi < SAFI_MAX; safi++) {
-			bgp->route[afi][safi] = bgp_table_init(afi, safi);
-			bgp->aggregate[afi][safi] = bgp_table_init(afi, safi);
-			bgp->rib[afi][safi] = bgp_table_init(afi, safi);
+			bgp->route[afi][safi] = bgp_table_init(bgp, afi, safi);
+			bgp->aggregate[afi][safi] = bgp_table_init(
+				bgp, afi, safi);
+			bgp->rib[afi][safi] = bgp_table_init(bgp, afi, safi);
 			bgp->maxpaths[afi][safi].maxpaths_ebgp = MULTIPATH_NUM;
 			bgp->maxpaths[afi][safi].maxpaths_ibgp = MULTIPATH_NUM;
 		}

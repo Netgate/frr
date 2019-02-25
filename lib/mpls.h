@@ -22,37 +22,56 @@
 #ifndef _QUAGGA_MPLS_H
 #define _QUAGGA_MPLS_H
 
+#include <zebra.h>
 #include <arpa/inet.h>
 
+#ifdef MPLS_LABEL_MAX
+#undef MPLS_LABEL_MAX
+#endif
+
+#define MPLS_LABEL_HELPSTR                                                     \
+	"Specify label(s) for this route\nOne or more "                        \
+	"labels in the range (16-1048575) separated by '/'\n"
+
 /* Well-known MPLS label values (RFC 3032 etc). */
-#define MPLS_V4_EXP_NULL_LABEL             0
-#define MPLS_RA_LABEL                      1
-#define MPLS_V6_EXP_NULL_LABEL             2
-#define MPLS_IMP_NULL_LABEL                3
-#define MPLS_ENTROPY_LABEL_INDICATOR       7
-#define MPLS_GAL_LABEL                     13
-#define MPLS_OAM_ALERT_LABEL               14
-#define MPLS_EXTENSION_LABEL               15
+#define MPLS_LABEL_IPV4_EXPLICIT_NULL  0       /* [RFC3032] */
+#define MPLS_LABEL_ROUTER_ALERT        1       /* [RFC3032] */
+#define MPLS_LABEL_IPV6_EXPLICIT_NULL  2       /* [RFC3032] */
+#define MPLS_LABEL_IMPLICIT_NULL       3       /* [RFC3032] */
+#define MPLS_LABEL_ELI                 7       /* [RFC6790] */
+#define MPLS_LABEL_GAL                 13      /* [RFC5586] */
+#define MPLS_LABEL_OAM_ALERT           14      /* [RFC3429] */
+#define MPLS_LABEL_EXTENSION           15      /* [RFC7274] */
+#define MPLS_LABEL_MAX                 1048575
+#define MPLS_LABEL_NONE                0xFFFFFFFF /* for internal use only */
 
 /* Minimum and maximum label values */
-#define MPLS_MIN_RESERVED_LABEL            0
-#define MPLS_MAX_RESERVED_LABEL            15
-#define MPLS_MIN_UNRESERVED_LABEL          16
-#define MPLS_MAX_UNRESERVED_LABEL          1048575
+#define MPLS_LABEL_RESERVED_MIN            0
+#define MPLS_LABEL_RESERVED_MAX            15
+#define MPLS_LABEL_UNRESERVED_MIN          16
+#define MPLS_LABEL_UNRESERVED_MAX          1048575
 
 /* Default min and max SRGB label range */
-#define MPLS_DEFAULT_MIN_SRGB_LABEL        16000
-#define MPLS_DEFAULT_MAX_SRGB_LABEL        23999
+/* Even if the SRGB allows to manage different Label space between routers,
+ * if an operator want to use the same SRGB for all its router, we must fix
+ * a common range. However, Cisco start its SRGB at 16000 and Juniper ends
+ * its SRGB at 16384 for OSPF. Thus, by fixing the minimum SRGB label to
+ * 8000 we could deal with both Cisco and Juniper.
+ */
+#define MPLS_DEFAULT_MIN_SRGB_LABEL        8000
+#define MPLS_DEFAULT_MAX_SRGB_LABEL        50000
+#define MPLS_DEFAULT_MIN_SRGB_SIZE         5000
+#define MPLS_DEFAULT_MAX_SRGB_SIZE         20000
 
 /* Maximum # labels that can be pushed. */
 #define MPLS_MAX_LABELS                    16
 
 #define IS_MPLS_RESERVED_LABEL(label)                                          \
-	(label >= MPLS_MIN_RESERVED_LABEL && label <= MPLS_MAX_RESERVED_LABEL)
+	(label >= MPLS_LABEL_RESERVED_MIN && label <= MPLS_LABEL_RESERVED_MAX)
 
 #define IS_MPLS_UNRESERVED_LABEL(label)                                        \
-	(label >= MPLS_MIN_UNRESERVED_LABEL                                    \
-	 && label <= MPLS_MAX_UNRESERVED_LABEL)
+	(label >= MPLS_LABEL_UNRESERVED_MIN                                    \
+	 && label <= MPLS_LABEL_UNRESERVED_MAX)
 
 /* Definitions for a MPLS label stack entry (RFC 3032). This encodes the
  * label, EXP, BOS and TTL fields.
@@ -81,6 +100,12 @@ typedef unsigned int mpls_lse_t;
 /* MPLS label value as a 32-bit (mostly we only care about the label value). */
 typedef unsigned int mpls_label_t;
 
+struct mpls_label_stack {
+	uint8_t num_labels;
+	uint8_t reserved[3];
+	mpls_label_t label[0]; /* 1 or more labels */
+};
+
 /* The MPLS explicit-null label is 0 which means when you memset a mpls_label_t
  * to zero you have set that variable to explicit-null which was probably not
  * your intent. The work-around is to use one bit to indicate if the
@@ -94,7 +119,9 @@ enum lsp_types_t {
 	ZEBRA_LSP_NONE = 0,   /* No LSP. */
 	ZEBRA_LSP_STATIC = 1, /* Static LSP. */
 	ZEBRA_LSP_LDP = 2,    /* LDP LSP. */
-	ZEBRA_LSP_BGP = 3     /* BGP LSP. */
+	ZEBRA_LSP_BGP = 3,    /* BGP LSP. */
+	ZEBRA_LSP_SR = 4,     /* Segment Routing LSP. */
+	ZEBRA_LSP_SHARP = 5,  /* Identifier for test protocol */
 };
 
 /* Functions for basic label operations. */
@@ -102,8 +129,8 @@ enum lsp_types_t {
 /* Encode a label stack entry from fields; convert to network byte-order as
  * the Netlink interface expects MPLS labels to be in this format.
  */
-static inline mpls_lse_t mpls_lse_encode(mpls_label_t label, u_int32_t ttl,
-					 u_int32_t exp, u_int32_t bos)
+static inline mpls_lse_t mpls_lse_encode(mpls_label_t label, uint32_t ttl,
+					 uint32_t exp, uint32_t bos)
 {
 	mpls_lse_t lse;
 	lse = htonl((label << MPLS_LS_LABEL_SHIFT) | (exp << MPLS_LS_EXP_SHIFT)
@@ -117,8 +144,7 @@ static inline mpls_lse_t mpls_lse_encode(mpls_label_t label, u_int32_t ttl,
  * Netlink interface.
  */
 static inline void mpls_lse_decode(mpls_lse_t lse, mpls_label_t *label,
-				   u_int32_t *ttl, u_int32_t *exp,
-				   u_int32_t *bos)
+				   uint32_t *ttl, uint32_t *exp, uint32_t *bos)
 {
 	mpls_lse_t local_lse;
 
@@ -138,28 +164,28 @@ static inline void mpls_lse_decode(mpls_lse_t lse, mpls_label_t *label,
 static inline char *label2str(mpls_label_t label, char *buf, size_t len)
 {
 	switch (label) {
-	case MPLS_V4_EXP_NULL_LABEL:
+	case MPLS_LABEL_IPV4_EXPLICIT_NULL:
 		strlcpy(buf, "IPv4 Explicit Null", len);
 		return (buf);
-	case MPLS_RA_LABEL:
+	case MPLS_LABEL_ROUTER_ALERT:
 		strlcpy(buf, "Router Alert", len);
 		return (buf);
-	case MPLS_V6_EXP_NULL_LABEL:
+	case MPLS_LABEL_IPV6_EXPLICIT_NULL:
 		strlcpy(buf, "IPv6 Explict Null", len);
 		return (buf);
-	case MPLS_IMP_NULL_LABEL:
+	case MPLS_LABEL_IMPLICIT_NULL:
 		strlcpy(buf, "implicit-null", len);
 		return (buf);
-	case MPLS_ENTROPY_LABEL_INDICATOR:
+	case MPLS_LABEL_ELI:
 		strlcpy(buf, "Entropy Label Indicator", len);
 		return (buf);
-	case MPLS_GAL_LABEL:
+	case MPLS_LABEL_GAL:
 		strlcpy(buf, "Generic Associated Channel", len);
 		return (buf);
-	case MPLS_OAM_ALERT_LABEL:
+	case MPLS_LABEL_OAM_ALERT:
 		strlcpy(buf, "OAM Alert", len);
 		return (buf);
-	case MPLS_EXTENSION_LABEL:
+	case MPLS_LABEL_EXTENSION:
 		strlcpy(buf, "Extension", len);
 		return (buf);
 	default:
@@ -171,13 +197,16 @@ static inline char *label2str(mpls_label_t label, char *buf, size_t len)
 	}
 }
 
-/* constants used by ldpd */
-#define MPLS_LABEL_IPV4NULL	0               /* IPv4 Explicit NULL Label */
-#define MPLS_LABEL_RTALERT	1               /* Router Alert Label       */
-#define MPLS_LABEL_IPV6NULL	2               /* IPv6 Explicit NULL Label */
-#define MPLS_LABEL_IMPLNULL	3               /* Implicit NULL Label      */
-	/*      MPLS_LABEL_RESERVED	4-15 */ /* Values 4-15 are reserved */
-#define MPLS_LABEL_RESERVED_MAX 15
-#define MPLS_LABEL_MAX		((1 << 20) - 1)
+/*
+ * String to label conversion, labels separated by '/'.
+ */
+int mpls_str2label(const char *label_str, uint8_t *num_labels,
+		   mpls_label_t *labels);
+
+/*
+ * Label to string conversion, labels in string separated by '/'.
+ */
+char *mpls_label2str(uint8_t num_labels, mpls_label_t *labels, char *buf,
+		     int len, int pretty);
 
 #endif

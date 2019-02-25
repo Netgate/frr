@@ -39,11 +39,16 @@ void igmp_anysource_forward_stop(struct igmp_group *group);
 void igmp_source_forward_start(struct pim_instance *pim,
 			       struct igmp_source *source);
 void igmp_source_forward_stop(struct igmp_source *source);
-void igmp_source_forward_reevaluate_all(void);
+void igmp_source_forward_reevaluate_all(struct pim_instance *pim);
 
 void pim_forward_start(struct pim_ifchannel *ch);
 void pim_forward_stop(struct pim_ifchannel *ch, bool install_it);
 
-void sched_rpf_cache_refresh(void);
+void sched_rpf_cache_refresh(struct pim_instance *pim);
 struct zclient *pim_zebra_zclient_get(void);
+
+void pim_zebra_update_all_interfaces(struct pim_instance *pim);
+void pim_zebra_upstream_rpf_changed(struct pim_instance *pim,
+				    struct pim_upstream *up,
+				    struct pim_rpf *old);
 #endif /* PIM_ZEBRA_H */

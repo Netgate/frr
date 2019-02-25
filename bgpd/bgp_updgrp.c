@@ -47,6 +47,7 @@
 #include "bgpd/bgpd.h"
 #include "bgpd/bgp_table.h"
 #include "bgpd/bgp_debug.h"
+#include "bgpd/bgp_errors.h"
 #include "bgpd/bgp_fsm.h"
 #include "bgpd/bgp_advertise.h"
 #include "bgpd/bgp_packet.h"
@@ -85,9 +86,8 @@ static void sync_init(struct update_subgroup *subgrp)
 	BGP_ADV_FIFO_INIT(&subgrp->sync->update);
 	BGP_ADV_FIFO_INIT(&subgrp->sync->withdraw);
 	BGP_ADV_FIFO_INIT(&subgrp->sync->withdraw_low);
-	subgrp->hash = hash_create(baa_hash_key,
-				   baa_hash_cmp,
-				   "BGP SubGroup Hash");
+	subgrp->hash =
+		hash_create(baa_hash_key, baa_hash_cmp, "BGP SubGroup Hash");
 
 	/* We use a larger buffer for subgrp->work in the event that:
 	 * - We RX a BGP_UPDATE where the attributes alone are just
@@ -813,7 +813,7 @@ static void update_subgroup_delete(struct update_subgroup *subgrp)
 		THREAD_TIMER_OFF(subgrp->t_coalesce);
 	sync_delete(subgrp);
 
-	if (BGP_DEBUG(update_groups, UPDATE_GROUPS))
+	if (BGP_DEBUG(update_groups, UPDATE_GROUPS) && subgrp->update_group)
 		zlog_debug("delete subgroup u%" PRIu64 ":s%" PRIu64,
 			   subgrp->update_group->id, subgrp->id);
 
@@ -906,7 +906,7 @@ static void update_subgroup_add_peer(struct update_subgroup *subgrp,
 static void update_subgroup_remove_peer_internal(struct update_subgroup *subgrp,
 						 struct peer_af *paf)
 {
-	assert(subgrp && paf);
+	assert(subgrp && paf && subgrp->update_group);
 
 	if (bgp_debug_peer_updout_enabled(paf->peer->host)) {
 		UPDGRP_PEER_DBG_DIS(subgrp->update_group);
@@ -1545,8 +1545,7 @@ void update_bgp_group_init(struct bgp *bgp)
 
 	AF_FOREACH (afid)
 		bgp->update_groups[afid] =
-			hash_create(updgrp_hash_key_make,
-				    updgrp_hash_cmp,
+			hash_create(updgrp_hash_key_make, updgrp_hash_cmp,
 				    "BGP Update Group Hash");
 }
 
@@ -1632,8 +1631,9 @@ void update_group_adjust_peer(struct peer_af *paf)
 	if (!updgrp) {
 		updgrp = update_group_create(paf);
 		if (!updgrp) {
-			zlog_err("couldn't create update group for peer %s",
-				 paf->peer->host);
+			flog_err(BGP_ERR_UPDGRP_CREATE,
+				  "couldn't create update group for peer %s",
+				  paf->peer->host);
 			return;
 		}
 	}
@@ -1877,11 +1877,12 @@ void subgroup_trigger_write(struct update_subgroup *subgrp)
 	 * the subgroup output queue into their own output queue. This action
 	 * will trigger a write job on the I/O thread.
 	 */
-	SUBGRP_FOREACH_PEER(subgrp, paf)
-	if (paf->peer->status == Established)
-		thread_add_timer_msec(bm->master, bgp_generate_updgrp_packets,
-				      paf->peer, 0,
-				      &paf->peer->t_generate_updgrp_packets);
+	SUBGRP_FOREACH_PEER (subgrp, paf)
+		if (paf->peer->status == Established)
+			thread_add_timer_msec(
+				bm->master, bgp_generate_updgrp_packets,
+				paf->peer, 0,
+				&paf->peer->t_generate_updgrp_packets);
 }
 
 int update_group_clear_update_dbg(struct update_group *updgrp, void *arg)

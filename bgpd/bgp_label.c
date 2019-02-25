@@ -38,6 +38,7 @@
 #include "bgpd/bgp_label.h"
 #include "bgpd/bgp_packet.h"
 #include "bgpd/bgp_debug.h"
+#include "bgpd/bgp_errors.h"
 
 extern struct zclient *zclient;
 
@@ -48,7 +49,7 @@ int bgp_parse_fec_update(void)
 	struct bgp *bgp;
 	struct bgp_table *table;
 	struct prefix p;
-	u_int32_t label;
+	uint32_t label;
 	afi_t afi;
 	safi_t safi;
 
@@ -57,7 +58,7 @@ int bgp_parse_fec_update(void)
 	memset(&p, 0, sizeof(struct prefix));
 	p.family = stream_getw(s);
 	p.prefixlen = stream_getc(s);
-	stream_get(&p.u.prefix, s, PSIZE(p.prefixlen));
+	stream_get(p.u.val, s, PSIZE(p.prefixlen));
 	label = stream_getl(s);
 
 	/* hack for the bgp instance & SAFI = have to send/receive it */
@@ -103,7 +104,7 @@ mpls_label_t bgp_adv_label(struct bgp_node *rn, struct bgp_info *ri,
 	if (!rn || !ri || !to)
 		return MPLS_INVALID_LABEL;
 
-	remote_label = ri->extra ? ri->extra->label : MPLS_INVALID_LABEL;
+	remote_label = ri->extra ? ri->extra->label[0] : MPLS_INVALID_LABEL;
 	from = ri->peer;
 	reflect =
 		((from->sort == BGP_PEER_IBGP) && (to->sort == BGP_PEER_IBGP));
@@ -124,7 +125,7 @@ void bgp_reg_dereg_for_label(struct bgp_node *rn, struct bgp_info *ri, int reg)
 	struct stream *s;
 	struct prefix *p;
 	int command;
-	u_int16_t flags = 0;
+	uint16_t flags = 0;
 	size_t flags_pos = 0;
 
 	/* Check socket. */
@@ -164,13 +165,13 @@ void bgp_reg_dereg_for_label(struct bgp_node *rn, struct bgp_info *ri, int reg)
 	zclient_send_message(zclient);
 }
 
-static int bgp_nlri_get_labels(struct peer *peer, u_char *pnt, u_char plen,
+static int bgp_nlri_get_labels(struct peer *peer, uint8_t *pnt, uint8_t plen,
 			       mpls_label_t *label)
 {
-	u_char *data = pnt;
-	u_char *lim = pnt + plen;
-	u_char llen = 0;
-	u_char label_depth = 0;
+	uint8_t *data = pnt;
+	uint8_t *lim = pnt + plen;
+	uint8_t llen = 0;
+	uint8_t label_depth = 0;
 
 	for (; data < lim; data += BGP_LABEL_BYTES) {
 		memcpy(label, data, BGP_LABEL_BYTES);
@@ -200,21 +201,17 @@ static int bgp_nlri_get_labels(struct peer *peer, u_char *pnt, u_char plen,
 int bgp_nlri_parse_label(struct peer *peer, struct attr *attr,
 			 struct bgp_nlri *packet)
 {
-	u_char *pnt;
-	u_char *lim;
+	uint8_t *pnt;
+	uint8_t *lim;
 	struct prefix p;
 	int psize = 0;
 	int prefixlen;
 	afi_t afi;
 	safi_t safi;
 	int addpath_encoded;
-	u_int32_t addpath_id;
+	uint32_t addpath_id;
 	mpls_label_t label = MPLS_INVALID_LABEL;
-	u_char llen;
-
-	/* Check peer status. */
-	if (peer->status != Established)
-		return 0;
+	uint8_t llen;
 
 	pnt = packet->nlri;
 	lim = pnt + packet->length;
@@ -248,7 +245,8 @@ int bgp_nlri_parse_label(struct peer *peer, struct attr *attr,
 
 		/* sanity check against packet data */
 		if ((pnt + psize) > lim) {
-			zlog_err(
+			flog_err(
+				BGP_ERR_UPDATE_RCV,
 				"%s [Error] Update packet error / L-U (prefix length %d exceeds packet size %u)",
 				peer->host, prefixlen, (uint)(lim - pnt));
 			return -1;
@@ -260,10 +258,10 @@ int bgp_nlri_parse_label(struct peer *peer, struct attr *attr,
 
 		/* There needs to be at least one label */
 		if (prefixlen < 24) {
-			zlog_err(
-				"%s [Error] Update packet error"
-				" (wrong label length %d)",
-				peer->host, prefixlen);
+			flog_err(BGP_ERR_UPDATE_RCV,
+				  "%s [Error] Update packet error"
+				  " (wrong label length %d)",
+				  peer->host, prefixlen);
 			bgp_notify_send(peer, BGP_NOTIFY_UPDATE_ERR,
 					BGP_NOTIFY_UPDATE_INVAL_NETWORK);
 			return -1;
@@ -288,7 +286,8 @@ int bgp_nlri_parse_label(struct peer *peer, struct attr *attr,
 				 * be logged locally, and the prefix SHOULD be
 				 * ignored.
 				  */
-				zlog_err(
+				flog_err(
+					BGP_ERR_UPDATE_RCV,
 					"%s: IPv4 labeled-unicast NLRI is multicast address %s, ignoring",
 					peer->host, inet_ntoa(p.u.prefix4));
 				continue;
@@ -300,7 +299,8 @@ int bgp_nlri_parse_label(struct peer *peer, struct attr *attr,
 			if (IN6_IS_ADDR_LINKLOCAL(&p.u.prefix6)) {
 				char buf[BUFSIZ];
 
-				zlog_err(
+				flog_err(
+					BGP_ERR_UPDATE_RCV,
 					"%s: IPv6 labeled-unicast NLRI is link-local address %s, ignoring",
 					peer->host,
 					inet_ntop(AF_INET6, &p.u.prefix6, buf,
@@ -312,7 +312,8 @@ int bgp_nlri_parse_label(struct peer *peer, struct attr *attr,
 			if (IN6_IS_ADDR_MULTICAST(&p.u.prefix6)) {
 				char buf[BUFSIZ];
 
-				zlog_err(
+				flog_err(
+					BGP_ERR_UPDATE_RCV,
 					"%s: IPv6 unicast NLRI is multicast address %s, ignoring",
 					peer->host,
 					inet_ntop(AF_INET6, &p.u.prefix6, buf,
@@ -325,17 +326,18 @@ int bgp_nlri_parse_label(struct peer *peer, struct attr *attr,
 		if (attr) {
 			bgp_update(peer, &p, addpath_id, attr, packet->afi,
 				   SAFI_UNICAST, ZEBRA_ROUTE_BGP,
-				   BGP_ROUTE_NORMAL, NULL, &label, 0, NULL);
+				   BGP_ROUTE_NORMAL, NULL, &label, 1, 0, NULL);
 		} else {
 			bgp_withdraw(peer, &p, addpath_id, attr, packet->afi,
 				     SAFI_UNICAST, ZEBRA_ROUTE_BGP,
-				     BGP_ROUTE_NORMAL, NULL, &label, NULL);
+				     BGP_ROUTE_NORMAL, NULL, &label, 1, NULL);
 		}
 	}
 
 	/* Packet length consistency check. */
 	if (pnt != lim) {
-		zlog_err(
+		flog_err(
+			BGP_ERR_UPDATE_RCV,
 			"%s [Error] Update packet error / L-U (%zu data remaining after parsing)",
 			peer->host, lim - pnt);
 		return -1;

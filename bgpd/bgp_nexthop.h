@@ -29,6 +29,7 @@
 	(((nexthop_len) == 4 || (nexthop_len) == 12                            \
 		  ? AF_INET                                                    \
 		  : ((nexthop_len) == 16 || (nexthop_len) == 24                \
+				     || (nexthop_len) == 32                    \
 				     || (nexthop_len) == 48                    \
 			     ? AF_INET6                                        \
 			     : AF_UNSPEC)))
@@ -38,13 +39,13 @@
 /* BGP nexthop cache value structure. */
 struct bgp_nexthop_cache {
 	/* IGP route's metric. */
-	u_int32_t metric;
+	uint32_t metric;
 
 	/* Nexthop number and nexthop linked list.*/
-	u_char nexthop_num;
+	uint8_t nexthop_num;
 	struct nexthop *nexthop;
 	time_t last_update;
-	u_int16_t flags;
+	uint16_t flags;
 
 #define BGP_NEXTHOP_VALID             (1 << 0)
 #define BGP_NEXTHOP_REGISTERED        (1 << 1)
@@ -52,8 +53,9 @@ struct bgp_nexthop_cache {
 #define BGP_NEXTHOP_PEER_NOTIFIED     (1 << 3)
 #define BGP_STATIC_ROUTE              (1 << 4)
 #define BGP_STATIC_ROUTE_EXACT_MATCH  (1 << 5)
+#define BGP_NEXTHOP_LABELED_VALID     (1 << 6)
 
-	u_int16_t change_flags;
+	uint16_t change_flags;
 
 #define BGP_NEXTHOP_CHANGED           (1 << 0)
 #define BGP_NEXTHOP_METRIC_CHANGED    (1 << 1)

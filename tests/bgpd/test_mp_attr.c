@@ -58,18 +58,11 @@ static int tty = 0;
 static struct test_segment {
 	const char *name;
 	const char *desc;
-	const u_char data[1024];
+	const uint8_t data[1024];
 	int len;
 #define SHOULD_PARSE	0
 #define SHOULD_ERR	-1
 	int parses; /* whether it should parse or not */
-
-	/* AFI/SAFI validation */
-	afi_t afi;
-	safi_t safi;
-#define VALID_AFI 1
-#define INVALID_AFI 0
-	int afi_valid;
 } mp_reach_segments[] = {
 	{
 		"IPv6",
@@ -104,9 +97,6 @@ static struct test_segment {
 		},
 		(4 + 16 + 1 + 5),
 		SHOULD_PARSE,
-		AFI_IP6,
-		SAFI_UNICAST,
-		VALID_AFI,
 	},
 	{
 		"IPv6-2",
@@ -150,9 +140,6 @@ static struct test_segment {
 		},
 		(4 + 16 + 1 + 5 + 9),
 		SHOULD_PARSE,
-		AFI_IP6,
-		SAFI_UNICAST,
-		VALID_AFI,
 	},
 	{
 		"IPv6-default",
@@ -197,9 +184,6 @@ static struct test_segment {
 		},
 		(4 + 16 + 1 + 5 + 9 + 1),
 		SHOULD_PARSE,
-		AFI_IP6,
-		SAFI_UNICAST,
-		VALID_AFI,
 	},
 	{
 		"IPv6-lnh",
@@ -260,9 +244,6 @@ static struct test_segment {
 		},
 		(4 + 32 + 1 + 5 + 9 + 1),
 		SHOULD_PARSE,
-		AFI_IP6,
-		SAFI_UNICAST,
-		VALID_AFI,
 	},
 	{
 		"IPv6-nhlen",
@@ -323,9 +304,6 @@ static struct test_segment {
 		},
 		(4 + 32 + 1 + 5 + 9 + 1),
 		SHOULD_ERR,
-		AFI_IP6,
-		SAFI_UNICAST,
-		VALID_AFI,
 	},
 	{
 		"IPv6-nhlen2",
@@ -386,9 +364,6 @@ static struct test_segment {
 		},
 		(4 + 32 + 1 + 5 + 9 + 1),
 		SHOULD_ERR,
-		AFI_IP6,
-		SAFI_UNICAST,
-		VALID_AFI,
 	},
 	{
 		"IPv6-nhlen3",
@@ -417,9 +392,6 @@ static struct test_segment {
 		},
 		(4 + 16),
 		SHOULD_ERR,
-		AFI_IP6,
-		SAFI_UNICAST,
-		VALID_AFI,
 	},
 	{
 		"IPv6-nhlen4",
@@ -480,9 +452,6 @@ static struct test_segment {
 		},
 		(4 + 32 + 1 + 5 + 9 + 1),
 		SHOULD_ERR,
-		AFI_IP6,
-		SAFI_UNICAST,
-		VALID_AFI,
 	},
 	{
 		"IPv6-nlri",
@@ -543,9 +512,6 @@ static struct test_segment {
 		},
 		(4 + 32 + 1 + 5 + 9 + 1),
 		SHOULD_ERR,
-		AFI_IP6,
-		SAFI_UNICAST,
-		VALID_AFI,
 	},
 	{
 		"IPv4",
@@ -561,9 +527,6 @@ static struct test_segment {
 		},
 		(4 + 4 + 1 + 3 + 4 + 1),
 		SHOULD_PARSE,
-		AFI_IP,
-		SAFI_UNICAST,
-		VALID_AFI,
 	},
 	{
 		"IPv4-nhlen",
@@ -579,9 +542,6 @@ static struct test_segment {
 		},
 		(4 + 4 + 1 + 3 + 4 + 1),
 		SHOULD_ERR,
-		AFI_IP,
-		SAFI_UNICAST,
-		VALID_AFI,
 	},
 	{
 		"IPv4-nlrilen",
@@ -596,9 +556,6 @@ static struct test_segment {
 		},
 		(4 + 4 + 1 + 3 + 2 + 1),
 		SHOULD_ERR,
-		AFI_IP,
-		SAFI_UNICAST,
-		VALID_AFI,
 	},
 	{
 		"IPv4-VPNv4",
@@ -623,9 +580,6 @@ static struct test_segment {
 		},
 		(4 + 12 + 1 + (1 + 3 + 8 + 2) + (1 + 3 + 8 + 3)),
 		SHOULD_PARSE,
-		AFI_IP,
-		IANA_SAFI_MPLS_VPN,
-		VALID_AFI,
 	},
 	{
 		"IPv4-VPNv4-bogus-plen",
@@ -659,9 +613,6 @@ static struct test_segment {
 		},
 		(3 + 1 + 3 * 4 + 1 + 3 + 4 + 1),
 		SHOULD_ERR,
-		AFI_IP,
-		IANA_SAFI_MPLS_VPN,
-		VALID_AFI,
 	},
 	{
 		"IPv4-VPNv4-plen1-short",
@@ -686,9 +637,6 @@ static struct test_segment {
 		},
 		(4 + 12 + 1 + (1 + 3 + 8 + 2) + (1 + 3 + 8 + 3)),
 		SHOULD_ERR,
-		AFI_IP,
-		IANA_SAFI_MPLS_VPN,
-		VALID_AFI,
 	},
 	{
 		"IPv4-VPNv4-plen1-long",
@@ -713,9 +661,6 @@ static struct test_segment {
 		},
 		(4 + 12 + 1 + (1 + 3 + 8 + 2) + (1 + 3 + 8 + 3)),
 		SHOULD_ERR,
-		AFI_IP,
-		IANA_SAFI_MPLS_VPN,
-		VALID_AFI,
 	},
 	{
 		"IPv4-VPNv4-plenn-long",
@@ -741,9 +686,6 @@ static struct test_segment {
 		},
 		(4 + 12 + 1 + (1 + 3 + 8 + 2) + (1 + 3 + 8 + 3) + 1),
 		SHOULD_ERR,
-		AFI_IP,
-		IANA_SAFI_MPLS_VPN,
-		VALID_AFI,
 	},
 	{
 		"IPv4-VPNv4-plenn-short",
@@ -768,9 +710,6 @@ static struct test_segment {
 		},
 		(4 + 12 + 1 + (1 + 3 + 8 + 2) + (1 + 3 + 8 + 3)),
 		SHOULD_ERR,
-		AFI_IP,
-		IANA_SAFI_MPLS_VPN,
-		VALID_AFI,
 	},
 	{
 		"IPv4-VPNv4-bogus-rd-type",
@@ -795,9 +734,6 @@ static struct test_segment {
 		},
 		(4 + 12 + 1 + (1 + 3 + 8 + 2) + (1 + 3 + 8 + 3)),
 		SHOULD_PARSE,
-		AFI_IP,
-		IANA_SAFI_MPLS_VPN,
-		VALID_AFI,
 	},
 	{
 		"IPv4-VPNv4-0-nlri",
@@ -823,9 +759,6 @@ static struct test_segment {
 		},
 		(4 + 12 + 1 + (1 + 3 + 8 + 2) + (1 + 3 + 8 + 3) + 1),
 		SHOULD_ERR,
-		AFI_IP,
-		IANA_SAFI_MPLS_VPN,
-		VALID_AFI,
 	},
 
 	/* From bug #385 */
@@ -875,11 +808,27 @@ static struct test_segment {
 		},
 		37,
 		SHOULD_ERR,
-		AFI_IP6,
-		SAFI_UNICAST,
-		VALID_AFI,
 	},
-
+	{
+		.name = "IPv4",
+		.desc = "IPV4 MP Reach, flowspec, 1 NLRI",
+		.data = {
+			/* AFI / SAFI */ 0x0,
+			AFI_IP,
+			IANA_SAFI_FLOWSPEC,
+			0x00, /* no NH */
+			0x00,
+			0x06, /* FS Length */
+			0x01, /* FS dest prefix ID */
+			0x1e, /* IP */
+			0x1e,
+			0x28,
+			0x28,
+			0x0
+		},
+		.len = 12,
+		.parses = SHOULD_PARSE,
+	},
 	{NULL, NULL, {0}, 0, 0}};
 
 /* MP_UNREACH_NLRI tests */
@@ -894,9 +843,6 @@ static struct test_segment mp_unreach_segments[] = {
 		},
 		(3 + 5),
 		SHOULD_PARSE,
-		AFI_IP6,
-		SAFI_UNICAST,
-		VALID_AFI,
 	},
 	{
 		"IPv6-unreach2",
@@ -910,9 +856,6 @@ static struct test_segment mp_unreach_segments[] = {
 		},
 		(3 + 5 + 9),
 		SHOULD_PARSE,
-		AFI_IP6,
-		SAFI_UNICAST,
-		VALID_AFI,
 	},
 	{
 		"IPv6-unreach-default",
@@ -926,9 +869,6 @@ static struct test_segment mp_unreach_segments[] = {
 		},
 		(3 + 5 + 9 + 1),
 		SHOULD_PARSE,
-		AFI_IP6,
-		SAFI_UNICAST,
-		VALID_AFI,
 	},
 	{
 		"IPv6-unreach-nlri",
@@ -942,9 +882,6 @@ static struct test_segment mp_unreach_segments[] = {
 		},
 		(3 + 5 + 9 + 1),
 		SHOULD_ERR,
-		AFI_IP6,
-		SAFI_UNICAST,
-		VALID_AFI,
 	},
 	{
 		"IPv4-unreach",
@@ -957,9 +894,6 @@ static struct test_segment mp_unreach_segments[] = {
 		},
 		(3 + 3 + 4 + 1),
 		SHOULD_PARSE,
-		AFI_IP,
-		SAFI_UNICAST,
-		VALID_AFI,
 	},
 	{
 		"IPv4-unreach-nlrilen",
@@ -971,9 +905,6 @@ static struct test_segment mp_unreach_segments[] = {
 		},
 		(3 + 3 + 2 + 1),
 		SHOULD_ERR,
-		AFI_IP,
-		SAFI_UNICAST,
-		VALID_AFI,
 	},
 	{
 		"IPv4-unreach-VPNv4",
@@ -993,11 +924,44 @@ static struct test_segment mp_unreach_segments[] = {
 		},
 		(3 + (1 + 3 + 8 + 2) + (1 + 3 + 8 + 3)),
 		SHOULD_PARSE,
-		AFI_IP,
-		IANA_SAFI_MPLS_VPN,
-		VALID_AFI,
+	},
+	{
+		.name = "IPv4",
+		.desc = "IPV4 MP Unreach, flowspec, 1 NLRI",
+		.data = {
+			/* AFI / SAFI */ 0x0,
+			AFI_IP,
+			IANA_SAFI_FLOWSPEC,
+			0x06, /* FS Length */
+			0x01, /* FS dest prefix ID */
+			0x1e, /* IP */
+			0x1e,
+			0x28,
+			0x28,
+			0x0
+		},
+		.len = 10,
+		.parses = SHOULD_PARSE,
 	},
 	{NULL, NULL, {0}, 0, 0}};
+
+static struct test_segment mp_prefix_sid[] = {
+	{
+		"PREFIX-SID",
+		"PREFIX-SID Test 1",
+		{
+			0x01, 0x00, 0x07,
+			0x00, 0x00, 0x00, 0x00,
+			0x00, 0x00, 0x02,
+			0x03, 0x00, 0x08, 0x00,
+			0x00, 0x0a, 0x1b, 0xfe,
+			0x00, 0x00, 0x0a
+		},
+		.len = 21,
+		.parses = SHOULD_PARSE,
+	},
+	{NULL, NULL, { 0 }, 0, 0},
+};
 
 /* nlri_parse indicates 0 on successful parse, and -1 otherwise.
  * attr_parse indicates BGP_ATTR_PARSE_PROCEED/0 on success,
@@ -1054,10 +1018,20 @@ static void parse_test(struct peer *peer, struct test_segment *t, int type)
 
 	printf("%s: %s\n", t->name, t->desc);
 
-	if (type == BGP_ATTR_MP_REACH_NLRI)
+	switch (type) {
+	case BGP_ATTR_MP_REACH_NLRI:
 		parse_ret = bgp_mp_reach_parse(&attr_args, &nlri);
-	else
+		break;
+	case BGP_ATTR_MP_UNREACH_NLRI:
 		parse_ret = bgp_mp_unreach_parse(&attr_args, &nlri);
+		break;
+	case BGP_ATTR_PREFIX_SID:
+		parse_ret = bgp_attr_prefix_sid(t->len, &attr_args, &nlri);
+		break;
+	default:
+		printf("unknown type");
+		return;
+	}
 	if (!parse_ret) {
 		iana_afi_t pkt_afi;
 		iana_safi_t pkt_safi;
@@ -1076,7 +1050,7 @@ static void parse_test(struct peer *peer, struct test_segment *t, int type)
 	if (!parse_ret) {
 		if (type == BGP_ATTR_MP_REACH_NLRI)
 			nlri_ret = bgp_nlri_parse(peer, &attr, &nlri, 0);
-		else
+		else if (type == BGP_ATTR_MP_UNREACH_NLRI)
 			nlri_ret = bgp_nlri_parse(peer, &attr, &nlri, 1);
 	}
 	handle_result(peer, t, parse_ret, nlri_ret);
@@ -1087,15 +1061,18 @@ static as_t asn = 100;
 
 int main(void)
 {
+	struct interface ifp;
 	struct peer *peer;
 	int i, j;
 
 	conf_bgp_debug_neighbor_events = -1UL;
 	conf_bgp_debug_packet = -1UL;
 	conf_bgp_debug_as4 = -1UL;
+	conf_bgp_debug_flowspec = -1UL;
 	term_bgp_debug_neighbor_events = -1UL;
 	term_bgp_debug_packet = -1UL;
 	term_bgp_debug_as4 = -1UL;
+	term_bgp_debug_flowspec = -1UL;
 
 	qobj_init();
 	cmd_init(0);
@@ -1117,6 +1094,9 @@ int main(void)
 	peer->status = Established;
 	peer->curr = stream_new(BGP_MAX_PACKET_SIZE);
 
+	ifp.ifindex = 0;
+	peer->nexthop.ifp = &ifp;
+
 	for (i = AFI_IP; i < AFI_MAX; i++)
 		for (j = SAFI_UNICAST; j < SAFI_MAX; j++) {
 			peer->afc[i][j] = 1;
@@ -1133,6 +1113,10 @@ int main(void)
 		parse_test(peer, &mp_unreach_segments[i++],
 			   BGP_ATTR_MP_UNREACH_NLRI);
 
+	i = 0;
+	while (mp_prefix_sid[i].name)
+		parse_test(peer, &mp_prefix_sid[i++],
+			   BGP_ATTR_PREFIX_SID);
 	printf("failures: %d\n", failed);
 	return failed;
 }

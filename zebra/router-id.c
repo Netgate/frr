@@ -39,6 +39,7 @@
 #include "vrf.h"
 
 #include "zebra/zserv.h"
+#include "zebra/zapi_msg.h"
 #include "zebra/zebra_vrf.h"
 #include "zebra/router-id.h"
 #include "zebra/redistribute.h"
@@ -225,7 +226,7 @@ DEFUN (router_id,
 	rid.family = AF_INET;
 
 	if (argc > 2)
-		VRF_GET_ID(vrf_id, argv[idx_name]->arg);
+		VRF_GET_ID(vrf_id, argv[idx_name]->arg, false);
 
 	router_id_set(&rid, vrf_id);
 
@@ -250,7 +251,7 @@ DEFUN (no_router_id,
 	rid.family = AF_INET;
 
 	if (argc > 3)
-		VRF_GET_ID(vrf_id, argv[idx_name]->arg);
+		VRF_GET_ID(vrf_id, argv[idx_name]->arg, false);
 
 	router_id_set(&rid, vrf_id);
 

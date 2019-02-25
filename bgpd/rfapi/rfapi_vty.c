@@ -46,6 +46,7 @@
 #include "bgpd/bgp_aspath.h"
 #include "bgpd/bgp_community.h"
 #include "bgpd/bgp_vnc_types.h"
+#include "bgpd/bgp_label.h"
 
 #include "bgpd/rfapi/rfapi_import.h"
 #include "bgpd/rfapi/rfapi_private.h"
@@ -387,15 +388,11 @@ int rfapiStream2Vty(void *stream,			   /* input */
 		return 1;
 	}
 
-	if (stream) {
-		*vty = stream; /* VTYNL requires vty to be legit */
-		*fp = (int (*)(void *, const char *, ...))vty_out;
-		*outstream = stream;
-		*vty_newline = str_vty_newline(*vty);
-		return 1;
-	}
-
-	return 0;
+	*vty = stream; /* VTYNL requires vty to be legit */
+	*fp = (int (*)(void *, const char *, ...))vty_out;
+	*outstream = stream;
+	*vty_newline = str_vty_newline(*vty);
+	return 1;
 }
 
 /* called from bgpd/bgp_vty.c'route_vty_out() */
@@ -431,8 +428,13 @@ void rfapi_vty_out_vncinfo(struct vty *vty, struct prefix *p,
 		XFREE(MTYPE_ECOMMUNITY_STR, s);
 	}
 
-	if (bi->extra != NULL)
-		vty_out(vty, " label=%u", decode_label(&bi->extra->label));
+	if (bi->extra != NULL) {
+		if (bi->extra->label[0] == BGP_PREVENT_VRF_2_VRF_LEAK)
+			vty_out(vty, " label=VRF2VRF");
+		else
+			vty_out(vty, " label=%u",
+				decode_label(&bi->extra->label[0]));
+	}
 
 	if (!rfapiGetVncLifetime(bi->attr, &lifetime)) {
 		vty_out(vty, " life=%d", lifetime);
@@ -494,7 +496,7 @@ void rfapiPrintBi(void *stream, struct bgp_info *bi)
 	char *p = line;
 	int r;
 	int has_macaddr = 0;
-	struct ethaddr macaddr;
+	struct ethaddr macaddr = {{0}};
 	struct rfapi_l2address_option l2o_buf;
 	uint8_t l2hid = 0; /* valid if has_macaddr */
 
@@ -1068,7 +1070,7 @@ static int rfapiPrintRemoteRegBi(struct bgp *bgp, void *stream,
 			 inet_ntop(pfx_vn.family, &pfx_vn.u.prefix, buf_ntop,
 				   BUFSIZ));
 		if (bi->extra) {
-			u_int32_t l = decode_label(&bi->extra->label);
+			uint32_t l = decode_label(&bi->extra->label[0]);
 			snprintf(buf_vn, BUFSIZ, "Label: %d", l);
 		} else /* should never happen */
 		{
@@ -1163,8 +1165,7 @@ static int rfapiPrintRemoteRegBi(struct bgp *bgp, void *stream,
 		 * print that on the next line
 		 */
 
-		if (bi->extra
-		    && bi->extra->vnc.import.aux_prefix.family) {
+		if (bi->extra && bi->extra->vnc.import.aux_prefix.family) {
 			const char *sp;
 
 			sp = rfapi_ntop(
@@ -1181,7 +1182,7 @@ static int rfapiPrintRemoteRegBi(struct bgp *bgp, void *stream,
 		}
 	}
 	if (tun_type != BGP_ENCAP_TYPE_MPLS && bi->extra) {
-		u_int32_t l = decode_label(&bi->extra->label);
+		uint32_t l = decode_label(&bi->extra->label[0]);
 		if (!MPLS_LABEL_IS_NULL(l)) {
 			fp(out, "  Label: %d", l);
 			if (nlines == 1)
@@ -1632,7 +1633,7 @@ void rfapiPrintDescriptor(struct vty *vty, struct rfapi_descriptor *rfd)
 	}
 
 	for (afi = AFI_IP; afi < AFI_MAX; ++afi) {
-		u_char family;
+		uint8_t family;
 
 		family = afi2family(afi);
 		if (!family)
@@ -1728,7 +1729,8 @@ void rfapiPrintMatchingDescriptors(struct vty *vty, struct prefix *vn_prefix,
 int rfapiCliGetPrefixAddr(struct vty *vty, const char *str, struct prefix *p)
 {
 	if (!str2prefix(str, p)) {
-		vty_out(vty, "Malformed address \"%s\"%s", str, HVTYNL);
+		vty_out(vty, "Malformed address \"%s\"%s", str ? str : "null",
+			HVTYNL);
 		return CMD_WARNING;
 	}
 	switch (p->family) {
@@ -3015,9 +3017,9 @@ static int rfapiDeleteLocalPrefixesByRFD(struct rfapi_local_reg_delete_arg *cda,
 		 * match un, vn addresses of NVEs
 		 */
 		if (pUn && (rfapi_ip_addr_cmp(pUn, &rfd->un_addr)))
-			continue;
+			break;
 		if (pVn && (rfapi_ip_addr_cmp(pVn, &rfd->vn_addr)))
-			continue;
+			break;
 
 #if DEBUG_L2_EXTRA
 		vnc_zlog_debug_verbose("%s: un, vn match", __func__);
@@ -4630,7 +4632,7 @@ notcfg:
  ************************************************************************/
 void vnc_add_vrf_opener(struct bgp *bgp, struct rfapi_nve_group_cfg *rfg)
 {
-	if (rfg->rfd == NULL) {	/* need new rfapi_handle */
+	if (rfg->rfd == NULL) { /* need new rfapi_handle */
 		/* based on rfapi_open */
 		struct rfapi_descriptor *rfd;
 

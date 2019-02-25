@@ -33,6 +33,7 @@
 #include "hash.h"
 #include "if.h"
 #include "table.h"
+#include "srcdest_table.h"
 
 #include "isis_constants.h"
 #include "isis_common.h"
@@ -100,26 +101,6 @@ static int nexthoplookup(struct list *nexthops, struct in_addr *ip,
 	return 0;
 }
 
-#ifdef EXTREME_DEBUG
-static void nexthop_print(struct isis_nexthop *nh)
-{
-	u_char buf[BUFSIZ];
-
-	inet_ntop(AF_INET, &nh->ip, (char *)buf, BUFSIZ);
-
-	zlog_debug("      %s %u", buf, nh->ifindex);
-}
-
-static void nexthops_print(struct list *nhs)
-{
-	struct listnode *node;
-	struct isis_nexthop *nh;
-
-	for (ALL_LIST_ELEMENTS_RO(nhs, node, nh))
-		nexthop_print(nh);
-}
-#endif /* EXTREME_DEBUG */
-
 static struct isis_nexthop6 *isis_nexthop6_new(struct in6_addr *ip6,
 					       ifindex_t ifindex)
 {
@@ -184,26 +165,6 @@ static int nexthop6lookup(struct list *nexthops6, struct in6_addr *ip6,
 	return 0;
 }
 
-#ifdef EXTREME_DEBUG
-static void nexthop6_print(struct isis_nexthop6 *nh6)
-{
-	u_char buf[BUFSIZ];
-
-	inet_ntop(AF_INET6, &nh6->ip6, (char *)buf, BUFSIZ);
-
-	zlog_debug("      %s %u", buf, nh6->ifindex);
-}
-
-static void nexthops6_print(struct list *nhs6)
-{
-	struct listnode *node;
-	struct isis_nexthop6 *nh6;
-
-	for (ALL_LIST_ELEMENTS_RO(nhs6, node, nh6))
-		nexthop6_print(nh6);
-}
-#endif /* EXTREME_DEBUG */
-
 static void adjinfo2nexthop(struct list *nexthops, struct isis_adjacency *adj)
 {
 	struct isis_nexthop *nh;
@@ -239,6 +200,7 @@ static void adjinfo2nexthop6(struct list *nexthops6, struct isis_adjacency *adj)
 }
 
 static struct isis_route_info *isis_route_info_new(struct prefix *prefix,
+						   struct prefix_ipv6 *src_p,
 						   uint32_t cost,
 						   uint32_t depth,
 						   struct list *adjacencies)
@@ -272,8 +234,10 @@ static struct isis_route_info *isis_route_info_new(struct prefix *prefix,
 				SET_FLAG(rinfo->flag,
 					 ISIS_ROUTE_FLAG_ZEBRA_RESYNC);
 			/* update neighbor router address */
-			if (depth == 2 && prefix->prefixlen == 128)
+			if (depth == 2 && prefix->prefixlen == 128
+			    && (!src_p || !src_p->prefixlen)) {
 				adj->router_address6 = prefix->u.prefix6;
+			}
 			adjinfo2nexthop6(rinfo->nexthops6, adj);
 		}
 	}
@@ -313,7 +277,7 @@ static int isis_route_info_same_attrib(struct isis_route_info *new,
 }
 
 static int isis_route_info_same(struct isis_route_info *new,
-				struct isis_route_info *old, u_char family)
+				struct isis_route_info *old, uint8_t family)
 {
 	struct listnode *node;
 	struct isis_nexthop *nexthop;
@@ -357,32 +321,29 @@ static int isis_route_info_same(struct isis_route_info *new,
 	return 1;
 }
 
-struct isis_route_info *isis_route_create(struct prefix *prefix, u_int32_t cost,
-					  u_int32_t depth,
+struct isis_route_info *isis_route_create(struct prefix *prefix,
+					  struct prefix_ipv6 *src_p,
+					  uint32_t cost,
+					  uint32_t depth,
 					  struct list *adjacencies,
-					  struct isis_area *area, int level)
+					  struct isis_area *area,
+					  struct route_table *table)
 {
 	struct route_node *route_node;
 	struct isis_route_info *rinfo_new, *rinfo_old, *route_info = NULL;
 	char buff[PREFIX2STR_BUFFER];
-	u_char family;
+	uint8_t family;
 
 	family = prefix->family;
 	/* for debugs */
 	prefix2str(prefix, buff, sizeof(buff));
 
-	rinfo_new = isis_route_info_new(prefix, cost, depth, adjacencies);
-
-	if (family == AF_INET)
-		route_node =
-			route_node_get(area->route_table[level - 1], prefix);
-	else if (family == AF_INET6)
-		route_node =
-			route_node_get(area->route_table6[level - 1], prefix);
-	else {
-		isis_route_info_delete(rinfo_new);
+	if (!table)
 		return NULL;
-	}
+
+	rinfo_new = isis_route_info_new(prefix, src_p, cost,
+					depth, adjacencies);
+	route_node = srcdest_rnode_get(table, prefix, src_p);
 
 	rinfo_old = route_node->info;
 	if (!rinfo_old) {
@@ -392,6 +353,7 @@ struct isis_route_info *isis_route_create(struct prefix *prefix, u_int32_t cost,
 		route_info = rinfo_new;
 		UNSET_FLAG(route_info->flag, ISIS_ROUTE_FLAG_ZEBRA_SYNCED);
 	} else {
+		route_unlock_node(route_node);
 		if (isis->debugs & DEBUG_RTE_EVENTS)
 			zlog_debug("ISIS-Rte (%s) route already exists: %s",
 				   area->area_tag, buff);
@@ -418,19 +380,21 @@ struct isis_route_info *isis_route_create(struct prefix *prefix, u_int32_t cost,
 	return route_info;
 }
 
-static void isis_route_delete(struct prefix *prefix, struct route_table *table)
+static void isis_route_delete(struct route_node *rode,
+			      struct route_table *table)
 {
-	struct route_node *rode;
 	struct isis_route_info *rinfo;
-	char buff[PREFIX2STR_BUFFER];
+	char buff[SRCDEST2STR_BUFFER];
+	struct prefix *prefix;
+	struct prefix_ipv6 *src_p;
 
 	/* for log */
-	prefix2str(prefix, buff, sizeof(buff));
+	srcdest_rnode2str(rode, buff, sizeof(buff));
 
+	srcdest_rnode_prefixes(rode, (const struct prefix **)&prefix,
+			       (const struct prefix **)&src_p);
 
-	rode = route_node_get(table, prefix);
 	rinfo = rode->info;
-
 	if (rinfo == NULL) {
 		if (isis->debugs & DEBUG_RTE_EVENTS)
 			zlog_debug(
@@ -443,29 +407,36 @@ static void isis_route_delete(struct prefix *prefix, struct route_table *table)
 		UNSET_FLAG(rinfo->flag, ISIS_ROUTE_FLAG_ACTIVE);
 		if (isis->debugs & DEBUG_RTE_EVENTS)
 			zlog_debug("ISIS-Rte: route delete  %s", buff);
-		isis_zebra_route_update(prefix, rinfo);
+		isis_zebra_route_update(prefix, src_p, rinfo);
 	}
 	isis_route_info_delete(rinfo);
 	rode->info = NULL;
-
-	return;
+	route_unlock_node(rode);
 }
 
-/* Validating routes in particular table. */
-static void isis_route_validate_table(struct isis_area *area,
-				      struct route_table *table)
+static void _isis_route_verify_table(struct isis_area *area,
+				     struct route_table *table,
+				     struct route_table **tables)
 {
 	struct route_node *rnode, *drnode;
 	struct isis_route_info *rinfo;
-	char buff[PREFIX2STR_BUFFER];
+	char buff[SRCDEST2STR_BUFFER];
 
-	for (rnode = route_top(table); rnode; rnode = route_next(rnode)) {
+	for (rnode = route_top(table); rnode;
+	     rnode = srcdest_route_next(rnode)) {
 		if (rnode->info == NULL)
 			continue;
 		rinfo = rnode->info;
 
+		struct prefix *dst_p;
+		struct prefix_ipv6 *src_p;
+
+		srcdest_rnode_prefixes(rnode,
+				       (const struct prefix **)&dst_p,
+				       (const struct prefix **)&src_p);
+
 		if (isis->debugs & DEBUG_RTE_EVENTS) {
-			prefix2str(&rnode->p, buff, sizeof(buff));
+			srcdest2str(dst_p, src_p, buff, sizeof(buff));
 			zlog_debug(
 				"ISIS-Rte (%s): route validate: %s %s %s %s",
 				area->area_tag,
@@ -483,48 +454,45 @@ static void isis_route_validate_table(struct isis_area *area,
 				buff);
 		}
 
-		isis_zebra_route_update(&rnode->p, rinfo);
-		if (!CHECK_FLAG(rinfo->flag, ISIS_ROUTE_FLAG_ACTIVE)) {
-			/* Area is either L1 or L2 => we use level route tables
-			 * directly for
-			 * validating => no problems with deleting routes. */
-			if (area->is_type != IS_LEVEL_1_AND_2) {
-				isis_route_delete(&rnode->p, table);
-				continue;
-			}
-			/* If area is L1L2, we work with merge table and
-			 * therefore must
-			 * delete node from level tables as well before deleting
-			 * route info.
-			 * FIXME: Is it performance problem? There has to be the
-			 * better way.
-			 * Like not to deal with it here at all (see the next
-			 * comment)? */
-			if (rnode->p.family == AF_INET) {
-				drnode = route_node_get(area->route_table[0],
-							&rnode->p);
-				if (drnode->info == rnode->info)
-					drnode->info = NULL;
-				drnode = route_node_get(area->route_table[1],
-							&rnode->p);
-				if (drnode->info == rnode->info)
-					drnode->info = NULL;
-			}
+		isis_zebra_route_update(dst_p, src_p, rinfo);
 
-			if (rnode->p.family == AF_INET6) {
-				drnode = route_node_get(area->route_table6[0],
-							&rnode->p);
-				if (drnode->info == rnode->info)
-					drnode->info = NULL;
-				drnode = route_node_get(area->route_table6[1],
-							&rnode->p);
-				if (drnode->info == rnode->info)
-					drnode->info = NULL;
-			}
+		if (CHECK_FLAG(rinfo->flag, ISIS_ROUTE_FLAG_ACTIVE))
+			continue;
 
-			isis_route_delete(&rnode->p, table);
+		/* Area is either L1 or L2 => we use level route tables
+		 * directly for
+		 * validating => no problems with deleting routes. */
+		if (!tables) {
+			isis_route_delete(rnode, table);
+			continue;
 		}
+
+		/* If area is L1L2, we work with merge table and
+		 * therefore must
+		 * delete node from level tables as well before deleting
+		 * route info. */
+		for (int level = ISIS_LEVEL1; level <= ISIS_LEVEL2; level++) {
+			drnode = srcdest_rnode_lookup(tables[level - 1],
+						      dst_p, src_p);
+			if (!drnode)
+				continue;
+
+			route_unlock_node(drnode);
+
+			if (drnode->info != rnode->info)
+				continue;
+
+			drnode->info = NULL;
+			route_unlock_node(drnode);
+		}
+
+		isis_route_delete(rnode, table);
 	}
+}
+
+void isis_route_verify_table(struct isis_area *area, struct route_table *table)
+{
+	return _isis_route_verify_table(area, table, NULL);
 }
 
 /* Function to validate route tables for L1L2 areas. In this case we can't use
@@ -537,79 +505,63 @@ static void isis_route_validate_table(struct isis_area *area,
  *
  * FIXME: Is it right place to do it at all? Maybe we should push both levels
  * to the RIB with different zebra route types and let RIB handle this? */
-static void isis_route_validate_merge(struct isis_area *area, int family)
+void isis_route_verify_merge(struct isis_area *area,
+			     struct route_table *level1_table,
+			     struct route_table *level2_table)
 {
-	struct route_table *table = NULL;
+	struct route_table *tables[] = { level1_table, level2_table };
 	struct route_table *merge;
 	struct route_node *rnode, *mrnode;
 
-	merge = route_table_init();
+	merge = srcdest_table_init();
 
-	if (family == AF_INET)
-		table = area->route_table[0];
-	else if (family == AF_INET6)
-		table = area->route_table6[0];
-	else {
-		zlog_warn("ISIS-Rte (%s) %s called for unknown family %d",
-			  area->area_tag, __func__, family);
-		route_table_finish(merge);
-		return;
+	for (int level = ISIS_LEVEL1; level <= ISIS_LEVEL2; level++) {
+		for (rnode = route_top(tables[level - 1]); rnode;
+		     rnode = srcdest_route_next(rnode)) {
+			struct isis_route_info *rinfo = rnode->info;
+			if (!rinfo)
+				continue;
+
+			struct prefix *prefix;
+			struct prefix_ipv6 *src_p;
+
+			srcdest_rnode_prefixes(rnode,
+					       (const struct prefix **)&prefix,
+					       (const struct prefix **)&src_p);
+			mrnode = srcdest_rnode_get(merge, prefix, src_p);
+			struct isis_route_info *mrinfo = mrnode->info;
+			if (mrinfo) {
+				route_unlock_node(mrnode);
+				if (CHECK_FLAG(mrinfo->flag,
+					       ISIS_ROUTE_FLAG_ACTIVE)) {
+					/* Clear the ZEBRA_SYNCED flag on the
+					 * L2 route when L1 wins, otherwise L2
+					 * won't get reinstalled when L1
+					 * disappears.
+					 */
+					UNSET_FLAG(
+						rinfo->flag,
+						ISIS_ROUTE_FLAG_ZEBRA_SYNCED
+					);
+					continue;
+				} else {
+					/* Clear the ZEBRA_SYNCED flag on the L1
+					 * route when L2 wins, otherwise L1
+					 * won't get reinstalled when it
+					 * reappears.
+					 */
+					UNSET_FLAG(
+						mrinfo->flag,
+						ISIS_ROUTE_FLAG_ZEBRA_SYNCED
+					);
+				}
+			}
+			mrnode->info = rnode->info;
+		}
 	}
 
-	for (rnode = route_top(table); rnode; rnode = route_next(rnode)) {
-		if (rnode->info == NULL)
-			continue;
-		mrnode = route_node_get(merge, &rnode->p);
-		mrnode->info = rnode->info;
-	}
-
-	if (family == AF_INET)
-		table = area->route_table[1];
-	else if (family == AF_INET6)
-		table = area->route_table6[1];
-
-	for (rnode = route_top(table); rnode; rnode = route_next(rnode)) {
-		if (rnode->info == NULL)
-			continue;
-		mrnode = route_node_get(merge, &rnode->p);
-		if (mrnode->info != NULL)
-			continue;
-		mrnode->info = rnode->info;
-	}
-
-	isis_route_validate_table(area, merge);
+	_isis_route_verify_table(area, merge, tables);
 	route_table_finish(merge);
-}
-
-/* Walk through route tables and propagate necessary changes into RIB. In case
- * of L1L2 area, level tables have to be merged at first. */
-void isis_route_validate(struct isis_area *area)
-{
-	struct listnode *node;
-	struct isis_circuit *circuit;
-
-	if (area->is_type == IS_LEVEL_1)
-		isis_route_validate_table(area, area->route_table[0]);
-	else if (area->is_type == IS_LEVEL_2)
-		isis_route_validate_table(area, area->route_table[1]);
-	else
-		isis_route_validate_merge(area, AF_INET);
-
-	if (area->is_type == IS_LEVEL_1)
-		isis_route_validate_table(area, area->route_table6[0]);
-	else if (area->is_type == IS_LEVEL_2)
-		isis_route_validate_table(area, area->route_table6[1]);
-	else
-		isis_route_validate_merge(area, AF_INET6);
-
-	if (!area->circuit_list) {
-		return;
-	}
-	/* walk all circuits and reset any spf specific flags */
-	for (ALL_LIST_ELEMENTS_RO(area->circuit_list, node, circuit))
-		UNSET_FLAG(circuit->flags, ISIS_CIRCUIT_FLAPPED_AFTER_SPF);
-
-	return;
 }
 
 void isis_route_invalidate_table(struct isis_area *area,
@@ -617,19 +569,11 @@ void isis_route_invalidate_table(struct isis_area *area,
 {
 	struct route_node *rode;
 	struct isis_route_info *rinfo;
-	for (rode = route_top(table); rode; rode = route_next(rode)) {
+	for (rode = route_top(table); rode; rode = srcdest_route_next(rode)) {
 		if (rode->info == NULL)
 			continue;
 		rinfo = rode->info;
 
 		UNSET_FLAG(rinfo->flag, ISIS_ROUTE_FLAG_ACTIVE);
 	}
-}
-
-void isis_route_invalidate(struct isis_area *area)
-{
-	if (area->is_type & IS_LEVEL_1)
-		isis_route_invalidate_table(area, area->route_table[0]);
-	if (area->is_type & IS_LEVEL_2)
-		isis_route_invalidate_table(area, area->route_table[1]);
 }

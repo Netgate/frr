@@ -21,18 +21,21 @@
 #include "zebra/zebra_mpls.h"
 
 
-void kernel_add_lsp(zebra_lsp_t *lsp)
+enum dp_req_result kernel_add_lsp(zebra_lsp_t *lsp)
 {
+	return DP_REQUEST_FAILURE;
 }
 
 
-void kernel_upd_lsp(zebra_lsp_t *lsp)
+enum dp_req_result kernel_upd_lsp(zebra_lsp_t *lsp)
 {
+	return DP_REQUEST_FAILURE;
 }
 
 
-void kernel_del_lsp(zebra_lsp_t *lsp)
+enum dp_req_result kernel_del_lsp(zebra_lsp_t *lsp)
 {
+	return DP_REQUEST_FAILURE;
 }
 
 

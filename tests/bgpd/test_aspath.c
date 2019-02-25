@@ -25,8 +25,9 @@
 #include "privs.h"
 #include "queue.h"
 #include "filter.h"
+#include "frr_pthread.h"
 
-#include "bgpd/bgpd.h"
+#include "bgpd/bgpd.c"
 #include "bgpd/bgp_aspath.h"
 #include "bgpd/bgp_attr.h"
 #include "bgpd/bgp_packet.h"
@@ -66,7 +67,7 @@ struct test_spec {
 static struct test_segment {
 	const char *name;
 	const char *desc;
-	const u_char asdata[1024];
+	const uint8_t asdata[1024];
 	int len;
 	struct test_spec sp;
 } test_segments[] = {
@@ -916,7 +917,7 @@ struct compare_tests {
 };
 
 /* make an aspath from a data stream */
-static struct aspath *make_aspath(const u_char *data, size_t len, int use32bit)
+static struct aspath *make_aspath(const uint8_t *data, size_t len, int use32bit)
 {
 	struct stream *s = NULL;
 	struct aspath *as;
@@ -933,7 +934,7 @@ static struct aspath *make_aspath(const u_char *data, size_t len, int use32bit)
 	return as;
 }
 
-static void printbytes(const u_char *bytes, int len)
+static void printbytes(const uint8_t *bytes, int len)
 {
 	int i = 0;
 	while (i < len) {
@@ -951,7 +952,7 @@ static int validate(struct aspath *as, const struct test_spec *sp)
 {
 	size_t bytes, bytes4;
 	int fails = 0;
-	const u_char *out;
+	const uint8_t *out;
 	static struct stream *s;
 	struct aspath *asinout, *asconfeddel, *asstr, *as4;
 
@@ -1271,6 +1272,9 @@ static int handle_attr_test(struct aspath_tests *t)
 	int initfail = failed;
 	struct aspath *asp;
 	size_t datalen;
+
+	bgp_pthreads_init();
+	frr_pthread_get(PTHREAD_KEEPALIVES)->running = true;
 
 	asp = make_aspath(t->segment->asdata, t->segment->len, 0);
 

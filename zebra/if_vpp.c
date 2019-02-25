@@ -187,6 +187,7 @@ static int vpp_intf_convert_one_if(u32 ifi)
 			connected_add_ipv6(ifp,
 					   0,
 					   (struct in6_addr *)addr->ip,
+					   NULL,
 					   addr->prefix_length,
 					   NULL);
 		}
@@ -327,3 +328,37 @@ void vpp_link_change(sw_interface_event_t *event)
 
 }
 #endif
+
+uint32_t kernel_get_speed(struct interface *ifp)
+{
+	sw_interface_details_t *sw_if = NULL;
+	int ret;
+
+	ret = vmgmt_intf_interface_data_get(ifp->ifindex, NULL, NULL, &sw_if);
+	if (ret < 0 || sw_if == NULL) {
+		return 0;
+	}
+
+	switch (sw_if->link_speed) {
+	case 1:
+		return 10;
+	case 2:
+		return 100;
+	case 4:
+		return 1000;
+	case 8:
+		return 2500;
+	case 16:
+		return 5000;
+	case 32:
+		return 10000;
+	case 64:
+		return 20000;
+	case 128:
+		return 25000;
+	default:
+		break;
+	}
+
+	return 0;
+}

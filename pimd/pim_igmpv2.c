@@ -111,12 +111,18 @@ int igmp_v2_recv_report(struct igmp_sock *igmp, struct in_addr from,
 
 	on_trace(__PRETTY_FUNCTION__, igmp->interface, from);
 
+	if (igmp->mtrace_only)
+		return 0;
+
 	if (igmp_msg_len != IGMP_V12_MSG_SIZE) {
 		zlog_warn(
 			"Recv IGMPv2 REPORT from %s on %s: size=%d other than correct=%d",
 			from_str, ifp->name, igmp_msg_len, IGMP_V12_MSG_SIZE);
 		return -1;
 	}
+
+	/* Collecting IGMP Rx stats */
+	igmp->rx_stats.report_v2++;
 
 	memcpy(&group_addr, igmp_msg + 4, sizeof(struct in_addr));
 
@@ -154,12 +160,18 @@ int igmp_v2_recv_leave(struct igmp_sock *igmp, struct in_addr from,
 
 	on_trace(__PRETTY_FUNCTION__, igmp->interface, from);
 
+	if (igmp->mtrace_only)
+		return 0;
+
 	if (igmp_msg_len != IGMP_V12_MSG_SIZE) {
 		zlog_warn(
 			"Recv IGMPv2 LEAVE from %s on %s: size=%d other than correct=%d",
 			from_str, ifp->name, igmp_msg_len, IGMP_V12_MSG_SIZE);
 		return -1;
 	}
+
+	/* Collecting IGMP Rx stats */
+	igmp->rx_stats.leave_v2++;
 
 	memcpy(&group_addr, igmp_msg + 4, sizeof(struct in_addr));
 

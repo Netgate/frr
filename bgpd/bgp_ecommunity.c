@@ -33,6 +33,14 @@
 #include "bgpd/bgp_ecommunity.h"
 #include "bgpd/bgp_lcommunity.h"
 #include "bgpd/bgp_aspath.h"
+#include "bgpd/bgp_flowspec_private.h"
+#include "bgpd/bgp_pbr.h"
+
+/* struct used to dump the rate contained in FS set traffic-rate EC */
+union traffic_rate {
+	float rate_float;
+	uint8_t rate_byte[4];
+};
 
 /* Hash of community attribute. */
 static struct hash *ecomhash;
@@ -44,6 +52,11 @@ struct ecommunity *ecommunity_new(void)
 					    sizeof(struct ecommunity));
 }
 
+void ecommunity_strfree(char **s)
+{
+	XFREE(MTYPE_ECOMMUNITY_STR, *s);
+}
+
 /* Allocate ecommunities.  */
 void ecommunity_free(struct ecommunity **ecom)
 {
@@ -52,7 +65,6 @@ void ecommunity_free(struct ecommunity **ecom)
 	if ((*ecom)->str)
 		XFREE(MTYPE_ECOMMUNITY_STR, (*ecom)->str);
 	XFREE(MTYPE_ECOMMUNITY, *ecom);
-	ecom = NULL;
 }
 
 static void ecommunity_hash_free(struct ecommunity *ecom)
@@ -68,7 +80,7 @@ static void ecommunity_hash_free(struct ecommunity *ecom)
    else return 0.  */
 int ecommunity_add_val(struct ecommunity *ecom, struct ecommunity_val *eval)
 {
-	u_int8_t *p;
+	uint8_t *p;
 	int ret;
 	int c;
 
@@ -126,7 +138,7 @@ struct ecommunity *ecommunity_uniq_sort(struct ecommunity *ecom)
 }
 
 /* Parse Extended Communites Attribute in BGP packet.  */
-struct ecommunity *ecommunity_parse(u_int8_t *pnt, u_short length)
+struct ecommunity *ecommunity_parse(uint8_t *pnt, unsigned short length)
 {
 	struct ecommunity tmp;
 	struct ecommunity *new;
@@ -260,8 +272,7 @@ int ecommunity_cmp(const void *arg1, const void *arg2)
 /* Initialize Extended Comminities related hash. */
 void ecommunity_init(void)
 {
-	ecomhash = hash_create(ecommunity_hash_make,
-			       ecommunity_cmp,
+	ecomhash = hash_create(ecommunity_hash_make, ecommunity_cmp,
 			       "BGP ecommunity hash");
 }
 
@@ -284,8 +295,8 @@ enum ecommunity_token {
  * Encode BGP extended community from passed values. Supports types
  * defined in RFC 4360 and well-known sub-types.
  */
-static int ecommunity_encode(u_char type, u_char sub_type, int trans, as_t as,
-			     struct in_addr ip, u_int32_t val,
+static int ecommunity_encode(uint8_t type, uint8_t sub_type, int trans, as_t as,
+			     struct in_addr ip, uint32_t val,
 			     struct ecommunity_val *eval)
 {
 	assert(eval);
@@ -339,8 +350,8 @@ static const char *ecommunity_gettoken(const char *str,
 	char *endptr;
 	struct in_addr ip;
 	as_t as = 0;
-	u_int32_t val = 0;
-	u_char ecomm_type;
+	uint32_t val = 0;
+	uint8_t ecomm_type;
 	char buf[INET_ADDRSTRLEN + 1];
 
 	/* Skip white space. */
@@ -548,7 +559,7 @@ struct ecommunity *ecommunity_str2com(const char *str, int type,
 	return ecom;
 }
 
-static int ecommunity_rt_soo_str(char *buf, u_int8_t *pnt, int type,
+static int ecommunity_rt_soo_str(char *buf, uint8_t *pnt, int type,
 				 int sub_type, int format)
 {
 	int len = 0;
@@ -629,10 +640,10 @@ static int ecommunity_rt_soo_str(char *buf, u_int8_t *pnt, int type,
 char *ecommunity_ecom2str(struct ecommunity *ecom, int format, int filter)
 {
 	int i;
-	u_int8_t *pnt;
-	int type = 0;
-	int sub_type = 0;
-#define ECOMMUNITY_STR_DEFAULT_LEN  27
+	uint8_t *pnt;
+	uint8_t type = 0;
+	uint8_t sub_type = 0;
+#define ECOMMUNITY_STR_DEFAULT_LEN  64
 	int str_size;
 	int str_pnt;
 	char *str_buf;
@@ -662,8 +673,10 @@ char *ecommunity_ecom2str(struct ecommunity *ecom, int format, int filter)
 		}
 
 		/* Space between each value.  */
-		if (!first)
+		if (!first) {
 			str_buf[str_pnt++] = ' ';
+			len++;
+		}
 
 		pnt = ecom->val + (i * 8);
 
@@ -690,28 +703,31 @@ char *ecommunity_ecom2str(struct ecommunity *ecom, int format, int filter)
 				tunneltype = ntohs(tunneltype);
 				len = sprintf(str_buf + str_pnt, "ET:%d",
 					      tunneltype);
+			} else if (*pnt == ECOMMUNITY_EVPN_SUBTYPE_DEF_GW) {
+				len = sprintf(str_buf + str_pnt,
+					      "Default Gateway");
 			} else
 				unk_ecom = 1;
 		} else if (type == ECOMMUNITY_ENCODE_EVPN) {
 			if (filter == ECOMMUNITY_ROUTE_TARGET)
 				continue;
-			if (*pnt == ECOMMUNITY_SITE_ORIGIN) {
-				char macaddr[6];
+			if (*pnt == ECOMMUNITY_EVPN_SUBTYPE_ROUTERMAC) {
+				struct ethaddr rmac;
 				pnt++;
-				memcpy(&macaddr, pnt, 6);
+				memcpy(&rmac, pnt, ETH_ALEN);
 				len = sprintf(
 					str_buf + str_pnt,
-					"EVPN:%02x:%02x:%02x:%02x:%02x:%02x",
-					(uint8_t)macaddr[0],
-					(uint8_t)macaddr[1],
-					(uint8_t)macaddr[2],
-					(uint8_t)macaddr[3],
-					(uint8_t)macaddr[4],
-					(uint8_t)macaddr[5]);
+					"Rmac:%02x:%02x:%02x:%02x:%02x:%02x",
+					(uint8_t)rmac.octet[0],
+					(uint8_t)rmac.octet[1],
+					(uint8_t)rmac.octet[2],
+					(uint8_t)rmac.octet[3],
+					(uint8_t)rmac.octet[4],
+					(uint8_t)rmac.octet[5]);
 			} else if (*pnt
 				   == ECOMMUNITY_EVPN_SUBTYPE_MACMOBILITY) {
-				u_int32_t seqnum;
-				u_char flags = *++pnt;
+				uint32_t seqnum;
+				uint8_t flags = *++pnt;
 
 				memcpy(&seqnum, pnt + 2, 4);
 				seqnum = ntohl(seqnum);
@@ -723,13 +739,99 @@ char *ecommunity_ecom2str(struct ecommunity *ecom, int format, int filter)
 				else
 					len = sprintf(str_buf + str_pnt,
 						      "MM:%u", seqnum);
+			} else if (*pnt == ECOMMUNITY_EVPN_SUBTYPE_ND) {
+				uint8_t flags = *++pnt;
+
+				if (flags
+				    & ECOMMUNITY_EVPN_SUBTYPE_ND_ROUTER_FLAG)
+					len = sprintf(str_buf + str_pnt,
+						      "ND:Router Flag");
 			} else
 				unk_ecom = 1;
-		} else
+		} else if (type == ECOMMUNITY_ENCODE_REDIRECT_IP_NH) {
+			sub_type = *pnt++;
+			if (sub_type == ECOMMUNITY_REDIRECT_IP_NH) {
+				len = sprintf(
+					str_buf + str_pnt,
+					"FS:redirect IP 0x%x", *(pnt+5));
+			} else
+				unk_ecom = 1;
+		} else if (type == ECOMMUNITY_ENCODE_TRANS_EXP ||
+			   type == ECOMMUNITY_EXTENDED_COMMUNITY_PART_2 ||
+			   type == ECOMMUNITY_EXTENDED_COMMUNITY_PART_3) {
+			sub_type = *pnt++;
+			if (sub_type == ECOMMUNITY_REDIRECT_VRF) {
+				char buf[16];
+
+				memset(buf, 0, sizeof(buf));
+				ecommunity_rt_soo_str(buf, (uint8_t *)pnt,
+						      type &
+						      ~ECOMMUNITY_ENCODE_TRANS_EXP,
+						      ECOMMUNITY_ROUTE_TARGET,
+						      ECOMMUNITY_FORMAT_DISPLAY);
+				len = snprintf(str_buf + str_pnt,
+					       str_size - len,
+					       "FS:redirect VRF %s", buf);
+			} else if (type != ECOMMUNITY_ENCODE_TRANS_EXP)
+				unk_ecom = 1;
+			else if (sub_type == ECOMMUNITY_TRAFFIC_ACTION) {
+				char action[64];
+				char *ptr = action;
+
+				if (*(pnt+3) ==
+				    1 << FLOWSPEC_TRAFFIC_ACTION_TERMINAL)
+					ptr += snprintf(ptr, sizeof(action),
+							"terminate (apply)");
+				else
+					ptr += snprintf(ptr, sizeof(action),
+						       "eval stops");
+				if (*(pnt+3) ==
+				    1 << FLOWSPEC_TRAFFIC_ACTION_SAMPLE)
+					snprintf(ptr, sizeof(action) -
+						 (size_t)(ptr-action),
+						 ", sample");
+				len = snprintf(str_buf + str_pnt,
+					       str_size - len,
+					      "FS:action %s", action);
+			} else if (sub_type == ECOMMUNITY_TRAFFIC_RATE) {
+				union traffic_rate data;
+
+				data.rate_byte[3] = *(pnt+2);
+				data.rate_byte[2] = *(pnt+3);
+				data.rate_byte[1] = *(pnt+4);
+				data.rate_byte[0] = *(pnt+5);
+				len = sprintf(
+					str_buf + str_pnt,
+					"FS:rate %f", data.rate_float);
+			} else if (sub_type == ECOMMUNITY_TRAFFIC_MARKING) {
+				len = sprintf(
+					str_buf + str_pnt,
+					"FS:marking %u", *(pnt+5));
+			} else if (*pnt
+				   == ECOMMUNITY_EVPN_SUBTYPE_ES_IMPORT_RT) {
+				struct ethaddr mac;
+
+				pnt++;
+				memcpy(&mac, pnt, ETH_ALEN);
+				len = sprintf(
+					str_buf + str_pnt,
+					"ES-Import-Rt:%02x:%02x:%02x:%02x:%02x:%02x",
+					(uint8_t)mac.octet[0],
+					(uint8_t)mac.octet[1],
+					(uint8_t)mac.octet[2],
+					(uint8_t)mac.octet[3],
+					(uint8_t)mac.octet[4],
+					(uint8_t)mac.octet[5]);
+			} else
+				unk_ecom = 1;
+		} else {
+			sub_type = *pnt++;
 			unk_ecom = 1;
+		}
 
 		if (unk_ecom)
-			len = sprintf(str_buf + str_pnt, "?");
+			len = sprintf(str_buf + str_pnt, "UNK:%d, %d",
+				      type, sub_type);
 
 		str_pnt += len;
 		first = 0;
@@ -772,7 +874,7 @@ int ecommunity_match(const struct ecommunity *ecom1,
 extern struct ecommunity_val *ecommunity_lookup(const struct ecommunity *ecom,
 						uint8_t type, uint8_t subtype)
 {
-	u_int8_t *p;
+	uint8_t *p;
 	int c;
 
 	/* If the value already exists in the structure return 0.  */
@@ -793,7 +895,7 @@ extern struct ecommunity_val *ecommunity_lookup(const struct ecommunity *ecom,
 extern int ecommunity_strip(struct ecommunity *ecom, uint8_t type,
 			    uint8_t subtype)
 {
-	u_int8_t *p;
+	uint8_t *p;
 	int c, found = 0;
 	/* When this is fist value, just add it.  */
 	if (ecom == NULL || ecom->val == NULL) {
@@ -824,4 +926,89 @@ extern int ecommunity_strip(struct ecommunity *ecom, uint8_t type,
 	XFREE(MTYPE_ECOMMUNITY, ecom->val);
 	ecom->val = p;
 	return 1;
+}
+
+/*
+ * Remove specified extended community value from extended community.
+ * Returns 1 if value was present (and hence, removed), 0 otherwise.
+ */
+int ecommunity_del_val(struct ecommunity *ecom, struct ecommunity_val *eval)
+{
+	uint8_t *p;
+	int c, found = 0;
+
+	/* Make sure specified value exists. */
+	if (ecom == NULL || ecom->val == NULL)
+		return 0;
+	c = 0;
+	for (p = ecom->val; c < ecom->size; p += ECOMMUNITY_SIZE, c++) {
+		if (!memcmp(p, eval->val, ECOMMUNITY_SIZE)) {
+			found = 1;
+			break;
+		}
+	}
+	if (found == 0)
+		return 0;
+
+	/* Delete the selected value */
+	ecom->size--;
+	p = XMALLOC(MTYPE_ECOMMUNITY_VAL, ecom->size * ECOMMUNITY_SIZE);
+	if (c != 0)
+		memcpy(p, ecom->val, c * ECOMMUNITY_SIZE);
+	if ((ecom->size - c) != 0)
+		memcpy(p + (c)*ECOMMUNITY_SIZE,
+		       ecom->val + (c + 1) * ECOMMUNITY_SIZE,
+		       (ecom->size - c) * ECOMMUNITY_SIZE);
+	XFREE(MTYPE_ECOMMUNITY_VAL, ecom->val);
+	ecom->val = p;
+	return 1;
+}
+
+int ecommunity_fill_pbr_action(struct ecommunity_val *ecom_eval,
+			       struct bgp_pbr_entry_action *api)
+{
+	if (ecom_eval->val[1] == ECOMMUNITY_TRAFFIC_RATE) {
+		api->action = ACTION_TRAFFICRATE;
+		api->u.r.rate_info[3] = ecom_eval->val[4];
+		api->u.r.rate_info[2] = ecom_eval->val[5];
+		api->u.r.rate_info[1] = ecom_eval->val[6];
+		api->u.r.rate_info[0] = ecom_eval->val[7];
+	} else if (ecom_eval->val[1] == ECOMMUNITY_TRAFFIC_ACTION) {
+		api->action = ACTION_TRAFFIC_ACTION;
+		/* else distribute code is set by default */
+		if (ecom_eval->val[5] & (1 << FLOWSPEC_TRAFFIC_ACTION_TERMINAL))
+			api->u.za.filter |= TRAFFIC_ACTION_TERMINATE;
+		else
+			api->u.za.filter |= TRAFFIC_ACTION_DISTRIBUTE;
+		if (ecom_eval->val[5] == 1 << FLOWSPEC_TRAFFIC_ACTION_SAMPLE)
+			api->u.za.filter |= TRAFFIC_ACTION_SAMPLE;
+
+	} else if (ecom_eval->val[1] == ECOMMUNITY_TRAFFIC_MARKING) {
+		api->action = ACTION_MARKING;
+		api->u.marking_dscp = ecom_eval->val[7];
+	} else if (ecom_eval->val[1] == ECOMMUNITY_REDIRECT_VRF) {
+		/* must use external function */
+		return 0;
+	} else if (ecom_eval->val[1] == ECOMMUNITY_REDIRECT_IP_NH) {
+		/* see draft-ietf-idr-flowspec-redirect-ip-02
+		 * Q1: how come a ext. community can host ipv6 address
+		 * Q2 : from cisco documentation:
+		 * Announces the reachability of one or more flowspec NLRI.
+		 * When a BGP speaker receives an UPDATE message with the
+		 * redirect-to-IP extended community, it is expected to
+		 * create a traffic filtering rule for every flow-spec
+		 * NLRI in the message that has this path as its best
+		 * path. The filter entry matches the IP packets
+		 * described in the NLRI field and redirects them or
+		 * copies them towards the IPv4 or IPv6 address specified
+		 * in the 'Network Address of Next- Hop'
+		 * field of the associated MP_REACH_NLRI.
+		 */
+		struct ecommunity_ip *ip_ecom = (struct ecommunity_ip *)
+			ecom_eval + 2;
+
+		api->u.zr.redirect_ip_v4 = ip_ecom->ip;
+	} else
+		return -1;
+	return 0;
 }

@@ -50,7 +50,6 @@ void lcommunity_free(struct lcommunity **lcom)
 	if ((*lcom)->str)
 		XFREE(MTYPE_LCOMMUNITY_STR, (*lcom)->str);
 	XFREE(MTYPE_LCOMMUNITY, *lcom);
-	lcom = NULL;
 }
 
 static void lcommunity_hash_free(struct lcommunity *lcom)
@@ -66,7 +65,7 @@ static void lcommunity_hash_free(struct lcommunity *lcom)
 static int lcommunity_add_val(struct lcommunity *lcom,
 			      struct lcommunity_val *lval)
 {
-	u_int8_t *p;
+	uint8_t *p;
 	int ret;
 	int c;
 
@@ -124,7 +123,7 @@ struct lcommunity *lcommunity_uniq_sort(struct lcommunity *lcom)
 }
 
 /* Parse Large Communites Attribute in BGP packet.  */
-struct lcommunity *lcommunity_parse(u_int8_t *pnt, u_short length)
+struct lcommunity *lcommunity_parse(uint8_t *pnt, unsigned short length)
 {
 	struct lcommunity tmp;
 	struct lcommunity *new;
@@ -160,32 +159,95 @@ struct lcommunity *lcommunity_dup(struct lcommunity *lcom)
 	return new;
 }
 
-/* Retrun string representation of communities attribute. */
-char *lcommunity_str(struct lcommunity *lcom)
-{
-	if (!lcom->str)
-		lcom->str =
-			lcommunity_lcom2str(lcom, LCOMMUNITY_FORMAT_DISPLAY);
-	return lcom->str;
-}
-
 /* Merge two Large Communities Attribute structure.  */
 struct lcommunity *lcommunity_merge(struct lcommunity *lcom1,
 				    struct lcommunity *lcom2)
 {
 	if (lcom1->val)
-		lcom1->val =
-			XREALLOC(MTYPE_LCOMMUNITY_VAL, lcom1->val,
-				 lcom_length(lcom1) + lcom_length(lcom2));
+		lcom1->val = XREALLOC(MTYPE_LCOMMUNITY_VAL, lcom1->val,
+				      lcom_length(lcom1) + lcom_length(lcom2));
 	else
-		lcom1->val =
-			XMALLOC(MTYPE_LCOMMUNITY_VAL,
-				lcom_length(lcom1) + lcom_length(lcom2));
+		lcom1->val = XMALLOC(MTYPE_LCOMMUNITY_VAL,
+				     lcom_length(lcom1) + lcom_length(lcom2));
 
 	memcpy(lcom1->val + lcom_length(lcom1), lcom2->val, lcom_length(lcom2));
 	lcom1->size += lcom2->size;
 
 	return lcom1;
+}
+
+static void set_lcommunity_string(struct lcommunity *lcom, bool make_json)
+{
+	int i;
+	int len;
+	bool first = 1;
+	char *str_buf;
+	char *str_pnt;
+	uint8_t *pnt;
+	uint32_t global, local1, local2;
+	json_object *json_lcommunity_list = NULL;
+	json_object *json_string = NULL;
+
+#define LCOMMUNITY_STR_DEFAULT_LEN 32
+
+	if (!lcom)
+		return;
+
+	if (make_json) {
+		lcom->json = json_object_new_object();
+		json_lcommunity_list = json_object_new_array();
+	}
+
+	if (lcom->size == 0) {
+		str_buf = XMALLOC(MTYPE_LCOMMUNITY_STR, 1);
+		str_buf[0] = '\0';
+
+		if (make_json) {
+			json_object_string_add(lcom->json, "string", "");
+			json_object_object_add(lcom->json, "list",
+					       json_lcommunity_list);
+		}
+
+		lcom->str = str_buf;
+		return;
+	}
+
+	str_buf = str_pnt =
+		XMALLOC(MTYPE_LCOMMUNITY_STR,
+			(LCOMMUNITY_STR_DEFAULT_LEN * lcom->size) + 1);
+
+	for (i = 0; i < lcom->size; i++) {
+		if (first)
+			first = 0;
+		else
+			*str_pnt++ = ' ';
+
+		pnt = lcom->val + (i * LCOMMUNITY_SIZE);
+		pnt = ptr_get_be32(pnt, &global);
+		pnt = ptr_get_be32(pnt, &local1);
+		pnt = ptr_get_be32(pnt, &local2);
+		(void)pnt;
+
+		len = sprintf(str_pnt, "%u:%u:%u", global, local1, local2);
+		if (make_json) {
+			json_string = json_object_new_string(str_pnt);
+			json_object_array_add(json_lcommunity_list,
+					      json_string);
+		}
+
+		str_pnt += len;
+	}
+
+	str_buf =
+		XREALLOC(MTYPE_LCOMMUNITY_STR, str_buf, str_pnt - str_buf + 1);
+
+	if (make_json) {
+		json_object_string_add(lcom->json, "string", str_buf);
+		json_object_object_add(lcom->json, "list",
+				       json_lcommunity_list);
+	}
+
+	lcom->str = str_buf;
 }
 
 /* Intern Large Communities Attribute.  */
@@ -203,8 +265,7 @@ struct lcommunity *lcommunity_intern(struct lcommunity *lcom)
 	find->refcnt++;
 
 	if (!find->str)
-		find->str =
-			lcommunity_lcom2str(find, LCOMMUNITY_FORMAT_DISPLAY);
+		set_lcommunity_string(find, false);
 
 	return find;
 }
@@ -227,6 +288,21 @@ void lcommunity_unintern(struct lcommunity **lcom)
 	}
 }
 
+/* Retrun string representation of communities attribute. */
+char *lcommunity_str(struct lcommunity *lcom, bool make_json)
+{
+	if (!lcom)
+		return NULL;
+
+	if (make_json && !lcom->json && lcom->str)
+		XFREE(MTYPE_LCOMMUNITY_STR, lcom->str);
+
+	if (!lcom->str)
+		set_lcommunity_string(lcom, make_json);
+
+	return lcom->str;
+}
+
 /* Utility function to make hash key.  */
 unsigned int lcommunity_hash_make(void *arg)
 {
@@ -243,8 +319,7 @@ int lcommunity_cmp(const void *arg1, const void *arg2)
 	const struct lcommunity *lcom2 = arg2;
 
 	return (lcom1->size == lcom2->size
-		&& memcmp(lcom1->val, lcom2->val, lcom_length(lcom1))
-			   == 0);
+		&& memcmp(lcom1->val, lcom2->val, lcom_length(lcom1)) == 0);
 }
 
 /* Return communities hash.  */
@@ -256,8 +331,7 @@ struct hash *lcommunity_hash(void)
 /* Initialize Large Comminities related hash. */
 void lcommunity_init(void)
 {
-	lcomhash = hash_create(lcommunity_hash_make,
-			       lcommunity_cmp,
+	lcomhash = hash_create(lcommunity_hash_make, lcommunity_cmp,
 			       "BGP lcommunity hash");
 }
 
@@ -295,9 +369,9 @@ static const char *lcommunity_gettoken(const char *str,
 	if (isdigit((int)*p)) {
 		int separator = 0;
 		int digit = 0;
-		u_int32_t globaladmin = 0;
-		u_int32_t localdata1 = 0;
-		u_int32_t localdata2 = 0;
+		uint32_t globaladmin = 0;
+		uint32_t localdata1 = 0;
+		uint32_t localdata2 = 0;
 
 		while (isdigit((int)*p) || *p == ':') {
 			if (*p == ':') {
@@ -379,10 +453,10 @@ struct lcommunity *lcommunity_str2com(const char *str)
 	return lcom;
 }
 
-int lcommunity_include(struct lcommunity *lcom, u_char *ptr)
+int lcommunity_include(struct lcommunity *lcom, uint8_t *ptr)
 {
 	int i;
-	u_char *lcom_ptr;
+	uint8_t *lcom_ptr;
 
 	for (i = 0; i < lcom->size; i++) {
 		lcom_ptr = lcom->val + (i * LCOMMUNITY_SIZE);
@@ -390,59 +464,6 @@ int lcommunity_include(struct lcommunity *lcom, u_char *ptr)
 			return 1;
 	}
 	return 0;
-}
-
-/* Convert large community attribute to string.
-   The large coms will be in 65535:65531:0 format.
-*/
-char *lcommunity_lcom2str(struct lcommunity *lcom, int format)
-{
-	int i;
-	u_int8_t *pnt;
-#define LCOMMUNITY_STR_DEFAULT_LEN  40
-	int str_size;
-	int str_pnt;
-	char *str_buf;
-	int len = 0;
-	int first = 1;
-	u_int32_t globaladmin, localdata1, localdata2;
-
-	if (lcom->size == 0) {
-		str_buf = XMALLOC(MTYPE_LCOMMUNITY_STR, 1);
-		str_buf[0] = '\0';
-		return str_buf;
-	}
-
-	/* Prepare buffer.  */
-	str_buf = XMALLOC(MTYPE_LCOMMUNITY_STR, LCOMMUNITY_STR_DEFAULT_LEN + 1);
-	str_size = LCOMMUNITY_STR_DEFAULT_LEN + 1;
-	str_pnt = 0;
-
-	for (i = 0; i < lcom->size; i++) {
-		/* Make it sure size is enough.  */
-		while (str_pnt + LCOMMUNITY_STR_DEFAULT_LEN >= str_size) {
-			str_size *= 2;
-			str_buf = XREALLOC(MTYPE_LCOMMUNITY_STR, str_buf,
-					   str_size);
-		}
-
-		/* Space between each value.  */
-		if (!first)
-			str_buf[str_pnt++] = ' ';
-
-		pnt = lcom->val + (i * LCOMMUNITY_SIZE);
-
-		pnt = ptr_get_be32(pnt, &globaladmin);
-		pnt = ptr_get_be32(pnt, &localdata1);
-		pnt = ptr_get_be32(pnt, &localdata2);
-		(void)pnt; /* consume value */
-
-		len = sprintf(str_buf + str_pnt, "%u:%u:%u", globaladmin,
-			      localdata1, localdata2);
-		str_pnt += len;
-		first = 0;
-	}
-	return str_buf;
 }
 
 int lcommunity_match(const struct lcommunity *lcom1,
@@ -462,8 +483,8 @@ int lcommunity_match(const struct lcommunity *lcom1,
 
 	/* Every community on com2 needs to be on com1 for this to match */
 	while (i < lcom1->size && j < lcom2->size) {
-		if (memcmp(lcom1->val + (i * LCOMMUNITY_SIZE), lcom2->val + (j * LCOMMUNITY_SIZE),
-			   LCOMMUNITY_SIZE)
+		if (memcmp(lcom1->val + (i * LCOMMUNITY_SIZE),
+			   lcom2->val + (j * LCOMMUNITY_SIZE), LCOMMUNITY_SIZE)
 		    == 0)
 			j++;
 		i++;
@@ -476,7 +497,7 @@ int lcommunity_match(const struct lcommunity *lcom1,
 }
 
 /* Delete one lcommunity. */
-void lcommunity_del_val(struct lcommunity *lcom, u_char *ptr)
+void lcommunity_del_val(struct lcommunity *lcom, uint8_t *ptr)
 {
 	int i = 0;
 	int c = 0;
@@ -499,8 +520,8 @@ void lcommunity_del_val(struct lcommunity *lcom, u_char *ptr)
 
 			if (lcom->size > 0)
 				lcom->val =
-					XREALLOC(MTYPE_LCOMMUNITY_VAL, lcom->val,
-						 lcom_length(lcom));
+					XREALLOC(MTYPE_LCOMMUNITY_VAL,
+						 lcom->val, lcom_length(lcom));
 			else {
 				XFREE(MTYPE_LCOMMUNITY_VAL, lcom->val);
 				lcom->val = NULL;

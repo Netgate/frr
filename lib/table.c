@@ -142,20 +142,26 @@ static void route_table_free(struct route_table *rt)
 }
 
 /* Utility mask array. */
-static const u_char maskbit[] = {0x00, 0x80, 0xc0, 0xe0, 0xf0,
-				 0xf8, 0xfc, 0xfe, 0xff};
+static const uint8_t maskbit[] = {0x00, 0x80, 0xc0, 0xe0, 0xf0,
+				  0xf8, 0xfc, 0xfe, 0xff};
 
 /* Common prefix route genaration. */
 static void route_common(const struct prefix *n, const struct prefix *p,
 			 struct prefix *new)
 {
 	int i;
-	u_char diff;
-	u_char mask;
+	uint8_t diff;
+	uint8_t mask;
+	const uint8_t *np;
+	const uint8_t *pp;
+	uint8_t *newp;
 
-	const u_char *np = (const u_char *)&n->u.prefix;
-	const u_char *pp = (const u_char *)&p->u.prefix;
-	u_char *newp = (u_char *)&new->u.prefix;
+	if (n->family == AF_FLOWSPEC)
+		return prefix_copy(new, p);
+	np = (const uint8_t *)&n->u.prefix;
+	pp = (const uint8_t *)&p->u.prefix;
+
+	newp = (uint8_t *)&new->u.prefix;
 
 	for (i = 0; i < p->prefixlen / 8; i++) {
 		if (np[i] == pp[i])
@@ -277,8 +283,8 @@ struct route_node *route_node_get(struct route_table *const table,
 	struct route_node *node;
 	struct route_node *match;
 	struct route_node *inserted;
-	u_char prefixlen = p->prefixlen;
-	const u_char *prefix = &p->u.prefix;
+	uint8_t prefixlen = p->prefixlen;
+	const uint8_t *prefix = &p->u.prefix;
 
 	apply_mask((struct prefix *)p);
 	node = hash_get(table->hash, (void *)p, NULL);

@@ -31,6 +31,7 @@
 #include "prefix.h"
 #include "nexthop.h"
 #include "mpls.h"
+#include "jhash.h"
 
 DEFINE_MTYPE_STATIC(LIB, NEXTHOP, "Nexthop")
 DEFINE_MTYPE_STATIC(LIB, NH_LABEL, "Nexthop label")
@@ -71,18 +72,16 @@ int nexthop_same_no_recurse(const struct nexthop *next1,
 	return 1;
 }
 
-int
-nexthop_same_firsthop (struct nexthop *next1, struct nexthop *next2)
+int nexthop_same_firsthop(struct nexthop *next1, struct nexthop *next2)
 {
 	int type1 = NEXTHOP_FIRSTHOPTYPE(next1->type);
 	int type2 = NEXTHOP_FIRSTHOPTYPE(next2->type);
 
 	if (type1 != type2)
 		return 0;
-	switch (type1)
-	{
+	switch (type1) {
 	case NEXTHOP_TYPE_IPV4_IFINDEX:
-		if (! IPV4_ADDR_SAME (&next1->gate.ipv4, &next2->gate.ipv4))
+		if (!IPV4_ADDR_SAME(&next1->gate.ipv4, &next2->gate.ipv4))
 			return 0;
 		if (next1->ifindex != next2->ifindex)
 			return 0;
@@ -92,7 +91,7 @@ nexthop_same_firsthop (struct nexthop *next1, struct nexthop *next2)
 			return 0;
 		break;
 	case NEXTHOP_TYPE_IPV6_IFINDEX:
-		if (! IPV6_ADDR_SAME (&next1->gate.ipv6, &next2->gate.ipv6))
+		if (!IPV6_ADDR_SAME(&next1->gate.ipv6, &next2->gate.ipv6))
 			return 0;
 		if (next1->ifindex != next2->ifindex)
 			return 0;
@@ -124,7 +123,7 @@ const char *nexthop_type_to_str(enum nexthop_types_t nh_type)
  */
 int nexthop_labels_match(struct nexthop *nh1, struct nexthop *nh2)
 {
-	struct nexthop_label *nhl1, *nhl2;
+	struct mpls_label_stack *nhl1, *nhl2;
 
 	nhl1 = nh1->nh_label;
 	nhl2 = nh2->nh_label;
@@ -143,47 +142,6 @@ int nexthop_labels_match(struct nexthop *nh1, struct nexthop *nh2)
 struct nexthop *nexthop_new(void)
 {
 	return XCALLOC(MTYPE_NEXTHOP, sizeof(struct nexthop));
-}
-
-/* Add nexthop to the end of a nexthop list.  */
-void nexthop_add(struct nexthop **target, struct nexthop *nexthop)
-{
-	struct nexthop *last;
-
-	for (last = *target; last && last->next; last = last->next)
-		;
-	if (last)
-		last->next = nexthop;
-	else
-		*target = nexthop;
-	nexthop->prev = last;
-}
-
-void copy_nexthops(struct nexthop **tnh, struct nexthop *nh,
-		   struct nexthop *rparent)
-{
-	struct nexthop *nexthop;
-	struct nexthop *nh1;
-
-	for (nh1 = nh; nh1; nh1 = nh1->next) {
-		nexthop = nexthop_new();
-		nexthop->ifindex = nh1->ifindex;
-		nexthop->type = nh1->type;
-		nexthop->flags = nh1->flags;
-		memcpy(&nexthop->gate, &nh1->gate, sizeof(nh1->gate));
-		memcpy(&nexthop->src, &nh1->src, sizeof(nh1->src));
-		memcpy(&nexthop->rmap_src, &nh1->rmap_src, sizeof(nh1->rmap_src));
-		nexthop->rparent = rparent;
-		if (nh1->nh_label)
-			nexthop_add_labels(nexthop, nh1->nh_label_type,
-					   nh1->nh_label->num_labels,
-					   &nh1->nh_label->label[0]);
-		nexthop_add(tnh, nexthop);
-
-		if (CHECK_FLAG(nh1->flags, NEXTHOP_FLAG_RECURSIVE))
-			copy_nexthops(&nexthop->resolved, nh1->resolved,
-				      nexthop);
-	}
 }
 
 /* Free nexthop. */
@@ -206,16 +164,67 @@ void nexthops_free(struct nexthop *nexthop)
 	}
 }
 
+bool nexthop_same(const struct nexthop *nh1, const struct nexthop *nh2)
+{
+	if (nh1 && !nh2)
+		return false;
+
+	if (!nh1 && nh2)
+		return false;
+
+	if (nh1 == nh2)
+		return true;
+
+	if (nh1->vrf_id != nh2->vrf_id)
+		return false;
+
+	if (nh1->type != nh2->type)
+		return false;
+
+	switch (nh1->type) {
+	case NEXTHOP_TYPE_IFINDEX:
+		if (nh1->ifindex != nh2->ifindex)
+			return false;
+		break;
+	case NEXTHOP_TYPE_IPV4:
+		if (nh1->gate.ipv4.s_addr != nh2->gate.ipv4.s_addr)
+			return false;
+		break;
+	case NEXTHOP_TYPE_IPV4_IFINDEX:
+		if (nh1->gate.ipv4.s_addr != nh2->gate.ipv4.s_addr)
+			return false;
+		if (nh1->ifindex != nh2->ifindex)
+			return false;
+		break;
+	case NEXTHOP_TYPE_IPV6:
+		if (memcmp(&nh1->gate.ipv6, &nh2->gate.ipv6, 16))
+			return false;
+		break;
+	case NEXTHOP_TYPE_IPV6_IFINDEX:
+		if (memcmp(&nh1->gate.ipv6, &nh2->gate.ipv6, 16))
+			return false;
+		if (nh1->ifindex != nh2->ifindex)
+			return false;
+		break;
+	case NEXTHOP_TYPE_BLACKHOLE:
+		if (nh1->bh_type != nh2->bh_type)
+			return false;
+		break;
+	}
+
+	return true;
+}
+
 /* Update nexthop with label information. */
 void nexthop_add_labels(struct nexthop *nexthop, enum lsp_types_t type,
-			u_int8_t num_labels, mpls_label_t *label)
+			uint8_t num_labels, mpls_label_t *label)
 {
-	struct nexthop_label *nh_label;
+	struct mpls_label_stack *nh_label;
 	int i;
 
 	nexthop->nh_label_type = type;
 	nh_label = XCALLOC(MTYPE_NH_LABEL,
-			   sizeof(struct nexthop_label)
+			   sizeof(struct mpls_label_stack)
 				   + num_labels * sizeof(mpls_label_t));
 	nh_label->num_labels = num_labels;
 	for (i = 0; i < num_labels; i++)
@@ -232,7 +241,7 @@ void nexthop_del_labels(struct nexthop *nexthop)
 	}
 }
 
-const char *nexthop2str(struct nexthop *nexthop, char *str, int size)
+const char *nexthop2str(const struct nexthop *nexthop, char *str, int size)
 {
 	switch (nexthop->type) {
 	case NEXTHOP_TYPE_IFINDEX:
@@ -301,4 +310,16 @@ unsigned int nexthop_level(struct nexthop *nexthop)
 		rv++;
 
 	return rv;
+}
+
+uint32_t nexthop_hash(struct nexthop *nexthop)
+{
+	uint32_t key;
+
+	key = jhash_1word(nexthop->vrf_id, 0x45afe398);
+	key = jhash_1word(nexthop->ifindex, key);
+	key = jhash_1word(nexthop->type, key);
+	key = jhash(&nexthop->gate, sizeof(union g_addr), key);
+
+	return key;
 }

@@ -34,6 +34,7 @@
 #include "lib/skiplist.h"
 #include "lib/thread.h"
 #include "lib/stream.h"
+#include "lib/lib_errors.h"
 
 #include "bgpd/bgpd.h"
 #include "bgpd/bgp_ecommunity.h"
@@ -503,7 +504,7 @@ int rfapiGetUnAddrOfVpnBi(struct bgp_info *bi, struct prefix *p)
  */
 static struct bgp_info *rfapiBgpInfoCreate(struct attr *attr, struct peer *peer,
 					   void *rfd, struct prefix_rd *prd,
-					   u_char type, u_char sub_type,
+					   uint8_t type, uint8_t sub_type,
 					   uint32_t *label)
 {
 	struct bgp_info *new;
@@ -521,7 +522,7 @@ static struct bgp_info *rfapiBgpInfoCreate(struct attr *attr, struct peer *peer,
 		rfapi_time(&new->extra->vnc.import.create_time);
 	}
 	if (label)
-		encode_label(*label, &new->extra->label);
+		encode_label(*label, &new->extra->label[0]);
 	new->type = type;
 	new->sub_type = sub_type;
 	new->peer = peer;
@@ -1083,9 +1084,8 @@ int rfapiEcommunityGetEthernetTag(struct ecommunity *ecom, uint16_t *tag_id)
 				} else if (encode == ECOMMUNITY_ENCODE_AS) {
 					as = (*p++ << 8);
 					as |= (*p++);
-					p +=
-						2; /* skip next two, tag/vid
-						      always in lowest bytes */
+					p += 2; /* skip next two, tag/vid
+						   always in lowest bytes */
 				}
 				if (as == bgp->as) {
 					*tag_id = *p++ << 8;
@@ -1221,8 +1221,7 @@ static int rfapiVpnBiSamePtUn(struct bgp_info *bi1, struct bgp_info *bi2)
 
 	switch (pfx_un1.family) {
 	case AF_INET:
-		if (!IPV4_ADDR_SAME(&pfx_un1.u.prefix4,
-				    &pfx_un2.u.prefix4))
+		if (!IPV4_ADDR_SAME(&pfx_un1.u.prefix4, &pfx_un2.u.prefix4))
 			return 0;
 		break;
 	case AF_INET6:
@@ -1338,7 +1337,7 @@ rfapiRouteInfo2NextHopEntry(struct rfapi_ip_prefix *rprefix,
 		vo->v.l2addr.local_nve_id = bi->extra->vnc.import.rd.val[1];
 
 		/* label comes from MP_REACH_NLRI label */
-		vo->v.l2addr.label = decode_label(&bi->extra->label);
+		vo->v.l2addr.label = decode_label(&bi->extra->label[0]);
 
 		new->vn_options = vo;
 
@@ -1545,10 +1544,15 @@ static int rfapiNhlAddNodeRoutes(
 	int count = 0;
 	int is_l2 = (rn->p.family == AF_ETHERNET);
 
-	if (rfapiRibFTDFilterRecentPrefix(
-		    (struct rfapi_descriptor *)(rfd_rib_node->table->info), rn,
-		    pfx_target_original)) {
-		return 0;
+	if (rfd_rib_node && rfd_rib_node->table && rfd_rib_node->table->info) {
+		struct rfapi_descriptor *rfd;
+
+		rfd = (struct rfapi_descriptor *)(rfd_rib_node->table->info);
+
+		if (rfapiRibFTDFilterRecentPrefix(
+			rfd, rn, pfx_target_original))
+
+			return 0;
 	}
 
 	seen_nexthops =
@@ -2235,9 +2239,9 @@ static struct bgp_info *rfapiItBiIndexSearch(
 
 				vnc_zlog_debug_verbose(
 					"%s: bi has prd=%s, peer=%p", __func__,
-					prefix_rd2str(&bi_result->extra->vnc.import.rd,
-						      buf,
-						      sizeof(buf)),
+					prefix_rd2str(&bi_result->extra->vnc
+							       .import.rd,
+						      buf, sizeof(buf)),
 					bi_result->peer);
 			}
 #endif
@@ -2799,19 +2803,16 @@ rfapiBiStartWithdrawTimer(struct rfapi_import_table *import_table,
 	uint32_t lifetime;
 	struct rfapi_withdraw *wcb;
 
-	if
-		CHECK_FLAG(bi->flags, BGP_INFO_REMOVED)
-		{
-			/*
-			 * Already on the path to being withdrawn,
-			 * should already have a timer set up to
-			 * delete it.
-			 */
-			vnc_zlog_debug_verbose(
-				"%s: already being withdrawn, do nothing",
-				__func__);
-			return;
-		}
+	if (CHECK_FLAG(bi->flags, BGP_INFO_REMOVED)) {
+		/*
+		 * Already on the path to being withdrawn,
+		 * should already have a timer set up to
+		 * delete it.
+		 */
+		vnc_zlog_debug_verbose(
+			"%s: already being withdrawn, do nothing", __func__);
+		return;
+	}
 
 	rfapiGetVncLifetime(bi->attr, &lifetime);
 	vnc_zlog_debug_verbose("%s: VNC lifetime is %u", __func__, lifetime);
@@ -2881,7 +2882,7 @@ typedef void(rfapi_bi_filtered_import_f)(struct rfapi_import_table *, int,
 					 struct peer *, void *, struct prefix *,
 					 struct prefix *, afi_t,
 					 struct prefix_rd *, struct attr *,
-					 u_char, u_char, uint32_t *);
+					 uint8_t, uint8_t, uint32_t *);
 
 
 static void rfapiExpireEncapNow(struct rfapi_import_table *it,
@@ -2934,8 +2935,8 @@ static void rfapiBgpInfoFilteredImportEncap(
 	struct prefix *aux_prefix, /* Unused for encap routes */
 	afi_t afi, struct prefix_rd *prd,
 	struct attr *attr, /* part of bgp_info */
-	u_char type,       /* part of bgp_info */
-	u_char sub_type,   /* part of bgp_info */
+	uint8_t type,      /* part of bgp_info */
+	uint8_t sub_type,  /* part of bgp_info */
 	uint32_t *label)   /* part of bgp_info */
 {
 	struct route_table *rt = NULL;
@@ -3028,7 +3029,7 @@ static void rfapiBgpInfoFilteredImportEncap(
 		break;
 
 	default:
-		zlog_err("%s: bad afi %d", __func__, afi);
+		flog_err(LIB_ERR_DEVELOPMENT, "%s: bad afi %d", __func__, afi);
 		return;
 	}
 
@@ -3393,8 +3394,8 @@ void rfapiBgpInfoFilteredImportVPN(
 	struct prefix *aux_prefix, /* AFI_L2VPN: optional IP */
 	afi_t afi, struct prefix_rd *prd,
 	struct attr *attr, /* part of bgp_info */
-	u_char type,       /* part of bgp_info */
-	u_char sub_type,   /* part of bgp_info */
+	uint8_t type,      /* part of bgp_info */
+	uint8_t sub_type,  /* part of bgp_info */
 	uint32_t *label)   /* part of bgp_info */
 {
 	struct route_table *rt = NULL;
@@ -3485,7 +3486,7 @@ void rfapiBgpInfoFilteredImportVPN(
 		break;
 
 	default:
-		zlog_err("%s: bad afi %d", __func__, afi);
+		flog_err(LIB_ERR_DEVELOPMENT, "%s: bad afi %d", __func__, afi);
 		return;
 	}
 
@@ -3871,8 +3872,8 @@ static void rfapiBgpInfoFilteredImportBadSafi(
 	struct prefix *aux_prefix, /* AFI_L2VPN: optional IP */
 	afi_t afi, struct prefix_rd *prd,
 	struct attr *attr, /* part of bgp_info */
-	u_char type,       /* part of bgp_info */
-	u_char sub_type,   /* part of bgp_info */
+	uint8_t type,      /* part of bgp_info */
+	uint8_t sub_type,  /* part of bgp_info */
 	uint32_t *label)   /* part of bgp_info */
 {
 	vnc_zlog_debug_verbose("%s: Error, bad safi", __func__);
@@ -3890,7 +3891,8 @@ rfapiBgpInfoFilteredImportFunction(safi_t safi)
 
 	default:
 		/* not expected */
-		zlog_err("%s: bad safi %d", __func__, safi);
+		flog_err(LIB_ERR_DEVELOPMENT, "%s: bad safi %d", __func__,
+			  safi);
 		return rfapiBgpInfoFilteredImportBadSafi;
 	}
 }
@@ -3898,8 +3900,8 @@ rfapiBgpInfoFilteredImportFunction(safi_t safi)
 void rfapiProcessUpdate(struct peer *peer,
 			void *rfd, /* set when looped from RFP/RFAPI */
 			struct prefix *p, struct prefix_rd *prd,
-			struct attr *attr, afi_t afi, safi_t safi, u_char type,
-			u_char sub_type, uint32_t *label)
+			struct attr *attr, afi_t afi, safi_t safi, uint8_t type,
+			uint8_t sub_type, uint32_t *label)
 {
 	struct bgp *bgp;
 	struct rfapi *h;
@@ -3983,7 +3985,7 @@ void rfapiProcessUpdate(struct peer *peer,
 
 void rfapiProcessWithdraw(struct peer *peer, void *rfd, struct prefix *p,
 			  struct prefix_rd *prd, struct attr *attr, afi_t afi,
-			  safi_t safi, u_char type, int kill)
+			  safi_t safi, uint8_t type, int kill)
 {
 	struct bgp *bgp;
 	struct rfapi *h;
@@ -4234,7 +4236,7 @@ static void rfapiBgpTableFilteredImport(struct bgp *bgp,
 				struct bgp_info *bi;
 
 				for (bi = rn2->info; bi; bi = bi->next) {
-					u_int32_t label = 0;
+					uint32_t label = 0;
 
 					if (CHECK_FLAG(bi->flags,
 						       BGP_INFO_REMOVED))
@@ -4242,7 +4244,7 @@ static void rfapiBgpTableFilteredImport(struct bgp *bgp,
 
 					if (bi->extra)
 						label = decode_label(
-							&bi->extra->label);
+							&bi->extra->label[0]);
 					(*rfapiBgpInfoFilteredImportFunction(
 						safi))(
 						it, /* which import table */
@@ -4338,7 +4340,7 @@ void bgp_rfapi_destroy(struct bgp *bgp, struct rfapi *h)
 		h->import_mac = NULL;
 	}
 
-	work_queue_free(h->deferred_close_q);
+	work_queue_free_and_null(&h->deferred_close_q);
 
 	if (h->rfp != NULL)
 		rfp_stop(h->rfp);

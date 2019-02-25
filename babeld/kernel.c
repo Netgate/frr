@@ -73,9 +73,9 @@ kernel_interface_wireless(struct interface *interface)
 }
 
 int
-kernel_route(int operation, const unsigned char *pref, unsigned short plen,
-             const unsigned char *gate, int ifindex, unsigned int metric,
-             const unsigned char *newgate, int newifindex,
+kernel_route(enum babel_kernel_routes operation, const unsigned char *pref,
+	     unsigned short plen, const unsigned char *gate, int ifindex,
+	     unsigned int metric, const unsigned char *newgate, int newifindex,
              unsigned int newmetric)
 {
     int rc;
@@ -116,12 +116,9 @@ kernel_route(int operation, const unsigned char *pref, unsigned short plen,
                              newmetric);
             return rc;
             break;
-        default:
-            zlog_err("this should never happen (false value - kernel_route)");
-            assert(0);
-            exit(1);
-            break;
     }
+
+    return 0;
 }
 
 static int
@@ -174,8 +171,8 @@ zebra_route(int add, int family, const unsigned char *pref, unsigned short plen,
         SET_FLAG(api.message, ZAPI_MESSAGE_NEXTHOP);
         api.nexthop_num = 1;
         api_nh->ifindex = ifindex;
-
-        switch (family) {
+	api_nh->vrf_id = VRF_DEFAULT;
+	switch (family) {
         case AF_INET:
             uchar_to_inaddr(&api_nh->gate.ipv4, gate);
             if (IPV4_ADDR_SAME (&api_nh->gate.ipv4, &quagga_prefix.u.prefix4) &&
@@ -210,7 +207,7 @@ if_eui64(int ifindex, unsigned char *eui)
         return -1;
     }
 
-    u_char len = (u_char) ifp->hw_addr_len;
+    uint8_t len = (uint8_t)ifp->hw_addr_len;
     char *tmp = (void*) ifp->hw_addr;
 
     if (len == 8) {

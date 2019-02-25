@@ -177,20 +177,20 @@ struct if_stats {
 
 /* Link Parameters for Traffic Engineering */
 struct if_link_params {
-	u_int32_t lp_status; /* Status of Link Parameters: */
-	u_int32_t te_metric; /* Traffic Engineering metric */
+	uint32_t lp_status; /* Status of Link Parameters: */
+	uint32_t te_metric; /* Traffic Engineering metric */
 	float default_bw;
 	float max_bw;			/* Maximum Bandwidth */
 	float max_rsv_bw;		/* Maximum Reservable Bandwidth */
 	float unrsv_bw[MAX_CLASS_TYPE]; /* Unreserved Bandwidth per Class Type
 					   (8) */
-	u_int32_t admin_grp;		/* Administrative group */
-	u_int32_t rmt_as;		/* Remote AS number */
+	uint32_t admin_grp;		/* Administrative group */
+	uint32_t rmt_as;		/* Remote AS number */
 	struct in_addr rmt_ip;		/* Remote IP address */
-	u_int32_t av_delay;		/* Link Average Delay */
-	u_int32_t min_delay;		/* Link Min Delay */
-	u_int32_t max_delay;		/* Link Max Delay */
-	u_int32_t delay_var;		/* Link Delay Variation */
+	uint32_t av_delay;		/* Link Average Delay */
+	uint32_t min_delay;		/* Link Min Delay */
+	uint32_t max_delay;		/* Link Max Delay */
+	uint32_t delay_var;		/* Link Delay Variation */
 	float pkt_loss;			/* Link Packet Loss */
 	float res_bw;			/* Residual Bandwidth */
 	float ava_bw;			/* Available Bandwidth */
@@ -225,7 +225,7 @@ struct interface {
 #define IFINDEX_INTERNAL	0
 
 	/* Zebra internal interface status */
-	u_char status;
+	uint8_t status;
 #define ZEBRA_INTERFACE_ACTIVE     (1 << 0)
 #define ZEBRA_INTERFACE_SUB        (1 << 1)
 #define ZEBRA_INTERFACE_LINKDETECTION (1 << 2)
@@ -248,7 +248,7 @@ struct interface {
 
 	/* Link-layer information and hardware address */
 	enum zebra_link_type ll_type;
-	u_char hw_addr[INTERFACE_HWADDR_MAX];
+	uint8_t hw_addr[INTERFACE_HWADDR_MAX];
 	int hw_addr_len;
 
 	/* interface bandwidth, kbits */
@@ -289,6 +289,7 @@ struct interface {
 
 	QOBJ_FIELDS
 };
+
 RB_HEAD(if_name_head, interface);
 RB_PROTOTYPE(if_name_head, interface, name_entry, if_cmp_func);
 RB_HEAD(if_index_head, interface);
@@ -297,28 +298,32 @@ DECLARE_QOBJ_TYPE(interface)
 
 #define IFNAME_RB_INSERT(vrf, ifp)                                             \
 	if (RB_INSERT(if_name_head, &vrf->ifaces_by_name, (ifp)))              \
-		zlog_err(                                                      \
+		flog_err(                                                     \
+			LIB_ERR_INTERFACE,                                     \
 			"%s(%s): corruption detected -- interface with this "  \
 			"name exists already in VRF %u!",                      \
 			__func__, (ifp)->name, (ifp)->vrf_id);
 
 #define IFNAME_RB_REMOVE(vrf, ifp)                                             \
 	if (RB_REMOVE(if_name_head, &vrf->ifaces_by_name, (ifp)) == NULL)      \
-		zlog_err(                                                      \
+		flog_err(                                                     \
+			LIB_ERR_INTERFACE,                                     \
 			"%s(%s): corruption detected -- interface with this "  \
 			"name doesn't exist in VRF %u!",                       \
 			__func__, (ifp)->name, (ifp)->vrf_id);
 
 #define IFINDEX_RB_INSERT(vrf, ifp)                                            \
 	if (RB_INSERT(if_index_head, &vrf->ifaces_by_index, (ifp)))            \
-		zlog_err(                                                      \
+		flog_err(                                                     \
+			LIB_ERR_INTERFACE,                                     \
 			"%s(%u): corruption detected -- interface with this "  \
 			"ifindex exists already in VRF %u!",                   \
 			__func__, (ifp)->ifindex, (ifp)->vrf_id);
 
 #define IFINDEX_RB_REMOVE(vrf, ifp)                                            \
 	if (RB_REMOVE(if_index_head, &vrf->ifaces_by_index, (ifp)) == NULL)    \
-		zlog_err(                                                      \
+		flog_err(                                                     \
+			LIB_ERR_INTERFACE,                                     \
 			"%s(%u): corruption detected -- interface with this "  \
 			"ifindex doesn't exist in VRF %u!",                    \
 			__func__, (ifp)->ifindex, (ifp)->vrf_id);
@@ -338,8 +343,8 @@ DECLARE_QOBJ_TYPE(interface)
  * can use 1000+ so they run after the daemon has initialised daemon-specific
  * interface data
  */
-DECLARE_HOOK(if_add, (struct interface *ifp), (ifp))
-DECLARE_KOOH(if_del, (struct interface *ifp), (ifp))
+DECLARE_HOOK(if_add, (struct interface * ifp), (ifp))
+DECLARE_KOOH(if_del, (struct interface * ifp), (ifp))
 
 /* Connected address structure. */
 struct connected {
@@ -347,7 +352,7 @@ struct connected {
 	struct interface *ifp;
 
 	/* Flags for configuration. */
-	u_char conf;
+	uint8_t conf;
 #define ZEBRA_IFC_REAL         (1 << 0)
 #define ZEBRA_IFC_CONFIGURED   (1 << 1)
 #define ZEBRA_IFC_QUEUED       (1 << 2)
@@ -367,7 +372,7 @@ struct connected {
 	 */
 
 	/* Flags for connected address. */
-	u_char flags;
+	uint8_t flags;
 #define ZEBRA_IFA_SECONDARY    (1 << 0)
 #define ZEBRA_IFA_PEER         (1 << 1)
 #define ZEBRA_IFA_UNNUMBERED   (1 << 2)
@@ -453,8 +458,15 @@ struct nbr_connected {
 /* Prototypes. */
 extern int if_cmp_name_func(char *, char *);
 
+/*
+ * Passing in VRF_UNKNOWN is a valid thing to do, unless we
+ * are creating a new interface.
+ *
+ * This is useful for vrf route-leaking.  So more than anything
+ * else think before you use VRF_UNKNOWN
+ */
 extern void if_update_to_new_vrf(struct interface *, vrf_id_t vrf_id);
-extern struct interface *if_create(const char *name,  vrf_id_t vrf_id);
+extern struct interface *if_create(const char *name, vrf_id_t vrf_id);
 extern struct interface *if_lookup_by_index(ifindex_t, vrf_id_t vrf_id);
 extern struct interface *if_lookup_exact_address(void *matchaddr, int family,
 						 vrf_id_t vrf_id);
@@ -485,6 +497,8 @@ extern int if_is_running(struct interface *);
 extern int if_is_operative(struct interface *);
 extern int if_is_no_ptm_operative(struct interface *);
 extern int if_is_loopback(struct interface *);
+extern int if_is_vrf(struct interface *ifp);
+extern bool if_is_loopback_or_vrf(struct interface *ifp);
 extern int if_is_broadcast(struct interface *);
 extern int if_is_pointopoint(struct interface *);
 extern int if_is_multicast(struct interface *);

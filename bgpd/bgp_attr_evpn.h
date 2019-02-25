@@ -34,11 +34,12 @@
 
 #define MAX_ET 0xffffffff
 
-u_long eth_tag_id;
+unsigned long eth_tag_id;
 struct attr;
 
+/* EVPN ESI */
 struct eth_segment_id {
-	u_char val[ESI_LEN];
+	uint8_t val[ESI_LEN];
 };
 
 union gw_addr {
@@ -59,8 +60,11 @@ extern void bgp_add_routermac_ecom(struct attr *attr,
 				   struct ethaddr *routermac);
 extern int bgp_build_evpn_prefix(int type, uint32_t eth_tag,
 				 struct prefix *dst);
+extern void bgp_attr_rmac(struct attr *attr, struct ethaddr *rmac);
+extern uint32_t bgp_attr_mac_mobility_seqnum(struct attr *attr,
+					     uint8_t *sticky);
+extern uint8_t bgp_attr_default_gw(struct attr *attr);
 
-extern u_int32_t bgp_attr_mac_mobility_seqnum(struct attr *attr,
-					      u_char *sticky);
+extern void bgp_attr_evpn_na_flag(struct attr *attr, uint8_t *router_flag);
 
 #endif /* _QUAGGA_BGP_ATTR_EVPN_H */

@@ -23,23 +23,24 @@
 #define _ZEBRA_REDISTRIBUTE_H
 
 #include "table.h"
-#include "zserv.h"
 #include "vty.h"
 #include "vrf.h"
 
-extern void zebra_redistribute_add(int, struct zserv *, int,
-				   struct zebra_vrf *zvrf);
-extern void zebra_redistribute_delete(int, struct zserv *, int,
-				      struct zebra_vrf *zvrf);
+#include "zebra/zserv.h"
+#include "zebra/rib.h"
 
-extern void zebra_redistribute_default_add(int, struct zserv *, int,
-					   struct zebra_vrf *zvrf);
-extern void zebra_redistribute_default_delete(int, struct zserv *, int,
-					      struct zebra_vrf *zvrf);
+/* ZAPI command handlers */
+extern void zebra_redistribute_add(ZAPI_HANDLER_ARGS);
+extern void zebra_redistribute_delete(ZAPI_HANDLER_ARGS);
+extern void zebra_redistribute_default_add(ZAPI_HANDLER_ARGS);
+extern void zebra_redistribute_default_delete(ZAPI_HANDLER_ARGS);
+/* ----------------- */
 
-extern void redistribute_update(struct prefix *, struct prefix *,
+extern void redistribute_update(const struct prefix *p,
+				const struct prefix *src_p,
 				struct route_entry *, struct route_entry *);
-extern void redistribute_delete(struct prefix *, struct prefix *,
+extern void redistribute_delete(const struct prefix *p,
+				const struct prefix *src_p,
 				struct route_entry *);
 
 extern void zebra_interface_up_update(struct interface *);
@@ -58,7 +59,7 @@ extern void zebra_interface_vrf_update_del(struct interface *,
 extern void zebra_interface_vrf_update_add(struct interface *,
 					   vrf_id_t old_vrf_id);
 
-extern int zebra_import_table(afi_t afi, u_int32_t table_id, u_int32_t distance,
+extern int zebra_import_table(afi_t afi, uint32_t table_id, uint32_t distance,
 			      const char *rmap_name, int add);
 
 extern int zebra_add_import_table_entry(struct route_node *rn,
@@ -66,10 +67,9 @@ extern int zebra_add_import_table_entry(struct route_node *rn,
 					const char *rmap_name);
 extern int zebra_del_import_table_entry(struct route_node *rn,
 					struct route_entry *re);
-extern int is_zebra_import_table_enabled(afi_t, u_int32_t table_id);
+extern int is_zebra_import_table_enabled(afi_t, uint32_t table_id);
 
 extern int zebra_import_table_config(struct vty *);
 
-extern void zebra_import_table_rm_update(void);
-
+extern void zebra_import_table_rm_update(const char *rmap);
 #endif /* _ZEBRA_REDISTRIBUTE_H */

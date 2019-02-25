@@ -12,7 +12,10 @@
 
 #include "vector.h"
 #include "thread.h"
+#include "lib_errors.h"
+
 #include "nhrpd.h"
+#include "nhrp_errors.h"
 
 struct resolver_state {
 	ares_channel channel;
@@ -47,8 +50,7 @@ static int resolver_cb_socket_readable(struct thread *t)
 	ares_process_fd(r->channel, fd, ARES_SOCKET_BAD);
 	if (vector_lookup(r->read_threads, fd) == THREAD_RUNNING) {
 		t = NULL;
-		thread_add_read(master, resolver_cb_socket_readable, r, fd,
-				&t);
+		thread_add_read(master, resolver_cb_socket_readable, r, fd, &t);
 		vector_set_index(r->read_threads, fd, t);
 	}
 	resolver_update_timeouts(r);
@@ -78,27 +80,29 @@ static void resolver_update_timeouts(struct resolver_state *r)
 {
 	struct timeval *tv, tvbuf;
 
-	if (r->timeout == THREAD_RUNNING) return;
+	if (r->timeout == THREAD_RUNNING)
+		return;
 
 	THREAD_OFF(r->timeout);
 	tv = ares_timeout(r->channel, NULL, &tvbuf);
 	if (tv) {
 		unsigned int timeoutms = tv->tv_sec * 1000 + tv->tv_usec / 1000;
-		thread_add_timer_msec(master, resolver_cb_timeout, r,
-				      timeoutms, &r->timeout);
+		thread_add_timer_msec(master, resolver_cb_timeout, r, timeoutms,
+				      &r->timeout);
 	}
 }
 
-static void ares_socket_cb(void *data, ares_socket_t fd, int readable, int writable)
+static void ares_socket_cb(void *data, ares_socket_t fd, int readable,
+			   int writable)
 {
-	struct resolver_state *r = (struct resolver_state *) data;
+	struct resolver_state *r = (struct resolver_state *)data;
 	struct thread *t;
 
 	if (readable) {
 		t = vector_lookup_ensure(r->read_threads, fd);
 		if (!t) {
-			thread_add_read(master, resolver_cb_socket_readable,
-					r, fd, &t);
+			thread_add_read(master, resolver_cb_socket_readable, r,
+					fd, &t);
 			vector_set_index(r->read_threads, fd, t);
 		}
 	} else {
@@ -114,8 +118,8 @@ static void ares_socket_cb(void *data, ares_socket_t fd, int readable, int writa
 	if (writable) {
 		t = vector_lookup_ensure(r->write_threads, fd);
 		if (!t) {
-			thread_add_read(master, resolver_cb_socket_writable,
-					r, fd, &t);
+			thread_add_read(master, resolver_cb_socket_writable, r,
+					fd, &t);
 			vector_set_index(r->write_threads, fd, t);
 		}
 	} else {
@@ -136,7 +140,7 @@ void resolver_init(void)
 	state.read_threads = vector_init(1);
 	state.write_threads = vector_init(1);
 
-	ares_opts = (struct ares_options) {
+	ares_opts = (struct ares_options){
 		.sock_state_cb = &ares_socket_cb,
 		.sock_state_cb_data = &state,
 		.timeout = 2,
@@ -144,14 +148,15 @@ void resolver_init(void)
 	};
 
 	ares_init_options(&state.channel, &ares_opts,
-		ARES_OPT_SOCK_STATE_CB | ARES_OPT_TIMEOUT |
-		ARES_OPT_TRIES);
+			  ARES_OPT_SOCK_STATE_CB | ARES_OPT_TIMEOUT
+				  | ARES_OPT_TRIES);
 }
 
 
-static void ares_address_cb(void *arg, int status, int timeouts, struct hostent *he)
+static void ares_address_cb(void *arg, int status, int timeouts,
+			    struct hostent *he)
 {
-	struct resolver_query *query = (struct resolver_query *) arg;
+	struct resolver_query *query = (struct resolver_query *)arg;
 	union sockunion addr[16];
 	size_t i;
 
@@ -162,28 +167,36 @@ static void ares_address_cb(void *arg, int status, int timeouts, struct hostent 
 		return;
 	}
 
-	for (i = 0; he->h_addr_list[i] != NULL && i < ZEBRA_NUM_OF(addr); i++) {
+	for (i = 0; i < ZEBRA_NUM_OF(addr) && he->h_addr_list[i] != NULL; i++) {
 		memset(&addr[i], 0, sizeof(addr[i]));
 		addr[i].sa.sa_family = he->h_addrtype;
 		switch (he->h_addrtype) {
 		case AF_INET:
-			memcpy(&addr[i].sin.sin_addr, (uint8_t *) he->h_addr_list[i], he->h_length);
+			memcpy(&addr[i].sin.sin_addr,
+			       (uint8_t *)he->h_addr_list[i], he->h_length);
 			break;
 		case AF_INET6:
-			memcpy(&addr[i].sin6.sin6_addr, (uint8_t *) he->h_addr_list[i], he->h_length);
+			memcpy(&addr[i].sin6.sin6_addr,
+			       (uint8_t *)he->h_addr_list[i], he->h_length);
 			break;
 		}
 	}
 
-	debugf(NHRP_DEBUG_COMMON, "[%p] Resolved with %d results", query, (int) i);
+	debugf(NHRP_DEBUG_COMMON, "[%p] Resolved with %d results", query,
+	       (int)i);
 	query->callback(query, i, &addr[0]);
 	query->callback = NULL;
 }
 
-void resolver_resolve(struct resolver_query *query, int af, const char *hostname, void (*callback)(struct resolver_query *, int, union sockunion *))
+void resolver_resolve(struct resolver_query *query, int af,
+		      const char *hostname,
+		      void (*callback)(struct resolver_query *, int,
+				       union sockunion *))
 {
 	if (query->callback != NULL) {
-		zlog_err("Trying to resolve '%s', but previous query was not finished yet", hostname);
+		flog_err(NHRP_ERR_RESOLVER,
+			  "Trying to resolve '%s', but previous query was not finished yet",
+			  hostname);
 		return;
 	}
 

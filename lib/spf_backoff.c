@@ -143,7 +143,7 @@ static int spf_backoff_holddown_elapsed(struct thread *thread)
 
 long spf_backoff_schedule(struct spf_backoff *backoff)
 {
-	long rv;
+	long rv = 0;
 	struct timeval now;
 
 	gettimeofday(&now, NULL);
@@ -176,9 +176,6 @@ long spf_backoff_schedule(struct spf_backoff *backoff)
 		else
 			rv = backoff->long_delay;
 		break;
-	default:
-		zlog_warn("SPF Back-off(%s) in unknown state", backoff->name);
-		rv = backoff->init_delay;
 	}
 
 	backoff_debug(
@@ -205,7 +202,7 @@ static const char *timeval_format(struct timeval *tv)
 
 	size_t offset = strlen(timebuf);
 	snprintf(timebuf + offset, sizeof(timebuf) - offset, ".%ld",
-		 tv->tv_usec);
+		 (long int)tv->tv_usec);
 
 	return timebuf;
 }
@@ -227,7 +224,8 @@ void spf_backoff_show(struct spf_backoff *backoff, struct vty *vty,
 		struct timeval remain =
 			thread_timer_remain(backoff->t_holddown);
 		vty_out(vty, "%s                   Still runs for %lld msec\n",
-			prefix, (long long)remain.tv_sec * 1000
+			prefix,
+			(long long)remain.tv_sec * 1000
 				+ remain.tv_usec / 1000);
 	} else {
 		vty_out(vty, "%s                   Inactive\n", prefix);
@@ -239,7 +237,8 @@ void spf_backoff_show(struct spf_backoff *backoff, struct vty *vty,
 		struct timeval remain =
 			thread_timer_remain(backoff->t_timetolearn);
 		vty_out(vty, "%s                   Still runs for %lld msec\n",
-			prefix, (long long)remain.tv_sec * 1000
+			prefix,
+			(long long)remain.tv_sec * 1000
 				+ remain.tv_usec / 1000);
 	} else {
 		vty_out(vty, "%s                   Inactive\n", prefix);

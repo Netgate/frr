@@ -1,5 +1,6 @@
 ## Process this file with Automake to create Makefile.in
 
+include ../common.am
 
 if ENABLE_BGP_VNC
 BGP_VNC_RFP_SRCDIR   = @top_srcdir@/@LIBRFP@
@@ -16,13 +17,11 @@ BGP_VNC_RFAPI_INCDIR =
 BGP_VNC_RFAPI_SRCDIR =
 BGP_VNC_RFAPI_SRC    =
 endif
-AM_CPPFLAGS = -I$(top_srcdir) -I$(top_srcdir)/lib -I$(top_builddir)/lib \
+AM_CPPFLAGS += -I$(top_srcdir) -I$(top_srcdir)/lib -I$(top_builddir)/lib \
 	$(BGP_VNC_RFAPI_INCDIR) $(BGP_VNC_RFP_INCDIR)
 DEFS = @DEFS@ -DSYSCONFDIR=\"$(sysconfdir)/\"
 
 LIBS = @LIBS@ @CURSES@ @LIBPAM@
-
-AM_CFLAGS = $(WERROR)
 
 bin_PROGRAMS = vtysh
 
@@ -54,6 +53,7 @@ vtysh_scan += $(top_srcdir)/bgpd/bgp_nexthop.c
 vtysh_scan += $(top_srcdir)/bgpd/bgp_route.c
 vtysh_scan += $(top_srcdir)/bgpd/bgp_routemap.c
 vtysh_scan += $(top_srcdir)/bgpd/bgp_vty.c
+vtysh_scan += $(top_srcdir)/bgpd/bgp_flowspec_vty.c
 endif
 
 if RPKI
@@ -75,6 +75,7 @@ vtysh_scan += $(top_srcdir)/ospfd/ospf_opaque.c
 vtysh_scan += $(top_srcdir)/ospfd/ospf_ri.c
 vtysh_scan += $(top_srcdir)/ospfd/ospf_routemap.c
 vtysh_scan += $(top_srcdir)/ospfd/ospf_te.c
+vtysh_scan += $(top_srcdir)/ospfd/ospf_sr.c
 vtysh_scan += $(top_srcdir)/ospfd/ospf_vty.c
 endif
 
@@ -140,13 +141,27 @@ if SNMP
 vtysh_scan += $(top_srcdir)/lib/agentx.c
 endif
 
+if PBRD
+vtysh_scan += $(top_srcdir)/pbrd/pbr_vty.c
+vtysh_scan += $(top_srcdir)/pbrd/pbr_debug.c
+endif
+
+if STATICD
+vtysh_scan += $(top_srcdir)/staticd/static_vty.c
+endif
+
+if BFDD
+vtysh_scan += $(top_srcdir)/bfdd/bfdd_vty.c
+endif
+
 vtysh_cmd_FILES = $(vtysh_scan) \
 		  $(top_srcdir)/lib/keychain.c $(top_srcdir)/lib/routemap.c \
 		  $(top_srcdir)/lib/filter.c $(top_srcdir)/lib/plist.c \
 		  $(top_srcdir)/lib/distribute.c $(top_srcdir)/lib/if_rmap.c \
-		  $(top_srcdir)/lib/vrf.c \
+		  $(top_srcdir)/lib/vrf.c $(top_srcdir)/lib/if.c \
 		  $(top_srcdir)/lib/vty.c $(top_srcdir)/zebra/debug.c \
-		  $(top_srcdir)/lib/ns.c \
+		  $(top_srcdir)/lib/logicalrouter.c \
+		  $(top_srcdir)/lib/nexthop_group.c \
 		  $(top_srcdir)/zebra/interface.c \
 		  $(top_srcdir)/zebra/irdp_interface.c \
 		  $(top_srcdir)/zebra/rtadv.c $(top_srcdir)/zebra/zebra_vty.c \

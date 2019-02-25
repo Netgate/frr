@@ -511,7 +511,8 @@ void rfapiRibClear(struct rfapi_descriptor *rfd)
 				if (pn->info) {
 					if (pn->info != (void *)1) {
 						list_delete_and_null(
-							(struct list **)(&pn->info));
+							(struct list *
+								 *)(&pn->info));
 					}
 					pn->info = NULL;
 					/* linklist or 1 deleted */
@@ -570,10 +571,8 @@ void rfapiRibClear(struct rfapi_descriptor *rfd)
 			}
 		}
 	}
-	if (rfd->updated_responses_queue) {
-		work_queue_free(rfd->updated_responses_queue);
-		rfd->updated_responses_queue = NULL;
-	}
+	if (rfd->updated_responses_queue)
+		work_queue_free_and_null(&rfd->updated_responses_queue);
 }
 
 /*
@@ -697,7 +696,7 @@ static void rfapiRibBi2Ri(struct bgp_info *bi, struct rfapi_info *ri,
 		vo->v.l2addr.local_nve_id = bi->extra->vnc.import.rd.val[1];
 
 		/* label comes from MP_REACH_NLRI label */
-		vo->v.l2addr.label = decode_label(&bi->extra->label);
+		vo->v.l2addr.label = decode_label(&bi->extra->label[0]);
 
 		rfapi_vn_options_free(
 			ri->vn_options); /* maybe free old version */
@@ -1407,9 +1406,10 @@ callback:
 						vnc_zlog_debug_verbose(
 							"%s: move route to recently deleted list, rd=%s",
 							__func__,
-							prefix_rd2str(&ri->rk.rd,
-								      buf_rd,
-								      sizeof(buf_rd)));
+							prefix_rd2str(
+								&ri->rk.rd,
+								buf_rd,
+								sizeof(buf_rd)));
 					}
 #endif
 
@@ -2099,7 +2099,6 @@ rfapiRibPreload(struct bgp *bgp, struct rfapi_descriptor *rfd,
 			nhp->vn_options = NULL;
 
 			XFREE(MTYPE_RFAPI_NEXTHOP, nhp);
-			nhp = NULL;
 		}
 	}
 

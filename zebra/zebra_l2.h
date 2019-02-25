@@ -37,7 +37,7 @@ struct zebra_l2info_brslave {
 
 /* zebra L2 interface information - bridge interface */
 struct zebra_l2info_bridge {
-	u_char vlan_aware; /* VLAN-aware bridge? */
+	uint8_t vlan_aware; /* VLAN-aware bridge? */
 };
 
 /* zebra L2 interface information - VLAN interface */
@@ -66,7 +66,6 @@ union zebra_l2if_info {
 #define VLAN_ID_FROM_ZEBRA_IF(zif) (zif)->l2info.vl.vid
 
 #define IS_ZEBRA_IF_BRIDGE_VLAN_AWARE(zif) ((zif)->l2info.br.vlan_aware == 1)
-
 
 extern void zebra_l2_map_slave_to_bridge(struct zebra_l2info_brslave *br_slave);
 extern void

@@ -25,6 +25,8 @@
 #include "buffer.h"
 #include "log.h"
 #include "network.h"
+#include "lib_errors.h"
+
 #include <stddef.h>
 
 DEFINE_MTYPE_STATIC(LIB, BUFFER, "Buffer")
@@ -174,7 +176,7 @@ void buffer_put(struct buffer *b, const void *p, size_t size)
 }
 
 /* Insert character into the buffer. */
-void buffer_putc(struct buffer *b, u_char c)
+void buffer_putc(struct buffer *b, uint8_t c)
 {
 	buffer_put(b, &c, 1);
 }
@@ -272,19 +274,12 @@ buffer_status_t buffer_flush_window(struct buffer *b, int fd, int width,
 	if (!b->head)
 		return BUFFER_EMPTY;
 
-	if (height < 1) {
-		zlog_warn(
-			"%s called with non-positive window height %d, forcing to 1",
-			__func__, height);
+	if (height < 1)
 		height = 1;
-	} else if (height >= 2)
+	else if (height >= 2)
 		height--;
-	if (width < 1) {
-		zlog_warn(
-			"%s called with non-positive window width %d, forcing to 1",
-			__func__, width);
+	if (width < 1)
 		width = 1;
-	}
 
 	/* For erase and more data add two to b's buffer_data count.*/
 	if (b->head->next == NULL) {
@@ -332,16 +327,12 @@ buffer_status_t buffer_flush_window(struct buffer *b, int fd, int width,
 		{
 			iov_alloc *= 2;
 			if (iov != small_iov) {
-				zlog_warn(
-					"%s: growing iov array to %d; "
-					"width %d, height %d, size %lu",
-					__func__, iov_alloc, width, height,
-					(u_long)b->size);
 				iov = XREALLOC(MTYPE_TMP, iov,
 					       iov_alloc * sizeof(*iov));
 			} else {
 				/* This should absolutely never occur. */
-				zlog_err(
+				flog_err_sys(
+					LIB_ERR_SYSTEM_CALL,
 					"%s: corruption detected: iov_small overflowed; "
 					"head %p, tail %p, head->next %p",
 					__func__, (void *)b->head,
@@ -429,6 +420,9 @@ in one shot. */
 	size_t iovcnt = 0;
 	size_t nbyte = 0;
 
+	if (fd < 0)
+		return BUFFER_ERROR;
+
 	for (d = b->head; d && (iovcnt < MAX_CHUNKS) && (nbyte < MAX_FLUSH);
 	     d = d->next, iovcnt++) {
 		iov[iovcnt].iov_base = d->data + d->sp;
@@ -453,10 +447,10 @@ in one shot. */
 	while (written > 0) {
 		struct buffer_data *d;
 		if (!(d = b->head)) {
-			zlog_err(
-				"%s: corruption detected: buffer queue empty, "
-				"but written is %lu",
-				__func__, (u_long)written);
+			flog_err(
+				LIB_ERR_DEVELOPMENT,
+				"%s: corruption detected: buffer queue empty, but written is %lu",
+				__func__, (unsigned long)written);
 			break;
 		}
 		if (written < d->cp - d->sp) {

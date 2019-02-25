@@ -35,6 +35,7 @@
 #include "log_int.h"
 #include "module.h"
 #include "network.h"
+#include "lib_errors.h"
 
 DEFINE_HOOK(frr_late_init, (struct thread_master * tm), (tm))
 DEFINE_KOOH(frr_early_fini, (), ())
@@ -47,9 +48,9 @@ const char frr_moduledir[] = MODULE_PATH;
 char frr_protoname[256] = "NONE";
 char frr_protonameinst[256] = "NONE";
 
-char config_default[256];
+char config_default[512];
 char frr_zclientpath[256];
-static char pidfile_default[256];
+static char pidfile_default[512];
 static char vtypath_default[256];
 
 bool debug_memstats_at_exit = 0;
@@ -78,6 +79,8 @@ static void opt_extend(const struct optspec *os)
 
 #define OPTION_VTYSOCK   1000
 #define OPTION_MODULEDIR 1002
+#define OPTION_LOG       1003
+#define OPTION_LOGLEVEL  1004
 
 static const struct option lo_always[] = {
 	{"help", no_argument, NULL, 'h'},
@@ -86,6 +89,8 @@ static const struct option lo_always[] = {
 	{"module", no_argument, NULL, 'M'},
 	{"vty_socket", required_argument, NULL, OPTION_VTYSOCK},
 	{"moduledir", required_argument, NULL, OPTION_MODULEDIR},
+	{"log", required_argument, NULL, OPTION_LOG},
+	{"log-level", required_argument, NULL, OPTION_LOGLEVEL},
 	{NULL}};
 static const struct optspec os_always = {
 	"hvdM:",
@@ -94,7 +99,9 @@ static const struct optspec os_always = {
 	"  -d, --daemon       Runs in daemon mode\n"
 	"  -M, --module       Load specified module\n"
 	"      --vty_socket   Override vty socket path\n"
-	"      --moduledir    Override modules directory\n",
+	"      --moduledir    Override modules directory\n"
+	"      --log          Set Logging to stdout, syslog, or file:<name>\n"
+	"      --log-level    Set Logging Level to use, debug, info, warn, etc\n",
 	lo_always};
 
 
@@ -168,7 +175,7 @@ bool frr_zclient_addr(struct sockaddr_storage *sa, socklen_t *sa_len,
 			break;
 		case '6':
 			path++;
-			/* fallthrough */
+		/* fallthrough */
 		default:
 			af = AF_INET6;
 			break;
@@ -444,6 +451,12 @@ static int frr_opt(int opt)
 			return 1;
 		di->privs->group = optarg;
 		break;
+	case OPTION_LOG:
+		di->early_logging = optarg;
+		break;
+	case OPTION_LOGLEVEL:
+		di->early_loglevel = optarg;
+		break;
 	default:
 		return 1;
 	}
@@ -531,21 +544,20 @@ struct thread_master *frr_init(void)
 		snprintf(p_instance, sizeof(p_instance), "-%d", di->instance);
 	}
 	if (di->pathspace)
-		snprintf(p_pathspace, sizeof(p_pathspace), "/%s",
+		snprintf(p_pathspace, sizeof(p_pathspace), "%s/",
 			 di->pathspace);
 
 	snprintf(config_default, sizeof(config_default), "%s%s%s%s.conf",
 		 frr_sysconfdir, p_pathspace, di->name, p_instance);
-	snprintf(pidfile_default, sizeof(pidfile_default), "%s%s/%s%s.pid",
+	snprintf(pidfile_default, sizeof(pidfile_default), "%s/%s%s%s.pid",
 		 frr_vtydir, p_pathspace, di->name, p_instance);
 
 	zprivs_preinit(di->privs);
 
 	openzlog(di->progname, di->logname, di->instance,
 		 LOG_CONS | LOG_NDELAY | LOG_PID, LOG_DAEMON);
-#if defined(HAVE_CUMULUS)
-	zlog_set_level(ZLOG_DEST_SYSLOG, zlog_default->default_lvl);
-#endif
+
+	command_setup_early_logging(di->early_logging, di->early_loglevel);
 
 	if (!frr_zclient_addr(&zclient_addr, &zclient_addr_len,
 			      frr_zclientpath)) {
@@ -586,6 +598,9 @@ struct thread_master *frr_init(void)
 		cmd_init(1);
 	vty_init(master);
 	memory_init();
+
+	log_ref_init();
+	lib_error_init();
 
 	return master;
 }
@@ -629,7 +644,7 @@ static void frr_daemon_wait(int fd)
 
 		rcvd_signal = 0;
 
-#if   defined(HAVE_PPOLL)
+#if defined(HAVE_PPOLL)
 		ret = ppoll(pfd, 1, NULL, &prevsigs);
 #elif defined(HAVE_POLLTS)
 		ret = pollts(pfd, 1, NULL, &prevsigs);
@@ -721,15 +736,42 @@ static void frr_daemonize(void)
 	frr_daemon_wait(fds[0]);
 }
 
+/*
+ * Why is this a thread?
+ *
+ * The read in of config for integrated config happens *after*
+ * thread execution starts( because it is passed in via a vtysh -b -n )
+ * While if you are not using integrated config we want the ability
+ * to read the config in after thread execution starts, so that
+ * we can match this behavior.
+ */
+static int frr_config_read_in(struct thread *t)
+{
+	if (!vty_read_config(di->config_file, config_default) &&
+	    di->backup_config_file) {
+		char *orig = XSTRDUP(MTYPE_TMP, host_config_get());
+
+		zlog_info("Attempting to read backup config file: %s specified",
+			  di->backup_config_file);
+		vty_read_config(di->backup_config_file, config_default);
+
+		host_config_set(orig);
+		XFREE(MTYPE_TMP, orig);
+	}
+	return 0;
+}
+
 void frr_config_fork(void)
 {
 	hook_call(frr_late_init, master);
 
-	vty_read_config(di->config_file, config_default);
-
 	/* Don't start execution if we are in dry-run mode */
-	if (di->dryrun)
+	if (di->dryrun) {
+		frr_config_read_in(NULL);
 		exit(0);
+	}
+
+	thread_add_event(master, frr_config_read_in, NULL, 0, &di->read_in);
 
 	if (di->daemon_mode || di->terminal)
 		frr_daemonize();
@@ -787,8 +829,9 @@ static void frr_terminal_close(int isexit)
 
 	nullfd = open("/dev/null", O_RDONLY | O_NOCTTY);
 	if (nullfd == -1) {
-		zlog_err("%s: failed to open /dev/null: %s", __func__,
-			 safe_strerror(errno));
+		flog_err_sys(LIB_ERR_SYSTEM_CALL,
+			     "%s: failed to open /dev/null: %s", __func__,
+			     safe_strerror(errno));
 	} else {
 		dup2(nullfd, 0);
 		dup2(nullfd, 1);
@@ -811,18 +854,20 @@ static int frr_daemon_ctl(struct thread *t)
 		return 0;
 
 	switch (buf[0]) {
-	case 'S':	/* SIGTSTP */
+	case 'S': /* SIGTSTP */
 		vty_stdio_suspend();
-		send(daemon_ctl_sock, "s", 1, 0);
+		if (send(daemon_ctl_sock, "s", 1, 0) < 0)
+			zlog_err("%s send(\"s\") error (SIGTSTP propagation)",
+				 (di && di->name ? di->name : ""));
 		break;
-	case 'R':	/* SIGTCNT [implicit] */
+	case 'R': /* SIGTCNT [implicit] */
 		vty_stdio_resume();
 		break;
-	case 'I':	/* SIGINT */
+	case 'I': /* SIGINT */
 		di->daemon_mode = false;
 		raise(SIGINT);
 		break;
-	case 'Q':	/* SIGQUIT */
+	case 'Q': /* SIGQUIT */
 		di->daemon_mode = true;
 		vty_stdio_close();
 		break;
@@ -857,8 +902,9 @@ void frr_run(struct thread_master *master)
 	} else if (di->daemon_mode) {
 		int nullfd = open("/dev/null", O_RDONLY | O_NOCTTY);
 		if (nullfd == -1) {
-			zlog_err("%s: failed to open /dev/null: %s", __func__,
-				 safe_strerror(errno));
+			flog_err_sys(LIB_ERR_SYSTEM_CALL,
+				     "%s: failed to open /dev/null: %s",
+				     __func__, safe_strerror(errno));
 		} else {
 			dup2(nullfd, 0);
 			dup2(nullfd, 1);
@@ -895,6 +941,7 @@ void frr_fini(void)
 	/* memory_init -> nothing needed */
 	vty_terminate();
 	cmd_terminate();
+	log_ref_fini();
 	zprivs_terminate(di->privs);
 	/* signal_init -> nothing needed */
 	thread_master_free(master);
@@ -914,10 +961,8 @@ void frr_fini(void)
 	if (!have_leftovers)
 		return;
 
-	snprintf(filename, sizeof(filename),
-		 "/tmp/frr-memstats-%s-%llu-%llu",
-		 di->name,
-		 (unsigned long long)getpid(),
+	snprintf(filename, sizeof(filename), "/tmp/frr-memstats-%s-%llu-%llu",
+		 di->name, (unsigned long long)getpid(),
 		 (unsigned long long)time(NULL));
 
 	fp = fopen(filename, "w");

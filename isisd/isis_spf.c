@@ -37,6 +37,8 @@
 #include "spf_backoff.h"
 #include "jhash.h"
 #include "skiplist.h"
+#include "srcdest_table.h"
+#include "lib_errors.h"
 
 #include "isis_constants.h"
 #include "isis_common.h"
@@ -74,19 +76,23 @@ enum vertextype {
 #define VTYPE_ES(t) ((t) == VTYPE_ES)
 #define VTYPE_IP(t) ((t) >= VTYPE_IPREACH_INTERNAL && (t) <= VTYPE_IP6REACH_EXTERNAL)
 
+struct prefix_pair {
+	struct prefix dest;
+	struct prefix_ipv6 src;
+};
+
 /*
  * Triple <N, d(N), {Adj(N)}>
  */
+union isis_N {
+	uint8_t id[ISIS_SYS_ID_LEN + 1];
+	struct prefix_pair ip;
+};
 struct isis_vertex {
 	enum vertextype type;
-
-	union {
-		u_char id[ISIS_SYS_ID_LEN + 1];
-		struct prefix prefix;
-	} N;
-
-	u_int32_t d_N;	       /* d(N) Distance from this IS      */
-	u_int16_t depth;       /* The depth in the imaginary tree */
+	union isis_N N;
+	uint32_t d_N;	  /* d(N) Distance from this IS      */
+	uint16_t depth;	/* The depth in the imaginary tree */
 	struct list *Adj_N;    /* {Adj(N)} next hop or neighbor list */
 	struct list *parents;  /* list of parents for ECMP */
 	uint64_t insert_counter;
@@ -107,8 +113,13 @@ static unsigned isis_vertex_queue_hash_key(void *vp)
 {
 	struct isis_vertex *vertex = vp;
 
-	if (VTYPE_IP(vertex->type))
-		return prefix_hash_key(&vertex->N.prefix);
+	if (VTYPE_IP(vertex->type)) {
+		uint32_t key;
+
+		key = prefix_hash_key(&vertex->N.ip.dest);
+		key = jhash_1word(prefix_hash_key(&vertex->N.ip.src), key);
+		return key;
+	}
 
 	return jhash(vertex->N.id, ISIS_SYS_ID_LEN + 1, 0x55aa5a5a);
 }
@@ -120,8 +131,13 @@ static int isis_vertex_queue_hash_cmp(const void *a, const void *b)
 	if (va->type != vb->type)
 		return 0;
 
-	if (VTYPE_IP(va->type))
-		return prefix_cmp(&va->N.prefix, &vb->N.prefix) == 0;
+	if (VTYPE_IP(va->type)) {
+		if (prefix_cmp(&va->N.ip.dest, &vb->N.ip.dest))
+			return 0;
+
+		return prefix_cmp((struct prefix *)&va->N.ip.src,
+				  (struct prefix *)&vb->N.ip.src) == 0;
+	}
 
 	return memcmp(va->N.id, vb->N.id, ISIS_SYS_ID_LEN + 1) == 0;
 }
@@ -161,7 +177,8 @@ static struct skiplist *isis_vertex_queue_skiplist(void)
 	return skiplist_new(0, isis_vertex_queue_tent_cmp, NULL);
 }
 
-static void isis_vertex_queue_init(struct isis_vertex_queue *queue, const char *name, bool ordered)
+static void isis_vertex_queue_init(struct isis_vertex_queue *queue,
+				   const char *name, bool ordered)
 {
 	if (ordered) {
 		queue->insert_counter = 1;
@@ -171,8 +188,7 @@ static void isis_vertex_queue_init(struct isis_vertex_queue *queue, const char *
 		queue->l.list = list_new();
 	}
 	queue->hash = hash_create(isis_vertex_queue_hash_key,
-				  isis_vertex_queue_hash_cmp,
-				  name);
+				  isis_vertex_queue_hash_cmp, name);
 }
 
 static void isis_vertex_del(struct isis_vertex *vertex);
@@ -183,7 +199,8 @@ static void isis_vertex_queue_clear(struct isis_vertex_queue *queue)
 
 	if (queue->insert_counter) {
 		struct isis_vertex *vertex;
-		while (0 == skiplist_first(queue->l.slist, NULL, (void**)&vertex)) {
+		while (0 == skiplist_first(queue->l.slist, NULL,
+					   (void **)&vertex)) {
 			isis_vertex_del(vertex);
 			skiplist_delete_first(queue->l.slist);
 		}
@@ -241,13 +258,14 @@ static void isis_vertex_queue_insert(struct isis_vertex_queue *queue,
 	assert(inserted == vertex);
 }
 
-static struct isis_vertex *isis_vertex_queue_pop(struct isis_vertex_queue *queue)
+static struct isis_vertex *
+isis_vertex_queue_pop(struct isis_vertex_queue *queue)
 {
 	assert(queue->insert_counter);
 
 	struct isis_vertex *rv;
 
-	if (skiplist_first(queue->l.slist, NULL, (void**)&rv))
+	if (skiplist_first(queue->l.slist, NULL, (void **)&rv))
 		return NULL;
 
 	skiplist_delete_first(queue->l.slist);
@@ -265,8 +283,8 @@ static void isis_vertex_queue_delete(struct isis_vertex_queue *queue,
 	hash_release(queue->hash, vertex);
 }
 
-#define ALL_QUEUE_ELEMENTS_RO(queue, node, data) \
-		ALL_LIST_ELEMENTS_RO((queue)->l.list, node, data)
+#define ALL_QUEUE_ELEMENTS_RO(queue, node, data)                               \
+	ALL_LIST_ELEMENTS_RO((queue)->l.list, node, data)
 
 
 /* End of vertex queue definitions */
@@ -274,6 +292,7 @@ static void isis_vertex_queue_delete(struct isis_vertex_queue *queue,
 struct isis_spftree {
 	struct isis_vertex_queue paths; /* the SPT */
 	struct isis_vertex_queue tents; /* TENT */
+	struct route_table *route_table;
 	struct isis_area *area;    /* back pointer to area */
 	unsigned int runcount;     /* number of runs since uptime */
 	time_t last_run_timestamp; /* last run timestamp as wall time for display */
@@ -283,6 +302,7 @@ struct isis_spftree {
 	uint16_t mtid;
 	int family;
 	int level;
+	enum spf_tree_id tree_id;
 };
 
 
@@ -332,12 +352,12 @@ static void remove_excess_adjs(struct list *adjs)
 		if (comp < 0)
 			continue;
 
-		if (candidate->circuit->circuit_id > adj->circuit->circuit_id) {
+		if (candidate->circuit->idx > adj->circuit->idx) {
 			excess = node;
 			continue;
 		}
 
-		if (candidate->circuit->circuit_id < adj->circuit->circuit_id)
+		if (candidate->circuit->idx < adj->circuit->idx)
 			continue;
 
 		comp = memcmp(candidate->snpa, adj->snpa, ETH_ALEN);
@@ -391,6 +411,7 @@ static const char *vtype2string(enum vertextype vtype)
 	return NULL; /* Not reached */
 }
 
+#define VID2STR_BUFFER SRCDEST2STR_BUFFER
 static const char *vid2string(struct isis_vertex *vertex, char *buff, int size)
 {
 	if (VTYPE_IS(vertex->type) || VTYPE_ES(vertex->type)) {
@@ -398,34 +419,37 @@ static const char *vid2string(struct isis_vertex *vertex, char *buff, int size)
 	}
 
 	if (VTYPE_IP(vertex->type)) {
-		prefix2str((struct prefix *)&vertex->N.prefix, buff, size);
+		srcdest2str(&vertex->N.ip.dest,
+			    &vertex->N.ip.src,
+			    buff, size);
 		return buff;
 	}
 
 	return "UNKNOWN";
 }
 
-static void isis_vertex_id_init(struct isis_vertex *vertex, void *id, enum vertextype vtype)
+static void isis_vertex_id_init(struct isis_vertex *vertex, union isis_N *n,
+				enum vertextype vtype)
 {
 	vertex->type = vtype;
 
 	if (VTYPE_IS(vtype) || VTYPE_ES(vtype)) {
-		memcpy(vertex->N.id, (u_char *)id, ISIS_SYS_ID_LEN + 1);
+		memcpy(vertex->N.id, n->id, ISIS_SYS_ID_LEN + 1);
 	} else if (VTYPE_IP(vtype)) {
-		memcpy(&vertex->N.prefix, (struct prefix *)id,
-		       sizeof(struct prefix));
+		memcpy(&vertex->N.ip, &n->ip, sizeof(n->ip));
 	} else {
-		zlog_err("WTF!");
+		flog_err(LIB_ERR_DEVELOPMENT, "Unknown Vertex Type");
 	}
 }
 
-static struct isis_vertex *isis_vertex_new(void *id, enum vertextype vtype)
+static struct isis_vertex *isis_vertex_new(union isis_N *n,
+					   enum vertextype vtype)
 {
 	struct isis_vertex *vertex;
 
 	vertex = XCALLOC(MTYPE_ISIS_VERTEX, sizeof(struct isis_vertex));
 
-	isis_vertex_id_init(vertex, id, vtype);
+	isis_vertex_id_init(vertex, n, vtype);
 
 	vertex->Adj_N = list_new();
 	vertex->parents = list_new();
@@ -463,13 +487,10 @@ struct isis_spftree *isis_spftree_new(struct isis_area *area)
 	struct isis_spftree *tree;
 
 	tree = XCALLOC(MTYPE_ISIS_SPFTREE, sizeof(struct isis_spftree));
-	if (tree == NULL) {
-		zlog_err("ISIS-Spf: isis_spftree_new Out of memory!");
-		return NULL;
-	}
 
 	isis_vertex_queue_init(&tree->tents, "IS-IS SPF tents", true);
 	isis_vertex_queue_init(&tree->paths, "IS-IS SPF paths", false);
+	tree->route_table = srcdest_table_init();
 	tree->area = area;
 	tree->last_run_timestamp = 0;
 	tree->last_run_monotime = 0;
@@ -482,8 +503,10 @@ void isis_spftree_del(struct isis_spftree *spftree)
 {
 	isis_vertex_queue_free(&spftree->tents);
 	isis_vertex_queue_free(&spftree->paths);
-	XFREE(MTYPE_ISIS_SPFTREE, spftree);
+	route_table_finish(spftree->route_table);
+	spftree->route_table = NULL;
 
+	XFREE(MTYPE_ISIS_SPFTREE, spftree);
 	return;
 }
 
@@ -502,67 +525,44 @@ static void isis_spftree_adj_del(struct isis_spftree *spftree,
 
 void spftree_area_init(struct isis_area *area)
 {
-	if (area->is_type & IS_LEVEL_1) {
-		if (area->spftree[0] == NULL)
-			area->spftree[0] = isis_spftree_new(area);
-		if (area->spftree6[0] == NULL)
-			area->spftree6[0] = isis_spftree_new(area);
-	}
+	for (int tree = SPFTREE_IPV4; tree < SPFTREE_COUNT; tree++) {
+		for (int level = ISIS_LEVEL1; level <= ISIS_LEVEL2; level++) {
+			if (!(area->is_type & level))
+				continue;
+			if (area->spftree[tree][level - 1])
+				continue;
 
-	if (area->is_type & IS_LEVEL_2) {
-		if (area->spftree[1] == NULL)
-			area->spftree[1] = isis_spftree_new(area);
-		if (area->spftree6[1] == NULL)
-			area->spftree6[1] = isis_spftree_new(area);
+			area->spftree[tree][level - 1] = isis_spftree_new(area);
+		}
 	}
-
-	return;
 }
 
 void spftree_area_del(struct isis_area *area)
 {
-	if (area->is_type & IS_LEVEL_1) {
-		if (area->spftree[0] != NULL) {
-			isis_spftree_del(area->spftree[0]);
-			area->spftree[0] = NULL;
-		}
-		if (area->spftree6[0]) {
-			isis_spftree_del(area->spftree6[0]);
-			area->spftree6[0] = NULL;
+	for (int tree = SPFTREE_IPV4; tree < SPFTREE_COUNT; tree++) {
+		for (int level = ISIS_LEVEL1; level <= ISIS_LEVEL2; level++) {
+			if (!(area->is_type & level))
+				continue;
+			if (!area->spftree[tree][level - 1])
+				continue;
+
+			isis_spftree_del(area->spftree[tree][level - 1]);
 		}
 	}
-
-	if (area->is_type & IS_LEVEL_2) {
-		if (area->spftree[1] != NULL) {
-			isis_spftree_del(area->spftree[1]);
-			area->spftree[1] = NULL;
-		}
-		if (area->spftree6[1] != NULL) {
-			isis_spftree_del(area->spftree6[1]);
-			area->spftree6[1] = NULL;
-		}
-	}
-
-	return;
 }
 
 void spftree_area_adj_del(struct isis_area *area, struct isis_adjacency *adj)
 {
-	if (area->is_type & IS_LEVEL_1) {
-		if (area->spftree[0] != NULL)
-			isis_spftree_adj_del(area->spftree[0], adj);
-		if (area->spftree6[0] != NULL)
-			isis_spftree_adj_del(area->spftree6[0], adj);
+	for (int tree = SPFTREE_IPV4; tree < SPFTREE_COUNT; tree++) {
+		for (int level = ISIS_LEVEL1; level <= ISIS_LEVEL2; level++) {
+			if (!(area->is_type & level))
+				continue;
+			if (!area->spftree[tree][level - 1])
+				continue;
+			isis_spftree_adj_del(area->spftree[tree][level - 1],
+					     adj);
+		}
 	}
-
-	if (area->is_type & IS_LEVEL_2) {
-		if (area->spftree[1] != NULL)
-			isis_spftree_adj_del(area->spftree[1], adj);
-		if (area->spftree6[1] != NULL)
-			isis_spftree_adj_del(area->spftree6[1], adj);
-	}
-
-	return;
 }
 
 /*
@@ -570,10 +570,10 @@ void spftree_area_adj_del(struct isis_area *area, struct isis_adjacency *adj)
  * associated with the given system ID.
  */
 static struct isis_lsp *isis_root_system_lsp(struct isis_area *area, int level,
-					     u_char *sysid)
+					     uint8_t *sysid)
 {
 	struct isis_lsp *lsp;
-	u_char lspid[ISIS_SYS_ID_LEN + 2];
+	uint8_t lspid[ISIS_SYS_ID_LEN + 2];
 
 	memcpy(lspid, sysid, ISIS_SYS_ID_LEN);
 	LSP_PSEUDO_ID(lspid) = 0;
@@ -588,24 +588,24 @@ static struct isis_lsp *isis_root_system_lsp(struct isis_area *area, int level,
  * Add this IS to the root of SPT
  */
 static struct isis_vertex *isis_spf_add_root(struct isis_spftree *spftree,
-					     u_char *sysid)
+					     uint8_t *sysid)
 {
 	struct isis_vertex *vertex;
 	struct isis_lsp *lsp;
 #ifdef EXTREME_DEBUG
-	char buff[PREFIX2STR_BUFFER];
+	char buff[VID2STR_BUFFER];
 #endif /* EXTREME_DEBUG */
-	u_char id[ISIS_SYS_ID_LEN + 1];
+	union isis_N n;
 
-	memcpy(id, sysid, ISIS_SYS_ID_LEN);
-	LSP_PSEUDO_ID(id) = 0;
+	memcpy(n.id, sysid, ISIS_SYS_ID_LEN);
+	LSP_PSEUDO_ID(n.id) = 0;
 
 	lsp = isis_root_system_lsp(spftree->area, spftree->level, sysid);
 	if (lsp == NULL)
 		zlog_warn("ISIS-Spf: could not find own l%d LSP!",
 			  spftree->level);
 
-	vertex = isis_vertex_new(id,
+	vertex = isis_vertex_new(&n,
 				 spftree->area->oldmetric
 					 ? VTYPE_NONPSEUDO_IS
 					 : VTYPE_NONPSEUDO_TE_IS);
@@ -621,12 +621,13 @@ static struct isis_vertex *isis_spf_add_root(struct isis_spftree *spftree,
 	return vertex;
 }
 
-static struct isis_vertex *isis_find_vertex(struct isis_vertex_queue *queue, void *id,
+static struct isis_vertex *isis_find_vertex(struct isis_vertex_queue *queue,
+					    union isis_N *n,
 					    enum vertextype vtype)
 {
 	struct isis_vertex querier;
 
-	isis_vertex_id_init(&querier, id, vtype);
+	isis_vertex_id_init(&querier, n, vtype);
 	return hash_lookup(queue->hash, &querier);
 }
 
@@ -643,7 +644,7 @@ static struct isis_vertex *isis_spf_add2tent(struct isis_spftree *spftree,
 	struct listnode *node;
 	struct isis_adjacency *parent_adj;
 #ifdef EXTREME_DEBUG
-	char buff[PREFIX2STR_BUFFER];
+	char buff[VID2STR_BUFFER];
 #endif
 
 	assert(isis_find_vertex(&spftree->paths, id, vtype) == NULL);
@@ -716,15 +717,16 @@ static void process_N(struct isis_spftree *spftree, enum vertextype vtype,
 {
 	struct isis_vertex *vertex;
 #ifdef EXTREME_DEBUG
-	char buff[PREFIX2STR_BUFFER];
+	char buff[VID2STR_BUFFER];
 #endif
 
 	assert(spftree && parent);
 
-	struct prefix p;
+	struct prefix_pair p;
 	if (vtype >= VTYPE_IPREACH_INTERNAL) {
-		prefix_copy(&p, id);
-		apply_mask(&p);
+		memcpy(&p, id, sizeof(p));
+		apply_mask(&p.dest);
+		apply_mask((struct prefix *)&p.src);
 		id = &p;
 	}
 
@@ -802,15 +804,16 @@ static void process_N(struct isis_spftree *spftree, enum vertextype vtype,
  */
 static int isis_spf_process_lsp(struct isis_spftree *spftree,
 				struct isis_lsp *lsp, uint32_t cost,
-				uint16_t depth, u_char *root_sysid,
+				uint16_t depth, uint8_t *root_sysid,
 				struct isis_vertex *parent)
 {
 	bool pseudo_lsp = LSP_PSEUDO_ID(lsp->hdr.lsp_id);
 	struct listnode *fragnode = NULL;
 	uint32_t dist;
 	enum vertextype vtype;
-	static const u_char null_sysid[ISIS_SYS_ID_LEN];
+	static const uint8_t null_sysid[ISIS_SYS_ID_LEN];
 	struct isis_mt_router_info *mt_router_info = NULL;
+	struct prefix_pair ip_info;
 
 	if (!lsp->tlvs)
 		return ISIS_OK;
@@ -904,12 +907,17 @@ lspfragloop:
 			vtype = i ? VTYPE_IPREACH_EXTERNAL
 				  : VTYPE_IPREACH_INTERNAL;
 
+			memset(&ip_info, 0, sizeof(ip_info));
+			ip_info.dest.family = AF_INET;
+
 			struct isis_oldstyle_ip_reach *r;
 			for (r = (struct isis_oldstyle_ip_reach *)reachs[i]
 					 ->head;
 			     r; r = r->next) {
 				dist = cost + r->metric;
-				process_N(spftree, vtype, (void *)&r->prefix,
+				ip_info.dest.u.prefix4 = r->prefix.prefix;
+				ip_info.dest.prefixlen = r->prefix.prefixlen;
+				process_N(spftree, vtype, &ip_info,
 					  dist, depth + 1, parent);
 			}
 		}
@@ -923,6 +931,9 @@ lspfragloop:
 			ipv4_reachs = isis_lookup_mt_items(
 				&lsp->tlvs->mt_ip_reach, spftree->mtid);
 
+		memset(&ip_info, 0, sizeof(ip_info));
+		ip_info.dest.family = AF_INET;
+
 		struct isis_extended_ip_reach *r;
 		for (r = ipv4_reachs
 				 ? (struct isis_extended_ip_reach *)
@@ -930,7 +941,9 @@ lspfragloop:
 				 : NULL;
 		     r; r = r->next) {
 			dist = cost + r->metric;
-			process_N(spftree, VTYPE_IPREACH_TE, (void *)&r->prefix,
+			ip_info.dest.u.prefix4 = r->prefix.prefix;
+			ip_info.dest.prefixlen = r->prefix.prefixlen;
+			process_N(spftree, VTYPE_IPREACH_TE, &ip_info,
 				  dist, depth + 1, parent);
 		}
 	}
@@ -951,7 +964,28 @@ lspfragloop:
 			dist = cost + r->metric;
 			vtype = r->external ? VTYPE_IP6REACH_EXTERNAL
 					    : VTYPE_IP6REACH_INTERNAL;
-			process_N(spftree, vtype, (void *)&r->prefix, dist,
+			memset(&ip_info, 0, sizeof(ip_info));
+			ip_info.dest.family = AF_INET6;
+			ip_info.dest.u.prefix6 = r->prefix.prefix;
+			ip_info.dest.prefixlen = r->prefix.prefixlen;
+
+			if (r->subtlvs
+			    && r->subtlvs->source_prefix
+			    && r->subtlvs->source_prefix->prefixlen) {
+				if (spftree->tree_id != SPFTREE_DSTSRC) {
+					char buff[VID2STR_BUFFER];
+					zlog_warn("Ignoring dest-src route %s in non dest-src topology",
+						srcdest2str(
+							&ip_info.dest,
+							r->subtlvs->source_prefix,
+							buff, sizeof(buff)
+						)
+					);
+					continue;
+				}
+				ip_info.src = *r->subtlvs->source_prefix;
+			}
+			process_N(spftree, vtype, &ip_info, dist,
 				  depth + 1, parent);
 		}
 	}
@@ -970,7 +1004,8 @@ lspfragloop:
 }
 
 static int isis_spf_preload_tent(struct isis_spftree *spftree,
-				 u_char *root_sysid, struct isis_vertex *parent)
+				 uint8_t *root_sysid,
+				 struct isis_vertex *parent)
 {
 	struct isis_circuit *circuit;
 	struct listnode *cnode, *anode, *ipnode;
@@ -979,10 +1014,10 @@ static int isis_spf_preload_tent(struct isis_spftree *spftree,
 	struct list *adj_list;
 	struct list *adjdb;
 	struct prefix_ipv4 *ipv4;
-	struct prefix prefix;
+	struct prefix_pair ip_info;
 	int retval = ISIS_OK;
-	u_char lsp_id[ISIS_SYS_ID_LEN + 2];
-	static u_char null_lsp_id[ISIS_SYS_ID_LEN + 2];
+	uint8_t lsp_id[ISIS_SYS_ID_LEN + 2];
+	static uint8_t null_lsp_id[ISIS_SYS_ID_LEN + 2];
 	struct prefix_ipv6 *ipv6;
 	struct isis_circuit_mt_setting *circuit_mt;
 
@@ -1003,27 +1038,29 @@ static int isis_spf_preload_tent(struct isis_spftree *spftree,
 		 * Add IP(v6) addresses of this circuit
 		 */
 		if (spftree->family == AF_INET) {
-			prefix.family = AF_INET;
+			memset(&ip_info, 0, sizeof(ip_info));
+			ip_info.dest.family = AF_INET;
 			for (ALL_LIST_ELEMENTS_RO(circuit->ip_addrs, ipnode,
 						  ipv4)) {
-				prefix.u.prefix4 = ipv4->prefix;
-				prefix.prefixlen = ipv4->prefixlen;
-				apply_mask(&prefix);
+				ip_info.dest.u.prefix4 = ipv4->prefix;
+				ip_info.dest.prefixlen = ipv4->prefixlen;
+				apply_mask(&ip_info.dest);
 				isis_spf_add_local(spftree,
 						   VTYPE_IPREACH_INTERNAL,
-						   &prefix, NULL, 0, parent);
+						   &ip_info, NULL, 0, parent);
 			}
 		}
 		if (spftree->family == AF_INET6) {
-			prefix.family = AF_INET6;
+			memset(&ip_info, 0, sizeof(ip_info));
+			ip_info.dest.family = AF_INET6;
 			for (ALL_LIST_ELEMENTS_RO(circuit->ipv6_non_link,
 						  ipnode, ipv6)) {
-				prefix.prefixlen = ipv6->prefixlen;
-				prefix.u.prefix6 = ipv6->prefix;
-				apply_mask(&prefix);
+				ip_info.dest.u.prefix6 = ipv6->prefix;
+				ip_info.dest.prefixlen = ipv6->prefixlen;
+				apply_mask(&ip_info.dest);
 				isis_spf_add_local(spftree,
 						   VTYPE_IP6REACH_INTERNAL,
-						   &prefix, NULL, 0, parent);
+						   &ip_info, NULL, 0, parent);
 			}
 		}
 		if (circuit->circ_type == CIRCUIT_T_BROADCAST) {
@@ -1149,7 +1186,7 @@ static int isis_spf_preload_tent(struct isis_spftree *spftree,
 				root_sysid, parent);
 		} else if (circuit->circ_type == CIRCUIT_T_P2P) {
 			adj = circuit->u.p2p.neighbor;
-			if (!adj)
+			if (!adj || adj->adj_state != ISIS_ADJ_UP)
 				continue;
 			if (!adj_has_mt(adj, spftree->mtid))
 				continue;
@@ -1206,9 +1243,9 @@ static int isis_spf_preload_tent(struct isis_spftree *spftree,
 static void add_to_paths(struct isis_spftree *spftree,
 			 struct isis_vertex *vertex)
 {
-	char buff[PREFIX2STR_BUFFER];
+	char buff[VID2STR_BUFFER];
 
-	if (isis_find_vertex(&spftree->paths, vertex->N.id, vertex->type))
+	if (isis_find_vertex(&spftree->paths, &vertex->N, vertex->type))
 		return;
 	isis_vertex_queue_append(&spftree->paths, vertex);
 
@@ -1221,10 +1258,11 @@ static void add_to_paths(struct isis_spftree *spftree,
 
 	if (VTYPE_IP(vertex->type)) {
 		if (listcount(vertex->Adj_N) > 0)
-			isis_route_create((struct prefix *)&vertex->N.prefix,
+			isis_route_create(&vertex->N.ip.dest,
+					  &vertex->N.ip.src,
 					  vertex->d_N, vertex->depth,
 					  vertex->Adj_N, spftree->area,
-					  spftree->level);
+					  spftree->route_table);
 		else if (isis->debugs & DEBUG_SPF_EVENTS)
 			zlog_debug(
 				"ISIS-Spf: no adjacencies do not install route for "
@@ -1237,7 +1275,7 @@ static void add_to_paths(struct isis_spftree *spftree,
 }
 
 static void init_spt(struct isis_spftree *spftree, int mtid, int level,
-		     int family)
+		     int family, enum spf_tree_id tree_id)
 {
 	isis_vertex_queue_clear(&spftree->tents);
 	isis_vertex_queue_clear(&spftree->paths);
@@ -1245,53 +1283,54 @@ static void init_spt(struct isis_spftree *spftree, int mtid, int level,
 	spftree->mtid = mtid;
 	spftree->level = level;
 	spftree->family = family;
+	spftree->tree_id = tree_id;
 	return;
 }
 
-static int isis_run_spf(struct isis_area *area, int level, int family,
-			u_char *sysid, struct timeval *nowtv)
+static int isis_run_spf(struct isis_area *area, int level,
+			enum spf_tree_id tree_id,
+			uint8_t *sysid, struct timeval *nowtv)
 {
 	int retval = ISIS_OK;
 	struct isis_vertex *vertex;
 	struct isis_vertex *root_vertex;
-	struct isis_spftree *spftree = NULL;
-	u_char lsp_id[ISIS_SYS_ID_LEN + 2];
+	struct isis_spftree *spftree = area->spftree[tree_id][level - 1];
+	uint8_t lsp_id[ISIS_SYS_ID_LEN + 2];
 	struct isis_lsp *lsp;
-	struct route_table *table = NULL;
 	struct timeval time_now;
 	unsigned long long start_time, end_time;
-	uint16_t mtid;
+	uint16_t mtid = 0;
 
 	/* Get time that can't roll backwards. */
 	start_time = nowtv->tv_sec;
 	start_time = (start_time * 1000000) + nowtv->tv_usec;
 
-	if (family == AF_INET)
-		spftree = area->spftree[level - 1];
-	else if (family == AF_INET6)
-		spftree = area->spftree6[level - 1];
+	int family = -1;
+	switch (tree_id) {
+	case SPFTREE_IPV4:
+		family = AF_INET;
+		mtid = ISIS_MT_IPV4_UNICAST;
+		break;
+	case SPFTREE_IPV6:
+		family = AF_INET6;
+		mtid = isis_area_ipv6_topology(area);
+		break;
+	case SPFTREE_DSTSRC:
+		family = AF_INET6;
+		mtid = ISIS_MT_IPV6_DSTSRC;
+		break;
+	case SPFTREE_COUNT:
+		assert(!"isis_run_spf should never be called with SPFTREE_COUNT as argument!");
+		return ISIS_WARNING;
+	}
+
 	assert(spftree);
 	assert(sysid);
-
-	/* Make all routes in current route table inactive. */
-	if (family == AF_INET)
-		table = area->route_table[level - 1];
-	else if (family == AF_INET6)
-		table = area->route_table6[level - 1];
-
-	isis_route_invalidate_table(area, table);
-
-	/* We only support ipv4-unicast and ipv6-unicast as topologies for now
-	 */
-	if (family == AF_INET6)
-		mtid = isis_area_ipv6_topology(area);
-	else
-		mtid = ISIS_MT_IPV4_UNICAST;
 
 	/*
 	 * C.2.5 Step 0
 	 */
-	init_spt(spftree, mtid, level, family);
+	init_spt(spftree, mtid, level, family, tree_id);
 	/*              a) */
 	root_vertex = isis_spf_add_root(spftree, sysid);
 	/*              b) */
@@ -1338,7 +1377,6 @@ static int isis_run_spf(struct isis_area *area, int level, int family,
 	}
 
 out:
-	isis_route_validate(area);
 	spftree->runcount++;
 	spftree->last_run_timestamp = time(NULL);
 	spftree->last_run_monotime = monotime(&time_now);
@@ -1347,6 +1385,23 @@ out:
 	spftree->last_run_duration = end_time - start_time;
 
 	return retval;
+}
+
+void isis_spf_verify_routes(struct isis_area *area, struct isis_spftree **trees)
+{
+	if (area->is_type == IS_LEVEL_1) {
+		isis_route_verify_table(area, trees[0]->route_table);
+	} else if (area->is_type == IS_LEVEL_2) {
+		isis_route_verify_table(area, trees[1]->route_table);
+	} else {
+		isis_route_verify_merge(area, trees[0]->route_table,
+					trees[1]->route_table);
+	}
+}
+
+void isis_spf_invalidate_routes(struct isis_spftree *tree)
+{
+	isis_route_invalidate_table(tree->area, tree->route_table);
 }
 
 static int isis_run_spf_cb(struct thread *thread)
@@ -1366,16 +1421,30 @@ static int isis_run_spf_cb(struct thread *thread)
 		return ISIS_WARNING;
 	}
 
+	isis_area_invalidate_routes(area, level);
+
 	if (isis->debugs & DEBUG_SPF_EVENTS)
 		zlog_debug("ISIS-Spf (%s) L%d SPF needed, periodic SPF",
 			   area->area_tag, level);
 
 	if (area->ip_circuits)
-		retval = isis_run_spf(area, level, AF_INET, isis->sysid,
-			&thread->real);
+		retval = isis_run_spf(area, level, SPFTREE_IPV4, isis->sysid,
+				      &thread->real);
 	if (area->ipv6_circuits)
-		retval = isis_run_spf(area, level, AF_INET6, isis->sysid,
-			&thread->real);
+		retval = isis_run_spf(area, level, SPFTREE_IPV6, isis->sysid,
+				      &thread->real);
+	if (area->ipv6_circuits
+	    && isis_area_ipv6_dstsrc_enabled(area))
+		retval = isis_run_spf(area, level, SPFTREE_DSTSRC, isis->sysid,
+				      &thread->real);
+
+	isis_area_verify_routes(area);
+
+	/* walk all circuits and reset any spf specific flags */
+	struct listnode *node;
+	struct isis_circuit *circuit;
+	for (ALL_LIST_ELEMENTS_RO(area->circuit_list, node, circuit))
+		UNSET_FLAG(circuit->flags, ISIS_CIRCUIT_FLAPPED_AFTER_SPF);
 
 	return retval;
 }
@@ -1392,7 +1461,7 @@ static struct isis_spf_run *isis_run_spf_arg(struct isis_area *area, int level)
 
 int isis_spf_schedule(struct isis_area *area, int level)
 {
-	struct isis_spftree *spftree = area->spftree[level - 1];
+	struct isis_spftree *spftree = area->spftree[SPFTREE_IPV4][level - 1];
 	time_t now = monotime(NULL);
 	int diff = now - spftree->last_run_monotime;
 
@@ -1443,11 +1512,11 @@ int isis_spf_schedule(struct isis_area *area, int level)
 }
 
 static void isis_print_paths(struct vty *vty, struct isis_vertex_queue *queue,
-			     u_char *root_sysid)
+			     uint8_t *root_sysid)
 {
 	struct listnode *node;
 	struct isis_vertex *vertex;
-	char buff[PREFIX2STR_BUFFER];
+	char buff[VID2STR_BUFFER];
 
 	vty_out(vty,
 		"Vertex               Type         Metric Next-Hop             Interface Parent\n");
@@ -1470,8 +1539,9 @@ static void isis_print_paths(struct vty *vty, struct isis_vertex_queue *queue,
 			vid2string(vertex, buff, sizeof(buff)),
 			vtype2string(vertex->type), vertex->d_N);
 		for (unsigned int i = 0;
-		     i < MAX(listcount(vertex->Adj_N),
-			     listcount(vertex->parents)); i++) {
+		     i < MAX(vertex->Adj_N ? listcount(vertex->Adj_N) : 0,
+			     vertex->parents ? listcount(vertex->parents) : 0);
+		     i++) {
 			if (anode) {
 				adj = listgetdata(anode);
 				anode = anode->next;
@@ -1502,8 +1572,7 @@ static void isis_print_paths(struct vty *vty, struct isis_vertex_queue *queue,
 					vty_out(vty, "%-20s %-9s ", "", "");
 
 				vty_out(vty, "%s(%d)",
-					vid2string(pvertex, buff,
-						   sizeof(buff)),
+					vid2string(pvertex, buff, sizeof(buff)),
 					pvertex->type);
 			}
 
@@ -1511,6 +1580,39 @@ static void isis_print_paths(struct vty *vty, struct isis_vertex_queue *queue,
 		}
 		vty_out(vty, "\n");
 	}
+}
+
+static void isis_print_spftree(struct vty *vty, int level,
+			       struct isis_area *area,
+			       enum spf_tree_id tree_id)
+{
+	const char *tree_id_text = NULL;
+
+	switch (tree_id) {
+	case SPFTREE_IPV4:
+		tree_id_text = "that speak IP";
+		break;
+	case SPFTREE_IPV6:
+		tree_id_text = "that speak IPv6";
+		break;
+	case SPFTREE_DSTSRC:
+		tree_id_text = "that support IPv6 dst-src routing";
+		break;
+	case SPFTREE_COUNT:
+		assert(!"isis_print_spftree shouldn't be called with SPFTREE_COUNT as type");
+		return;
+	}
+
+	if (!area->spftree[tree_id][level - 1]
+	    || !isis_vertex_queue_count(
+		    &area->spftree[tree_id][level - 1]->paths))
+		return;
+
+	vty_out(vty, "IS-IS paths to level-%d routers %s\n",
+		level, tree_id_text);
+	isis_print_paths(vty, &area->spftree[tree_id][level - 1]->paths,
+			 isis->sysid);
+	vty_out(vty, "\n");
 }
 
 DEFUN (show_isis_topology,
@@ -1544,25 +1646,17 @@ DEFUN (show_isis_topology,
 			if ((level & levels) == 0)
 				continue;
 
-			if (area->ip_circuits > 0 && area->spftree[level - 1]
-			    && isis_vertex_queue_count(&area->spftree[level - 1]->paths) > 0) {
-				vty_out(vty,
-					"IS-IS paths to level-%d routers that speak IP\n",
-					level);
-				isis_print_paths(
-					vty, &area->spftree[level - 1]->paths,
-					isis->sysid);
-				vty_out(vty, "\n");
+			if (area->ip_circuits > 0) {
+				isis_print_spftree(vty, level, area,
+						   SPFTREE_IPV4);
 			}
-			if (area->ipv6_circuits > 0 && area->spftree6[level - 1]
-			    && isis_vertex_queue_count(&area->spftree6[level - 1]->paths) > 0) {
-				vty_out(vty,
-					"IS-IS paths to level-%d routers that speak IPv6\n",
-					level);
-				isis_print_paths(
-					vty, &area->spftree6[level - 1]->paths,
-					isis->sysid);
-				vty_out(vty, "\n");
+			if (area->ipv6_circuits > 0) {
+				isis_print_spftree(vty, level, area,
+						   SPFTREE_IPV6);
+			}
+			if (isis_area_ipv6_dstsrc_enabled(area)) {
+				isis_print_spftree(vty, level, area,
+						   SPFTREE_DSTSRC);
 			}
 		}
 
@@ -1584,8 +1678,7 @@ void isis_spf_print(struct isis_spftree *spftree, struct vty *vty)
 	vty_out(vty, "\n");
 
 	vty_out(vty, "      last run duration : %u usec\n",
-		(u_int32_t)spftree->last_run_duration);
+		(uint32_t)spftree->last_run_duration);
 
-	vty_out(vty, "      run count         : %u\n",
-		spftree->runcount);
+	vty_out(vty, "      run count         : %u\n", spftree->runcount);
 }

@@ -112,11 +112,11 @@
 #define PIM_MASK_PIM_NHT             (1 << 22)
 #define PIM_MASK_PIM_NHT_DETAIL      (1 << 23)
 #define PIM_MASK_PIM_NHT_RP          (1 << 24)
+#define PIM_MASK_MTRACE              (1 << 25)
 /* Remember 32 bits!!! */
 
 /* PIM error codes */
 #define PIM_SUCCESS                0
-#define PIM_MALLOC_FAIL           -1
 #define PIM_GROUP_BAD_ADDRESS     -2
 #define PIM_GROUP_OVERLAP         -3
 #define PIM_GROUP_PFXLIST_OVERLAP -4
@@ -139,13 +139,6 @@ struct in_addr qpim_all_pim_routers_addr;
 int qpim_t_periodic; /* Period between Join/Prune Messages */
 struct pim_assert_metric qpim_infinite_assert_metric;
 long qpim_rpf_cache_refresh_delay_msec;
-struct thread *qpim_rpf_cache_refresher;
-int64_t qpim_rpf_cache_refresh_requests;
-int64_t qpim_rpf_cache_refresh_events;
-int64_t qpim_rpf_cache_refresh_last;
-int64_t qpim_scan_oil_events;
-int64_t qpim_scan_oil_last;
-int64_t qpim_nexthop_lookups;
 extern int qpim_packet_process;
 extern uint8_t qpim_ecmp_enable;
 extern uint8_t qpim_ecmp_rebalance_enable;
@@ -188,6 +181,7 @@ extern int32_t qpim_register_probe_time;
 #define PIM_DEBUG_PIM_NHT             (qpim_debugs & PIM_MASK_PIM_NHT)
 #define PIM_DEBUG_PIM_NHT_DETAIL      (qpim_debugs & PIM_MASK_PIM_NHT_DETAIL)
 #define PIM_DEBUG_PIM_NHT_RP          (qpim_debugs & PIM_MASK_PIM_NHT_RP)
+#define PIM_DEBUG_MTRACE              (qpim_debugs & PIM_MASK_MTRACE)
 
 #define PIM_DEBUG_EVENTS       (qpim_debugs & (PIM_MASK_PIM_EVENTS | PIM_MASK_IGMP_EVENTS | PIM_MASK_MSDP_EVENTS))
 #define PIM_DEBUG_PACKETS      (qpim_debugs & (PIM_MASK_PIM_PACKETS | PIM_MASK_IGMP_PACKETS | PIM_MASK_MSDP_PACKETS))
@@ -216,6 +210,7 @@ extern int32_t qpim_register_probe_time;
 #define PIM_DO_DEBUG_MSDP_INTERNAL       (qpim_debugs |= PIM_MASK_MSDP_INTERNAL)
 #define PIM_DO_DEBUG_PIM_NHT             (qpim_debugs |= PIM_MASK_PIM_NHT)
 #define PIM_DO_DEBUG_PIM_NHT_RP          (qpim_debugs |= PIM_MASK_PIM_NHT_RP)
+#define PIM_DO_DEBUG_MTRACE              (qpim_debugs |= PIM_MASK_MTRACE)
 
 #define PIM_DONT_DEBUG_PIM_EVENTS          (qpim_debugs &= ~PIM_MASK_PIM_EVENTS)
 #define PIM_DONT_DEBUG_PIM_PACKETS         (qpim_debugs &= ~PIM_MASK_PIM_PACKETS)
@@ -240,6 +235,7 @@ extern int32_t qpim_register_probe_time;
 #define PIM_DONT_DEBUG_MSDP_INTERNAL       (qpim_debugs &= ~PIM_MASK_MSDP_INTERNAL)
 #define PIM_DONT_DEBUG_PIM_NHT             (qpim_debugs &= ~PIM_MASK_PIM_NHT)
 #define PIM_DONT_DEBUG_PIM_NHT_RP          (qpim_debugs &= ~PIM_MASK_PIM_NHT_RP)
+#define PIM_DONT_DEBUG_MTRACE              (qpim_debugs &= ~PIM_MASK_MTRACE)
 
 void pim_init(void);
 void pim_terminate(void);

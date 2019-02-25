@@ -2,7 +2,7 @@
 # libfrr
 #
 lib_LTLIBRARIES += lib/libfrr.la
-lib_libfrr_la_LDFLAGS = -version-info 0:0:0 
+lib_libfrr_la_LDFLAGS = -version-info 0:0:0
 lib_libfrr_la_LIBADD = @LIBCAP@
 
 lib_libfrr_la_SOURCES = \
@@ -15,11 +15,13 @@ lib_libfrr_la_SOURCES = \
 	lib/command_match.c \
 	lib/command_parse.y \
 	lib/csv.c \
+	lib/debug.c \
 	lib/distribute.c \
 	lib/event_counter.c \
 	lib/ferr.c \
 	lib/filter.c \
 	lib/frr_pthread.c \
+	lib/frrstr.c \
 	lib/getopt.c \
 	lib/getopt1.c \
 	lib/grammar_sandbox.c \
@@ -33,6 +35,7 @@ lib_libfrr_la_SOURCES = \
 	lib/jhash.c \
 	lib/json.c \
 	lib/keychain.c \
+	lib/lib_errors.c \
 	lib/libfrr.c \
 	lib/linklist.c \
 	lib/log.c \
@@ -40,9 +43,12 @@ lib_libfrr_la_SOURCES = \
 	lib/memory.c \
 	lib/memory_vty.c \
 	lib/module.c \
+	lib/mpls.c \
 	lib/network.c \
 	lib/nexthop.c \
-	lib/ns.c \
+	lib/netns_linux.c \
+	lib/netns_other.c \
+	lib/nexthop_group.c \
 	lib/openbsd-tree.c \
 	lib/pid_output.c \
 	lib/plist.c \
@@ -51,6 +57,7 @@ lib_libfrr_la_SOURCES = \
 	lib/privs.c \
 	lib/ptm_lib.c \
 	lib/qobj.c \
+	lib/ringbuf.c \
 	lib/routemap.c \
 	lib/sbuf.c \
 	lib/sha256.c \
@@ -73,10 +80,13 @@ lib_libfrr_la_SOURCES = \
 	lib/wheel.c \
 	lib/workqueue.c \
 	lib/zclient.c \
+	lib/logicalrouter.c \
 	# end
 
 lib/plist_clippy.c: $(CLIPPY_DEPS)
 lib/plist.lo: lib/plist_clippy.c
+lib/nexthop_group_clippy.c: $(CLIPPY_DEPS)
+lib/nexthop_group.lo: lib/nexthop_group_clippy.c
 
 pkginclude_HEADERS += \
 	lib/bfd.h \
@@ -88,6 +98,7 @@ pkginclude_HEADERS += \
 	lib/command_match.h \
 	lib/compiler.h \
 	lib/csv.h \
+	lib/debug.h \
 	lib/distribute.h \
 	lib/event_counter.h \
 	lib/ferr.h \
@@ -96,6 +107,7 @@ pkginclude_HEADERS += \
 	lib/freebsd-queue.h \
 	lib/frr_pthread.h \
 	lib/frratomic.h \
+	lib/frrstr.h \
 	lib/getopt.h \
 	lib/graph.h \
 	lib/hash.h \
@@ -107,6 +119,7 @@ pkginclude_HEADERS += \
 	lib/jhash.h \
 	lib/json.h \
 	lib/keychain.h \
+	lib/lib_errors.h \
 	lib/libfrr.h \
 	lib/libospf.h \
 	lib/linklist.h \
@@ -119,6 +132,7 @@ pkginclude_HEADERS += \
 	lib/mpls.h \
 	lib/network.h \
 	lib/nexthop.h \
+	lib/nexthop_group.h \
 	lib/ns.h \
 	lib/openbsd-queue.h \
 	lib/openbsd-tree.h \
@@ -130,12 +144,12 @@ pkginclude_HEADERS += \
 	lib/pw.h \
 	lib/qobj.h \
 	lib/queue.h \
+	lib/ringbuf.h \
 	lib/routemap.h \
 	lib/sbuf.h \
 	lib/sha256.h \
 	lib/sigevent.h \
 	lib/skiplist.h \
-	lib/smux.h \
 	lib/sockopt.h \
 	lib/sockunion.h \
 	lib/spf_backoff.h \
@@ -156,7 +170,10 @@ pkginclude_HEADERS += \
 	lib/zassert.h \
 	lib/zclient.h \
 	lib/zebra.h \
+	lib/logicalrouter.h \
+	lib/pbr.h \
 	# end
+
 
 nodist_pkginclude_HEADERS += \
 	lib/route_types.h \
@@ -176,12 +193,11 @@ if SNMP
 lib_LTLIBRARIES += lib/libfrrsnmp.la
 endif
 
-lib_libfrrsnmp_la_CFLAGS = $(WERROR) $(SNMP_CFLAGS)
+lib_libfrrsnmp_la_CFLAGS = $(WERROR) $(SNMP_CFLAGS) -std=gnu99
 lib_libfrrsnmp_la_LDFLAGS = -version-info 0:0:0
 lib_libfrrsnmp_la_LIBADD = lib/libfrr.la $(SNMP_LIBS)
 lib_libfrrsnmp_la_SOURCES = \
 	lib/agentx.c \
-	lib/smux.c \
 	lib/snmp.c \
 	# end
 
@@ -219,8 +235,8 @@ lib_grammar_sandbox_SOURCES = \
 lib_grammar_sandbox_LDADD = \
 	lib/libfrr.la
 
-lib_clippy_CPPFLAGS = $(AM_CPPFLAGS) -D_GNU_SOURCE
-lib_clippy_CFLAGS = $(PYTHON_CFLAGS)
+lib_clippy_CPPFLAGS = $(AM_CPPFLAGS) -D_GNU_SOURCE -DBUILDING_CLIPPY @SAN_CLIPPY_FLAGS@
+lib_clippy_CFLAGS = $(PYTHON_CFLAGS) @SAN_CLIPPY_FLAGS@
 lib_clippy_LDADD = $(PYTHON_LIBS)
 lib_clippy_SOURCES = \
 	lib/clippy.c \

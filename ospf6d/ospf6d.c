@@ -97,7 +97,7 @@ DEFUN_NOSH (show_debugging_ospf6,
 	    DEBUG_STR
 	    OSPF6_STR)
 {
-	vty_out(vty, "OSPF6 debugging status:");
+	vty_out(vty, "OSPF6 debugging status:\n");
 
 	config_write_ospf6_debug(vty);
 
@@ -126,9 +126,9 @@ static int parse_show_level(int idx_level, int argc, struct cmd_token **argv)
 	return level;
 }
 
-static u_int16_t parse_type_spec(int idx_lsa, int argc, struct cmd_token **argv)
+static uint16_t parse_type_spec(int idx_lsa, int argc, struct cmd_token **argv)
 {
-	u_int16_t type = 0;
+	uint16_t type = 0;
 
 	if (argc > idx_lsa) {
 		if (strmatch(argv[idx_lsa]->text, "router"))
@@ -220,7 +220,7 @@ DEFUN (show_ipv6_ospf6_database_type,
 	struct ospf6 *o = ospf6;
 	struct ospf6_area *oa;
 	struct ospf6_interface *oi;
-	u_int16_t type = 0;
+	uint16_t type = 0;
 
 	OSPF6_CMD_CHECK_RUNNING();
 
@@ -282,7 +282,7 @@ DEFUN (show_ipv6_ospf6_database_id,
 	struct ospf6 *o = ospf6;
 	struct ospf6_area *oa;
 	struct ospf6_interface *oi;
-	u_int32_t id = 0;
+	uint32_t id = 0;
 
 	OSPF6_CMD_CHECK_RUNNING();
 
@@ -333,7 +333,7 @@ DEFUN (show_ipv6_ospf6_database_router,
 	struct ospf6 *o = ospf6;
 	struct ospf6_area *oa;
 	struct ospf6_interface *oi;
-	u_int32_t adv_router = 0;
+	uint32_t adv_router = 0;
 
 	OSPF6_CMD_CHECK_RUNNING();
 	inet_pton(AF_INET, argv[idx_ipv4]->arg, &adv_router);
@@ -357,6 +357,49 @@ DEFUN (show_ipv6_ospf6_database_router,
 	ospf6_lsdb_show(vty, level, NULL, NULL, &adv_router, o->lsdb);
 
 	vty_out(vty, "\n");
+	return CMD_SUCCESS;
+}
+
+DEFUN_HIDDEN (show_ipv6_ospf6_database_aggr_router,
+       show_ipv6_ospf6_database_aggr_router_cmd,
+       "show ipv6 ospf6 database aggr adv-router A.B.C.D",
+       SHOW_STR
+       IPV6_STR
+       OSPF6_STR
+       "Display Link state database\n"
+       "Aggregated Router LSA\n"
+       "Search by Advertising Router\n"
+       "Specify Advertising Router as IPv4 address notation\n")
+{
+	int level = OSPF6_LSDB_SHOW_LEVEL_DETAIL;
+	uint16_t type = htons(OSPF6_LSTYPE_ROUTER);
+	int idx_ipv4 = 6;
+	struct listnode *i;
+	struct ospf6 *o = ospf6;
+	struct ospf6_area *oa;
+	struct ospf6_lsdb *lsdb;
+	uint32_t adv_router = 0;
+
+	inet_pton(AF_INET, argv[idx_ipv4]->arg, &adv_router);
+
+	for (ALL_LIST_ELEMENTS_RO(o->area_list, i, oa)) {
+		if (adv_router == o->router_id)
+			lsdb = oa->lsdb_self;
+		else
+			lsdb = oa->lsdb;
+		if (ospf6_create_single_router_lsa(oa, lsdb, adv_router)
+		    == NULL) {
+			vty_out(vty, "Adv router is not found in LSDB.");
+			return CMD_SUCCESS;
+		}
+		ospf6_lsdb_show(vty, level, &type, NULL, NULL,
+				oa->temp_router_lsa_lsdb);
+		/* Remove the temp cache */
+		ospf6_remove_temp_router_lsa(oa);
+	}
+
+	vty_out(vty, "\n");
+
 	return CMD_SUCCESS;
 }
 
@@ -391,8 +434,8 @@ DEFUN (show_ipv6_ospf6_database_type_id,
 	struct ospf6 *o = ospf6;
 	struct ospf6_area *oa;
 	struct ospf6_interface *oi;
-	u_int16_t type = 0;
-	u_int32_t id = 0;
+	uint16_t type = 0;
+	uint32_t id = 0;
 
 	OSPF6_CMD_CHECK_RUNNING();
 
@@ -465,8 +508,8 @@ DEFUN (show_ipv6_ospf6_database_type_router,
 	struct ospf6 *o = ospf6;
 	struct ospf6_area *oa;
 	struct ospf6_interface *oi;
-	u_int16_t type = 0;
-	u_int32_t adv_router = 0;
+	uint16_t type = 0;
+	uint32_t adv_router = 0;
 
 	OSPF6_CMD_CHECK_RUNNING();
 
@@ -532,8 +575,8 @@ DEFUN (show_ipv6_ospf6_database_id_router,
 	struct ospf6 *o = ospf6;
 	struct ospf6_area *oa;
 	struct ospf6_interface *oi;
-	u_int32_t id = 0;
-	u_int32_t adv_router = 0;
+	uint32_t id = 0;
+	uint32_t adv_router = 0;
 
 	OSPF6_CMD_CHECK_RUNNING();
 	inet_pton(AF_INET, argv[idx_ls_id]->arg, &id);
@@ -585,8 +628,8 @@ DEFUN (show_ipv6_ospf6_database_adv_router_linkstate_id,
 	struct ospf6 *o = ospf6;
 	struct ospf6_area *oa;
 	struct ospf6_interface *oi;
-	u_int32_t id = 0;
-	u_int32_t adv_router = 0;
+	uint32_t id = 0;
+	uint32_t adv_router = 0;
 
 	OSPF6_CMD_CHECK_RUNNING();
 	inet_pton(AF_INET, argv[idx_adv_rtr]->arg, &adv_router);
@@ -644,9 +687,9 @@ DEFUN (show_ipv6_ospf6_database_type_id_router,
 	struct ospf6 *o = ospf6;
 	struct ospf6_area *oa;
 	struct ospf6_interface *oi;
-	u_int16_t type = 0;
-	u_int32_t id = 0;
-	u_int32_t adv_router = 0;
+	uint16_t type = 0;
+	uint32_t id = 0;
+	uint32_t adv_router = 0;
 
 	OSPF6_CMD_CHECK_RUNNING();
 
@@ -722,9 +765,9 @@ DEFUN (show_ipv6_ospf6_database_type_adv_router_linkstate_id,
 	struct ospf6 *o = ospf6;
 	struct ospf6_area *oa;
 	struct ospf6_interface *oi;
-	u_int16_t type = 0;
-	u_int32_t id = 0;
-	u_int32_t adv_router = 0;
+	uint16_t type = 0;
+	uint32_t id = 0;
+	uint32_t adv_router = 0;
 
 	OSPF6_CMD_CHECK_RUNNING();
 
@@ -785,7 +828,7 @@ DEFUN (show_ipv6_ospf6_database_self_originated,
 	struct ospf6 *o = ospf6;
 	struct ospf6_area *oa;
 	struct ospf6_interface *oi;
-	u_int32_t adv_router = 0;
+	uint32_t adv_router = 0;
 
 	OSPF6_CMD_CHECK_RUNNING();
 	level = parse_show_level(idx_level, argc, argv);
@@ -841,8 +884,8 @@ DEFUN (show_ipv6_ospf6_database_type_self_originated,
 	struct ospf6 *o = ospf6;
 	struct ospf6_area *oa;
 	struct ospf6_interface *oi;
-	u_int16_t type = 0;
-	u_int32_t adv_router = 0;
+	uint16_t type = 0;
+	uint32_t adv_router = 0;
 
 	OSPF6_CMD_CHECK_RUNNING();
 
@@ -916,9 +959,9 @@ DEFUN (show_ipv6_ospf6_database_type_self_originated_linkstate_id,
 	struct ospf6 *o = ospf6;
 	struct ospf6_area *oa;
 	struct ospf6_interface *oi;
-	u_int16_t type = 0;
-	u_int32_t adv_router = 0;
-	u_int32_t id = 0;
+	uint16_t type = 0;
+	uint32_t adv_router = 0;
+	uint32_t id = 0;
 
 	OSPF6_CMD_CHECK_RUNNING();
 
@@ -991,9 +1034,9 @@ DEFUN (show_ipv6_ospf6_database_type_id_self_originated,
 	struct ospf6 *o = ospf6;
 	struct ospf6_area *oa;
 	struct ospf6_interface *oi;
-	u_int16_t type = 0;
-	u_int32_t adv_router = 0;
-	u_int32_t id = 0;
+	uint16_t type = 0;
+	uint32_t adv_router = 0;
+	uint32_t id = 0;
 
 	OSPF6_CMD_CHECK_RUNNING();
 
@@ -1047,7 +1090,7 @@ DEFUN (show_ipv6_ospf6_border_routers,
        "Show detailed output\n")
 {
 	int idx_ipv4 = 4;
-	u_int32_t adv_router;
+	uint32_t adv_router;
 	struct ospf6_route *ro;
 	struct prefix prefix;
 
@@ -1219,6 +1262,7 @@ void ospf6_init(void)
 	install_element(
 		VIEW_NODE,
 		&show_ipv6_ospf6_database_type_self_originated_linkstate_id_cmd);
+	install_element(VIEW_NODE, &show_ipv6_ospf6_database_aggr_router_cmd);
 
 	/* Make ospf protocol socket. */
 	ospf6_serv_sock();

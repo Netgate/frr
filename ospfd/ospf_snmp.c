@@ -47,6 +47,7 @@
 #include "ospfd/ospf_flood.h"
 #include "ospfd/ospf_ism.h"
 #include "ospfd/ospf_dump.h"
+#include "ospfd/ospf_route.h"
 #include "ospfd/ospf_zebra.h"
 
 /* OSPF2-MIB. */
@@ -220,32 +221,32 @@ static oid ospf_trap_oid[] = {OSPF2MIB, 16, 2}; /* Not reverse mappable! */
 static struct in_addr ospf_empty_addr = {.s_addr = 0};
 
 /* Hook functions. */
-static u_char *ospfGeneralGroup(struct variable *, oid *, size_t *, int,
-				size_t *, WriteMethod **);
-static u_char *ospfAreaEntry(struct variable *, oid *, size_t *, int, size_t *,
-			     WriteMethod **);
-static u_char *ospfStubAreaEntry(struct variable *, oid *, size_t *, int,
+static uint8_t *ospfGeneralGroup(struct variable *, oid *, size_t *, int,
 				 size_t *, WriteMethod **);
-static u_char *ospfLsdbEntry(struct variable *, oid *, size_t *, int, size_t *,
-			     WriteMethod **);
-static u_char *ospfAreaRangeEntry(struct variable *, oid *, size_t *, int,
+static uint8_t *ospfAreaEntry(struct variable *, oid *, size_t *, int, size_t *,
+			      WriteMethod **);
+static uint8_t *ospfStubAreaEntry(struct variable *, oid *, size_t *, int,
 				  size_t *, WriteMethod **);
-static u_char *ospfHostEntry(struct variable *, oid *, size_t *, int, size_t *,
-			     WriteMethod **);
-static u_char *ospfIfEntry(struct variable *, oid *, size_t *, int, size_t *,
-			   WriteMethod **);
-static u_char *ospfIfMetricEntry(struct variable *, oid *, size_t *, int,
-				 size_t *, WriteMethod **);
-static u_char *ospfVirtIfEntry(struct variable *, oid *, size_t *, int,
-			       size_t *, WriteMethod **);
-static u_char *ospfNbrEntry(struct variable *, oid *, size_t *, int, size_t *,
+static uint8_t *ospfLsdbEntry(struct variable *, oid *, size_t *, int, size_t *,
+			      WriteMethod **);
+static uint8_t *ospfAreaRangeEntry(struct variable *, oid *, size_t *, int,
+				   size_t *, WriteMethod **);
+static uint8_t *ospfHostEntry(struct variable *, oid *, size_t *, int, size_t *,
+			      WriteMethod **);
+static uint8_t *ospfIfEntry(struct variable *, oid *, size_t *, int, size_t *,
 			    WriteMethod **);
-static u_char *ospfVirtNbrEntry(struct variable *, oid *, size_t *, int,
+static uint8_t *ospfIfMetricEntry(struct variable *, oid *, size_t *, int,
+				  size_t *, WriteMethod **);
+static uint8_t *ospfVirtIfEntry(struct variable *, oid *, size_t *, int,
 				size_t *, WriteMethod **);
-static u_char *ospfExtLsdbEntry(struct variable *, oid *, size_t *, int,
-				size_t *, WriteMethod **);
-static u_char *ospfAreaAggregateEntry(struct variable *, oid *, size_t *, int,
-				      size_t *, WriteMethod **);
+static uint8_t *ospfNbrEntry(struct variable *, oid *, size_t *, int, size_t *,
+			     WriteMethod **);
+static uint8_t *ospfVirtNbrEntry(struct variable *, oid *, size_t *, int,
+				 size_t *, WriteMethod **);
+static uint8_t *ospfExtLsdbEntry(struct variable *, oid *, size_t *, int,
+				 size_t *, WriteMethod **);
+static uint8_t *ospfAreaAggregateEntry(struct variable *, oid *, size_t *, int,
+				       size_t *, WriteMethod **);
 
 static struct variable ospf_variables[] = {
 	/* OSPF general variables */
@@ -526,9 +527,9 @@ static int ospf_admin_stat(struct ospf *ospf)
 	return 0;
 }
 
-static u_char *ospfGeneralGroup(struct variable *v, oid *name, size_t *length,
-				int exact, size_t *var_len,
-				WriteMethod **write_method)
+static uint8_t *ospfGeneralGroup(struct variable *v, oid *name, size_t *length,
+				 int exact, size_t *var_len,
+				 WriteMethod **write_method)
 {
 	struct ospf *ospf;
 
@@ -695,9 +696,9 @@ static struct ospf_area *ospfAreaLookup(struct variable *v, oid name[],
 	return NULL;
 }
 
-static u_char *ospfAreaEntry(struct variable *v, oid *name, size_t *length,
-			     int exact, size_t *var_len,
-			     WriteMethod **write_method)
+static uint8_t *ospfAreaEntry(struct variable *v, oid *name, size_t *length,
+			      int exact, size_t *var_len,
+			      WriteMethod **write_method)
 {
 	struct ospf_area *area;
 	struct in_addr addr;
@@ -739,8 +740,6 @@ static u_char *ospfAreaEntry(struct variable *v, oid *name, size_t *length,
 		return SNMP_INTEGER(0);
 		break;
 	case OSPFAREASUMMARY: /* 9 */
-			      /* $FRR indent$ */
-			      /* clang-format off */
 #define OSPF_noAreaSummary   1
 #define OSPF_sendAreaSummary 2
 		if (area->no_summary)
@@ -836,9 +835,9 @@ static struct ospf_area *ospfStubAreaLookup(struct variable *v, oid name[],
 	return NULL;
 }
 
-static u_char *ospfStubAreaEntry(struct variable *v, oid *name, size_t *length,
-				 int exact, size_t *var_len,
-				 WriteMethod **write_method)
+static uint8_t *ospfStubAreaEntry(struct variable *v, oid *name, size_t *length,
+				  int exact, size_t *var_len,
+				  WriteMethod **write_method)
 {
 	struct ospf_area *area;
 	struct in_addr addr;
@@ -872,7 +871,7 @@ static u_char *ospfStubAreaEntry(struct variable *v, oid *name, size_t *length,
 		return SNMP_INTEGER(SNMP_VALID);
 		break;
 	case OSPFSTUBMETRICTYPE: /* 5 */
-/* OSPF Metric type. */
+				 /* OSPF Metric type. */
 #define OSPF_ospfMetric     1
 #define OSPF_comparableCost 2
 #define OSPF_nonComparable  3
@@ -885,7 +884,7 @@ static u_char *ospfStubAreaEntry(struct variable *v, oid *name, size_t *length,
 	return NULL;
 }
 
-static struct ospf_lsa *lsdb_lookup_next(struct ospf_area *area, u_char *type,
+static struct ospf_lsa *lsdb_lookup_next(struct ospf_area *area, uint8_t *type,
 					 int type_next, struct in_addr *ls_id,
 					 int ls_id_next,
 					 struct in_addr *router_id,
@@ -921,7 +920,7 @@ static struct ospf_lsa *lsdb_lookup_next(struct ospf_area *area, u_char *type,
 
 static struct ospf_lsa *ospfLsdbLookup(struct variable *v, oid *name,
 				       size_t *length, struct in_addr *area_id,
-				       u_char *type, struct in_addr *ls_id,
+				       uint8_t *type, struct in_addr *ls_id,
 				       struct in_addr *router_id, int exact)
 {
 	struct ospf *ospf;
@@ -1059,14 +1058,14 @@ static struct ospf_lsa *ospfLsdbLookup(struct variable *v, oid *name,
 	return NULL;
 }
 
-static u_char *ospfLsdbEntry(struct variable *v, oid *name, size_t *length,
-			     int exact, size_t *var_len,
-			     WriteMethod **write_method)
+static uint8_t *ospfLsdbEntry(struct variable *v, oid *name, size_t *length,
+			      int exact, size_t *var_len,
+			      WriteMethod **write_method)
 {
 	struct ospf_lsa *lsa;
 	struct lsa_header *lsah;
 	struct in_addr area_id;
-	u_char type;
+	uint8_t type;
 	struct in_addr ls_id;
 	struct in_addr router_id;
 	struct ospf *ospf;
@@ -1120,7 +1119,7 @@ static u_char *ospfLsdbEntry(struct variable *v, oid *name, size_t *length,
 		break;
 	case OSPFLSDBADVERTISEMENT: /* 8 */
 		*var_len = ntohs(lsah->length);
-		return (u_char *)lsah;
+		return (uint8_t *)lsah;
 		break;
 	default:
 		return NULL;
@@ -1224,9 +1223,9 @@ static struct ospf_area_range *ospfAreaRangeLookup(struct variable *v,
 	return NULL;
 }
 
-static u_char *ospfAreaRangeEntry(struct variable *v, oid *name, size_t *length,
-				  int exact, size_t *var_len,
-				  WriteMethod **write_method)
+static uint8_t *ospfAreaRangeEntry(struct variable *v, oid *name,
+				   size_t *length, int exact, size_t *var_len,
+				   WriteMethod **write_method)
 {
 	struct ospf_area_range *range;
 	struct in_addr area_id;
@@ -1269,8 +1268,6 @@ static u_char *ospfAreaRangeEntry(struct variable *v, oid *name, size_t *length,
 		return SNMP_INTEGER(SNMP_VALID);
 		break;
 	case OSPFAREARANGEEFFECT: /* 5 */
-				  /* $FRR indent$ */
-				  /* clang-format off */
 #define OSPF_advertiseMatching      1
 #define OSPF_doNotAdvertiseMatching 2
 		return SNMP_INTEGER(OSPF_advertiseMatching);
@@ -1333,9 +1330,9 @@ static struct ospf_nbr_nbma *ospfHostLookup(struct variable *v, oid *name,
 	return NULL;
 }
 
-static u_char *ospfHostEntry(struct variable *v, oid *name, size_t *length,
-			     int exact, size_t *var_len,
-			     WriteMethod **write_method)
+static uint8_t *ospfHostEntry(struct variable *v, oid *name, size_t *length,
+			      int exact, size_t *var_len,
+			      WriteMethod **write_method)
 {
 	struct ospf_nbr_nbma *nbr_nbma;
 	struct ospf_interface *oi;
@@ -1630,7 +1627,7 @@ static struct ospf_interface *ospfIfLookup(struct variable *v, oid *name,
 		len = *length - v->namelen;
 		if (len >= IN_ADDR_SIZE)
 			len = IN_ADDR_SIZE;
-		if (len <= 0)
+		if (len == 0)
 			ifaddr_next = 1;
 
 		oid2in_addr(name + v->namelen, len, ifaddr);
@@ -1658,9 +1655,9 @@ static struct ospf_interface *ospfIfLookup(struct variable *v, oid *name,
 	return NULL;
 }
 
-static u_char *ospfIfEntry(struct variable *v, oid *name, size_t *length,
-			   int exact, size_t *var_len,
-			   WriteMethod **write_method)
+static uint8_t *ospfIfEntry(struct variable *v, oid *name, size_t *length,
+			    int exact, size_t *var_len,
+			    WriteMethod **write_method)
 {
 	ifindex_t ifindex;
 	struct in_addr ifaddr;
@@ -1738,14 +1735,12 @@ static u_char *ospfIfEntry(struct variable *v, oid *name, size_t *length,
 		break;
 	case OSPFIFAUTHKEY: /* 16 */
 		*var_len = 0;
-		return (u_char *)OSPF_IF_PARAM(oi, auth_simple);
+		return (uint8_t *)OSPF_IF_PARAM(oi, auth_simple);
 		break;
 	case OSPFIFSTATUS: /* 17 */
 		return SNMP_INTEGER(SNMP_VALID);
 		break;
 	case OSPFIFMULTICASTFORWARDING: /* 18 */
-					/* $FRR indent$ */
-					/* clang-format off */
 #define ospf_snmp_multiforward_blocked    1
 #define ospf_snmp_multiforward_multicast  2
 #define ospf_snmp_multiforward_unicast    3
@@ -1827,9 +1822,9 @@ static struct ospf_interface *ospfIfMetricLookup(struct variable *v, oid *name,
 	return NULL;
 }
 
-static u_char *ospfIfMetricEntry(struct variable *v, oid *name, size_t *length,
-				 int exact, size_t *var_len,
-				 WriteMethod **write_method)
+static uint8_t *ospfIfMetricEntry(struct variable *v, oid *name, size_t *length,
+				  int exact, size_t *var_len,
+				  WriteMethod **write_method)
 {
 	/* Currently we support metric 1 only. */
 	ifindex_t ifindex;
@@ -1996,7 +1991,7 @@ ospfVirtIfLookup(struct variable *v, oid *name, size_t *length,
 		first = 0;
 
 		len = *length - v->namelen;
-		if (len <= 0)
+		if (len == 0)
 			first = 1;
 		if (len > IN_ADDR_SIZE)
 			len = IN_ADDR_SIZE;
@@ -2020,9 +2015,9 @@ ospfVirtIfLookup(struct variable *v, oid *name, size_t *length,
 	return NULL;
 }
 
-static u_char *ospfVirtIfEntry(struct variable *v, oid *name, size_t *length,
-			       int exact, size_t *var_len,
-			       WriteMethod **write_method)
+static uint8_t *ospfVirtIfEntry(struct variable *v, oid *name, size_t *length,
+				int exact, size_t *var_len,
+				WriteMethod **write_method)
 {
 	struct ospf_vl_data *vl_data;
 	struct ospf_interface *oi;
@@ -2071,7 +2066,7 @@ static u_char *ospfVirtIfEntry(struct variable *v, oid *name, size_t *length,
 		break;
 	case OSPFVIRTIFAUTHKEY:
 		*var_len = 0;
-		return (u_char *)OSPF_IF_PARAM(oi, auth_simple);
+		return (uint8_t *)OSPF_IF_PARAM(oi, auth_simple);
 		break;
 	case OSPFVIRTIFSTATUS:
 		return SNMP_INTEGER(SNMP_VALID);
@@ -2123,7 +2118,7 @@ static struct ospf_neighbor *ospf_snmp_nbr_lookup_next(struct in_addr *nbr_addr,
 	struct ospf_neighbor *nbr;
 	struct route_node *rn;
 	struct ospf_neighbor *min = NULL;
-	struct ospf *ospf = ospf;
+	struct ospf *ospf;
 
 	ospf = ospf_lookup_by_vrf_id(VRF_DEFAULT);
 
@@ -2182,7 +2177,7 @@ static struct ospf_neighbor *ospfNbrLookup(struct variable *v, oid *name,
 		first = 0;
 		len = *length - v->namelen;
 
-		if (len <= 0)
+		if (len == 0)
 			first = 1;
 
 		if (len > IN_ADDR_SIZE)
@@ -2221,7 +2216,7 @@ ospfNbrState OBJECT-TYPE
 		    full (8)
 		  }
 */
-static int32_t ospf_snmp_neighbor_state(u_char nst)
+static int32_t ospf_snmp_neighbor_state(uint8_t nst)
 {
 	switch (nst) {
 	case NSM_Attempt:
@@ -2243,9 +2238,9 @@ static int32_t ospf_snmp_neighbor_state(u_char nst)
 	}
 }
 
-static u_char *ospfNbrEntry(struct variable *v, oid *name, size_t *length,
-			    int exact, size_t *var_len,
-			    WriteMethod **write_method)
+static uint8_t *ospfNbrEntry(struct variable *v, oid *name, size_t *length,
+			     int exact, size_t *var_len,
+			     WriteMethod **write_method)
 {
 	struct in_addr nbr_addr;
 	ifindex_t ifindex;
@@ -2308,9 +2303,9 @@ static u_char *ospfNbrEntry(struct variable *v, oid *name, size_t *length,
 	return NULL;
 }
 
-static u_char *ospfVirtNbrEntry(struct variable *v, oid *name, size_t *length,
-				int exact, size_t *var_len,
-				WriteMethod **write_method)
+static uint8_t *ospfVirtNbrEntry(struct variable *v, oid *name, size_t *length,
+				 int exact, size_t *var_len,
+				 WriteMethod **write_method)
 {
 	struct ospf_vl_data *vl_data;
 	struct in_addr area_id;
@@ -2336,28 +2331,28 @@ static u_char *ospfVirtNbrEntry(struct variable *v, oid *name, size_t *length,
 	/* Return the current value of the variable */
 	switch (v->magic) {
 	case OSPFVIRTNBRAREA:
-		return (u_char *)NULL;
+		return (uint8_t *)NULL;
 		break;
 	case OSPFVIRTNBRRTRID:
-		return (u_char *)NULL;
+		return (uint8_t *)NULL;
 		break;
 	case OSPFVIRTNBRIPADDR:
-		return (u_char *)NULL;
+		return (uint8_t *)NULL;
 		break;
 	case OSPFVIRTNBROPTIONS:
-		return (u_char *)NULL;
+		return (uint8_t *)NULL;
 		break;
 	case OSPFVIRTNBRSTATE:
-		return (u_char *)NULL;
+		return (uint8_t *)NULL;
 		break;
 	case OSPFVIRTNBREVENTS:
-		return (u_char *)NULL;
+		return (uint8_t *)NULL;
 		break;
 	case OSPFVIRTNBRLSRETRANSQLEN:
-		return (u_char *)NULL;
+		return (uint8_t *)NULL;
 		break;
 	case OSPFVIRTNBRHELLOSUPPRESSED:
-		return (u_char *)NULL;
+		return (uint8_t *)NULL;
 		break;
 	default:
 		return NULL;
@@ -2367,14 +2362,14 @@ static u_char *ospfVirtNbrEntry(struct variable *v, oid *name, size_t *length,
 }
 
 static struct ospf_lsa *ospfExtLsdbLookup(struct variable *v, oid *name,
-					  size_t *length, u_char *type,
+					  size_t *length, uint8_t *type,
 					  struct in_addr *ls_id,
 					  struct in_addr *router_id, int exact)
 {
 	int first;
 	oid *offset;
 	int offsetlen;
-	u_char lsa_type;
+	uint8_t lsa_type;
 	unsigned int len;
 	struct ospf_lsa *lsa;
 	struct ospf *ospf;
@@ -2456,13 +2451,13 @@ static struct ospf_lsa *ospfExtLsdbLookup(struct variable *v, oid *name,
 	return NULL;
 }
 
-static u_char *ospfExtLsdbEntry(struct variable *v, oid *name, size_t *length,
-				int exact, size_t *var_len,
-				WriteMethod **write_method)
+static uint8_t *ospfExtLsdbEntry(struct variable *v, oid *name, size_t *length,
+				 int exact, size_t *var_len,
+				 WriteMethod **write_method)
 {
 	struct ospf_lsa *lsa;
 	struct lsa_header *lsah;
-	u_char type;
+	uint8_t type;
 	struct in_addr ls_id;
 	struct in_addr router_id;
 	struct ospf *ospf;
@@ -2509,7 +2504,7 @@ static u_char *ospfExtLsdbEntry(struct variable *v, oid *name, size_t *length,
 		break;
 	case OSPFEXTLSDBADVERTISEMENT:
 		*var_len = ntohs(lsah->length);
-		return (u_char *)lsah;
+		return (uint8_t *)lsah;
 		break;
 	default:
 		return NULL;
@@ -2518,10 +2513,10 @@ static u_char *ospfExtLsdbEntry(struct variable *v, oid *name, size_t *length,
 	return NULL;
 }
 
-static u_char *ospfAreaAggregateEntry(struct variable *v, oid *name,
-				      size_t *length, int exact,
-				      size_t *var_len,
-				      WriteMethod **write_method)
+static uint8_t *ospfAreaAggregateEntry(struct variable *v, oid *name,
+				       size_t *length, int exact,
+				       size_t *var_len,
+				       WriteMethod **write_method)
 {
 	if (smux_header_table(v, name, length, exact, var_len, write_method)
 	    == MATCH_FAILED)
@@ -2530,22 +2525,22 @@ static u_char *ospfAreaAggregateEntry(struct variable *v, oid *name,
 	/* Return the current value of the variable */
 	switch (v->magic) {
 	case OSPFAREAAGGREGATEAREAID:
-		return (u_char *)NULL;
+		return (uint8_t *)NULL;
 		break;
 	case OSPFAREAAGGREGATELSDBTYPE:
-		return (u_char *)NULL;
+		return (uint8_t *)NULL;
 		break;
 	case OSPFAREAAGGREGATENET:
-		return (u_char *)NULL;
+		return (uint8_t *)NULL;
 		break;
 	case OSPFAREAAGGREGATEMASK:
-		return (u_char *)NULL;
+		return (uint8_t *)NULL;
 		break;
 	case OSPFAREAAGGREGATESTATUS:
-		return (u_char *)NULL;
+		return (uint8_t *)NULL;
 		break;
 	case OSPFAREAAGGREGATEEFFECT:
-		return (u_char *)NULL;
+		return (uint8_t *)NULL;
 		break;
 	default:
 		return NULL;
@@ -2589,8 +2584,9 @@ static void ospfTrapNbrStateChange(struct ospf_neighbor *on)
 	char msgbuf[16];
 
 	ospf_nbr_state_message(on, msgbuf, sizeof(msgbuf));
-	zlog_info("ospfTrapNbrStateChange trap sent: %s now %s",
-		  inet_ntoa(on->address.u.prefix4), msgbuf);
+	if (IS_DEBUG_OSPF_EVENT)
+		zlog_info("%s: trap sent: %s now %s", __PRETTY_FUNCTION__,
+			  inet_ntoa(on->address.u.prefix4), msgbuf);
 
 	oid_copy_addr(index, &(on->address.u.prefix4), IN_ADDR_SIZE);
 	index[IN_ADDR_SIZE] = 0;
@@ -2646,9 +2642,10 @@ static void ospfTrapIfStateChange(struct ospf_interface *oi)
 {
 	oid index[sizeof(oid) * (IN_ADDR_SIZE + 1)];
 
-	zlog_info("ospfTrapIfStateChange trap sent: %s now %s",
-		  inet_ntoa(oi->address->u.prefix4),
-		  lookup_msg(ospf_ism_state_msg, oi->state, NULL));
+	if (IS_DEBUG_OSPF_EVENT)
+		zlog_info("%s: trap sent: %s now %s", __PRETTY_FUNCTION__,
+			  inet_ntoa(oi->address->u.prefix4),
+			  lookup_msg(ospf_ism_state_msg, oi->state, NULL));
 
 	oid_copy_addr(index, &(oi->address->u.prefix4), IN_ADDR_SIZE);
 	index[IN_ADDR_SIZE] = 0;

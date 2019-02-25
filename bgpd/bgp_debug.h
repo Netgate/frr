@@ -72,6 +72,10 @@ extern unsigned long conf_bgp_debug_zebra;
 extern unsigned long conf_bgp_debug_allow_martians;
 extern unsigned long conf_bgp_debug_nht;
 extern unsigned long conf_bgp_debug_update_groups;
+extern unsigned long conf_bgp_debug_vpn;
+extern unsigned long conf_bgp_debug_flowspec;
+extern unsigned long conf_bgp_debug_labelpool;
+extern unsigned long conf_bgp_debug_pbr;
 
 extern unsigned long term_bgp_debug_as4;
 extern unsigned long term_bgp_debug_neighbor_events;
@@ -83,6 +87,10 @@ extern unsigned long term_bgp_debug_zebra;
 extern unsigned long term_bgp_debug_allow_martians;
 extern unsigned long term_bgp_debug_nht;
 extern unsigned long term_bgp_debug_update_groups;
+extern unsigned long term_bgp_debug_vpn;
+extern unsigned long term_bgp_debug_flowspec;
+extern unsigned long term_bgp_debug_labelpool;
+extern unsigned long term_bgp_debug_pbr;
 
 extern struct list *bgp_debug_neighbor_events_peers;
 extern struct list *bgp_debug_keepalive_peers;
@@ -111,6 +119,14 @@ struct bgp_debug_filter {
 #define BGP_DEBUG_ALLOW_MARTIANS      0x01
 #define BGP_DEBUG_NHT                 0x01
 #define BGP_DEBUG_UPDATE_GROUPS       0x01
+#define BGP_DEBUG_VPN_LEAK_FROM_VRF   0x01
+#define BGP_DEBUG_VPN_LEAK_TO_VRF     0x02
+#define BGP_DEBUG_VPN_LEAK_RMAP_EVENT 0x04
+#define BGP_DEBUG_VPN_LEAK_LABEL      0x08
+#define BGP_DEBUG_FLOWSPEC            0x01
+#define BGP_DEBUG_LABELPOOL           0x01
+#define BGP_DEBUG_PBR                 0x01
+#define BGP_DEBUG_PBR_ERROR           0x02
 
 #define BGP_DEBUG_PACKET_SEND         0x01
 #define BGP_DEBUG_PACKET_SEND_DETAIL  0x02
@@ -136,6 +152,7 @@ struct bgp_debug_filter {
 #define CONF_BGP_DEBUG(a, b)    (conf_bgp_debug_ ## a & BGP_DEBUG_ ## b)
 
 extern const char *bgp_type_str[];
+extern const char *pmsi_tnltype_str[];
 
 extern int bgp_dump_attr(struct attr *, char *, size_t);
 extern int bgp_debug_peer_updout_enabled(char *host);
@@ -154,8 +171,9 @@ extern int bgp_debug_zebra(struct prefix *p);
 extern int bgp_debug_count(void);
 extern const char *bgp_debug_rdpfxpath2str(afi_t, safi_t, struct prefix_rd *,
 					   union prefixconstptr, mpls_label_t *,
-					   int, u_int32_t, char *, int);
-const char *bgp_notify_admin_message(char *buf, size_t bufsz, u_char *data,
+					   uint32_t, int, uint32_t, char *,
+					   int);
+const char *bgp_notify_admin_message(char *buf, size_t bufsz, uint8_t *data,
 				     size_t datalen);
 
 #endif /* _QUAGGA_BGP_DEBUG_H */

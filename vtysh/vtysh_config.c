@@ -44,7 +44,7 @@ struct config {
 	struct config *config;
 
 	/* Index of this config. */
-	u_int32_t index;
+	uint32_t index;
 };
 
 struct list *config_top;
@@ -175,9 +175,12 @@ void vtysh_config_parse_line(void *arg, const char *line)
 			    == 0) {
 				config_add_line(config->line, line);
 				config->index = LINK_PARAMS_NODE;
-			} else if (strncmp(line,
-					   " ip multicast boundary",
-					   strlen(" ip multicast boundary")) == 0) {
+			} else if (strncmp(line, " ip multicast boundary",
+					   strlen(" ip multicast boundary"))
+				   == 0) {
+				config_add_line_end(config->line, line);
+			} else if (strncmp(line, " ip igmp query-interval",
+					   strlen(" ip igmp query-interval")) == 0) {
 				config_add_line_end(config->line, line);
 			} else if (config->index == LINK_PARAMS_NODE
 				   && strncmp(line, "  exit-link-params",
@@ -185,9 +188,15 @@ void vtysh_config_parse_line(void *arg, const char *line)
 					      == 0) {
 				config_add_line(config->line, line);
 				config->index = INTERFACE_NODE;
+			} else if (config->index == VRF_NODE
+				   && strncmp(line, " exit-vrf",
+					      strlen(" exit-vrf"))
+					      == 0) {
+				config_add_line(config->line, line);
+				config->index = CONFIG_NODE;
 			} else if (config->index == RMAP_NODE
 				   || config->index == INTERFACE_NODE
-				   || config->index == NS_NODE
+				   || config->index == LOGICALROUTER_NODE
 				   || config->index == VTY_NODE
 				   || config->index == VRF_NODE)
 				config_add_line_uniq(config->line, line);
@@ -201,10 +210,13 @@ void vtysh_config_parse_line(void *arg, const char *line)
 			config = config_get(INTERFACE_NODE, line);
 		else if (strncmp(line, "pseudowire", strlen("pseudowire")) == 0)
 			config = config_get(PW_NODE, line);
-		else if (strncmp(line, "logical-router", strlen("ns")) == 0)
-			config = config_get(NS_NODE, line);
+		else if (strncmp(line, "logical-router", strlen("logical-router")) == 0)
+			config = config_get(LOGICALROUTER_NODE, line);
 		else if (strncmp(line, "vrf", strlen("vrf")) == 0)
 			config = config_get(VRF_NODE, line);
+		else if (strncmp(line, "nexthop-group", strlen("nexthop-group"))
+			 == 0)
+			config = config_get(NH_GROUP_NODE, line);
 		else if (strncmp(line, "router-id", strlen("router-id")) == 0)
 			config = config_get(ZEBRA_NODE, line);
 		else if (strncmp(line, "router rip", strlen("router rip")) == 0)
@@ -235,6 +247,8 @@ void vtysh_config_parse_line(void *arg, const char *line)
 			config = config_get(ISIS_NODE, line);
 		else if (strncmp(line, "route-map", strlen("route-map")) == 0)
 			config = config_get(RMAP_NODE, line);
+		else if (strncmp(line, "pbr-map", strlen("pbr-map")) == 0)
+			config = config_get(PBRMAP_NODE, line);
 		else if (strncmp(line, "access-list", strlen("access-list"))
 			 == 0)
 			config = config_get(ACCESS_NODE, line);
@@ -263,10 +277,10 @@ void vtysh_config_parse_line(void *arg, const char *line)
 				 == 0
 			 || strncmp(line, "ip extcommunity-list",
 				    strlen("ip extcommunity-list"))
-				 == 0
+				    == 0
 			 || strncmp(line, "ip large-community-list",
 				    strlen("ip large-community-list"))
-				 == 0)
+				    == 0)
 			config = config_get(COMMUNITY_LIST_NODE, line);
 		else if (strncmp(line, "ip route", strlen("ip route")) == 0)
 			config = config_get(IP_NODE, line);
@@ -283,8 +297,6 @@ void vtysh_config_parse_line(void *arg, const char *line)
 				     strlen("ip forwarding"))
 			     == 0))
 			config = config_get(FORWARDING_NODE, line);
-		else if (strncmp(line, "service", strlen("service")) == 0)
-			config = config_get(SERVICE_NODE, line);
 		else if (strncmp(line, "debug vrf", strlen("debug vrf")) == 0)
 			config = config_get(VRF_DEBUG_NODE, line);
 		else if (strncmp(line, "debug", strlen("debug")) == 0)
@@ -306,6 +318,8 @@ void vtysh_config_parse_line(void *arg, const char *line)
 			config = config_get(PROTOCOL_NODE, line);
 		else if (strncmp(line, "mpls", strlen("mpls")) == 0)
 			config = config_get(MPLS_NODE, line);
+		else if (strncmp(line, "bfd", strlen("bfd")) == 0)
+			config = config_get(BFD_NODE, line);
 		else {
 			if (strncmp(line, "log", strlen("log")) == 0
 			    || strncmp(line, "hostname", strlen("hostname"))
@@ -328,12 +342,12 @@ void vtysh_config_parse_line(void *arg, const char *line)
 	((I) == ACCESS_NODE || (I) == PREFIX_NODE || (I) == IP_NODE            \
 	 || (I) == AS_LIST_NODE || (I) == COMMUNITY_LIST_NODE                  \
 	 || (I) == ACCESS_IPV6_NODE || (I) == ACCESS_MAC_NODE                  \
-	 || (I) == PREFIX_IPV6_NODE || (I) == SERVICE_NODE                     \
-	 || (I) == FORWARDING_NODE || (I) == DEBUG_NODE || (I) == AAA_NODE     \
-	 || (I) == VRF_DEBUG_NODE || (I) == MPLS_NODE)
+	 || (I) == PREFIX_IPV6_NODE || (I) == FORWARDING_NODE                  \
+	 || (I) == DEBUG_NODE || (I) == AAA_NODE || (I) == VRF_DEBUG_NODE      \
+	 || (I) == MPLS_NODE)
 
 /* Display configuration to file pointer. */
-void vtysh_config_dump(FILE *fp)
+void vtysh_config_dump(void)
 {
 	struct listnode *node, *nnode;
 	struct listnode *mnode, *mnnode;
@@ -342,43 +356,36 @@ void vtysh_config_dump(FILE *fp)
 	char *line;
 	unsigned int i;
 
-	for (ALL_LIST_ELEMENTS(config_top, node, nnode, line)) {
-		fprintf(fp, "%s\n", line);
-		fflush(fp);
-	}
-	fprintf(fp, "!\n");
-	fflush(fp);
+	for (ALL_LIST_ELEMENTS(config_top, node, nnode, line))
+		vty_out(vty, "%s\n", line);
+
+	vty_out(vty, "!\n");
 
 	for (i = 0; i < vector_active(configvec); i++)
 		if ((master = vector_slot(configvec, i)) != NULL) {
 			for (ALL_LIST_ELEMENTS(master, node, nnode, config)) {
-				/* Don't print empty sections for interface/vrf.
+				/* Don't print empty sections for interface.
 				 * Route maps on the
 				 * other hand could have a legitimate empty
 				 * section at the end.
+				 * VRF is handled in the backend, we could have
+				 * "configured" VRFs with static routes which
+				 * are not under the VRF node.
 				 */
-				if ((config->index == INTERFACE_NODE
-				     || config->index == VRF_NODE)
+				if (config->index == INTERFACE_NODE
 				    && list_isempty(config->line))
 					continue;
 
-				fprintf(fp, "%s\n", config->name);
-				fflush(fp);
+				vty_out(vty, "%s\n", config->name);
 
 				for (ALL_LIST_ELEMENTS(config->line, mnode,
-						       mnnode, line)) {
-					fprintf(fp, "%s\n", line);
-					fflush(fp);
-				}
-				if (!NO_DELIMITER(i)) {
-					fprintf(fp, "!\n");
-					fflush(fp);
-				}
+						       mnnode, line))
+					vty_out(vty, "%s\n", line);
+				if (!NO_DELIMITER(i))
+					vty_out(vty, "!\n");
 			}
-			if (NO_DELIMITER(i)) {
-				fprintf(fp, "!\n");
-				fflush(fp);
-			}
+			if (NO_DELIMITER(i))
+				vty_out(vty, "!\n");
 		}
 
 	for (i = 0; i < vector_active(configvec); i++)
@@ -396,7 +403,7 @@ static int vtysh_read_file(FILE *confp)
 	int ret;
 
 	vty = vty_new();
-	vty->fd = 0; /* stdout */
+	vty->wfd = STDERR_FILENO;
 	vty->type = VTY_TERM;
 	vty->node = CONFIG_NODE;
 
@@ -444,6 +451,11 @@ void vtysh_config_write()
 
 	if (cmd_hostname_get()) {
 		sprintf(line, "hostname %s", cmd_hostname_get());
+		vtysh_config_parse_line(NULL, line);
+	}
+
+	if (cmd_domainname_get()) {
+		sprintf(line, "domainname %s", cmd_domainname_get());
 		vtysh_config_parse_line(NULL, line);
 	}
 	if (vtysh_write_integrated == WRITE_INTEGRATED_NO)

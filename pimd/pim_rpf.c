@@ -37,17 +37,15 @@
 #include "pim_nht.h"
 #include "pim_oil.h"
 
-static long long last_route_change_time = -1;
-long long nexthop_lookups_avoided = 0;
-
 static struct in_addr pim_rpf_find_rpf_addr(struct pim_upstream *up);
 
-void pim_rpf_set_refresh_time(void)
+void pim_rpf_set_refresh_time(struct pim_instance *pim)
 {
-	last_route_change_time = pim_time_monotonic_usec();
+	pim->last_route_change_time = pim_time_monotonic_usec();
 	if (PIM_DEBUG_TRACE)
-		zlog_debug("%s: New last route change time: %lld",
-			   __PRETTY_FUNCTION__, last_route_change_time);
+		zlog_debug("%s: vrf(%s) New last route change time: %" PRId64,
+			   __PRETTY_FUNCTION__, pim->vrf->name,
+			   pim->last_route_change_time);
 }
 
 int pim_nexthop_lookup(struct pim_instance *pim, struct pim_nexthop *nexthop,
@@ -70,7 +68,7 @@ int pim_nexthop_lookup(struct pim_instance *pim, struct pim_nexthop *nexthop,
 		return -1;
 
 	if ((nexthop->last_lookup.s_addr == addr.s_addr)
-	    && (nexthop->last_lookup_time > last_route_change_time)) {
+	    && (nexthop->last_lookup_time > pim->last_route_change_time)) {
 		if (PIM_DEBUG_TRACE) {
 			char addr_str[INET_ADDRSTRLEN];
 			pim_inet4_dump("<addr?>", addr, addr_str,
@@ -79,12 +77,12 @@ int pim_nexthop_lookup(struct pim_instance *pim, struct pim_nexthop *nexthop,
 			pim_addr_dump("<nexthop?>", &nexthop->mrib_nexthop_addr,
 				      nexthop_str, sizeof(nexthop_str));
 			zlog_debug(
-				"%s: Using last lookup for %s at %lld, %lld addr%s",
+				"%s: Using last lookup for %s at %lld, %" PRId64 " addr %s",
 				__PRETTY_FUNCTION__, addr_str,
 				nexthop->last_lookup_time,
-				last_route_change_time, nexthop_str);
+				pim->last_route_change_time, nexthop_str);
 		}
-		nexthop_lookups_avoided++;
+		pim->nexthop_lookups_avoided++;
 		return 0;
 	} else {
 		if (PIM_DEBUG_TRACE) {
@@ -92,10 +90,10 @@ int pim_nexthop_lookup(struct pim_instance *pim, struct pim_nexthop *nexthop,
 			pim_inet4_dump("<addr?>", addr, addr_str,
 				       sizeof(addr_str));
 			zlog_debug(
-				"%s: Looking up: %s, last lookup time: %lld, %lld",
+				"%s: Looking up: %s, last lookup time: %lld, %" PRId64,
 				__PRETTY_FUNCTION__, addr_str,
 				nexthop->last_lookup_time,
-				last_route_change_time);
+				pim->last_route_change_time);
 		}
 	}
 
@@ -172,7 +170,7 @@ int pim_nexthop_lookup(struct pim_instance *pim, struct pim_nexthop *nexthop,
 				nexthop_tab[i].route_metric,
 				nexthop_tab[i].protocol_distance);
 		}
-		/* update nextop data */
+		/* update nexthop data */
 		nexthop->interface = ifp;
 		nexthop->mrib_nexthop_addr = nexthop_tab[i].nexthop_addr;
 		nexthop->mrib_metric_preference =
@@ -205,6 +203,7 @@ enum pim_rpf_result pim_rpf_update(struct pim_instance *pim,
 	struct prefix nht_p;
 	struct pim_nexthop_cache pnc;
 	struct prefix src, grp;
+	bool neigh_needed = true;
 
 	saved.source_nexthop = rpf->source_nexthop;
 	saved.rpf_addr = rpf->rpf_addr;
@@ -228,22 +227,20 @@ enum pim_rpf_result pim_rpf_update(struct pim_instance *pim,
 	grp.prefixlen = IPV4_MAX_BITLEN;
 	grp.u.prefix4 = up->sg.grp;
 	memset(&pnc, 0, sizeof(struct pim_nexthop_cache));
+
+	if ((up->sg.src.s_addr == INADDR_ANY && I_am_RP(pim, up->sg.grp)) ||
+	    PIM_UPSTREAM_FLAG_TEST_FHR(up->flags))
+		neigh_needed = FALSE;
 	if (pim_find_or_track_nexthop(pim, &nht_p, up, NULL, &pnc)) {
 		if (pnc.nexthop_num) {
-			if (!pim_ecmp_nexthop_search(
-				    pim, &pnc, &up->rpf.source_nexthop, &src,
-				    &grp,
-				    !PIM_UPSTREAM_FLAG_TEST_FHR(up->flags)
-					    && !PIM_UPSTREAM_FLAG_TEST_SRC_IGMP(
-						       up->flags)))
+			if (!pim_ecmp_nexthop_search(pim, &pnc,
+						     &up->rpf.source_nexthop,
+						     &src, &grp, neigh_needed))
 				return PIM_RPF_FAILURE;
 		}
 	} else {
-		if (!pim_ecmp_nexthop_lookup(
-			    pim, &rpf->source_nexthop, up->upstream_addr, &src,
-			    &grp, !PIM_UPSTREAM_FLAG_TEST_FHR(up->flags)
-					  && !PIM_UPSTREAM_FLAG_TEST_SRC_IGMP(
-						     up->flags)))
+		if (!pim_ecmp_nexthop_lookup(pim, &rpf->source_nexthop, &src,
+					     &grp, neigh_needed))
 			return PIM_RPF_FAILURE;
 	}
 

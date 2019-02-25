@@ -49,14 +49,15 @@
 #include "ospfd/ospf_lsdb.h"
 #include "ospfd/ospf_neighbor.h"
 #include "ospfd/ospf_dump.h"
+#include "ospfd/ospf_route.h"
 #include "ospfd/ospf_zebra.h"
 #include "ospfd/ospf_vty.h"
 #include "ospfd/ospf_bfd.h"
+#include "ospfd/ospf_errors.h"
 
 /* ospfd privileges */
-zebra_capabilities_t _caps_p[] = {
-	ZCAP_NET_RAW, ZCAP_BIND, ZCAP_NET_ADMIN,
-};
+zebra_capabilities_t _caps_p[] = {ZCAP_NET_RAW, ZCAP_BIND, ZCAP_NET_ADMIN,
+				  ZCAP_SYS_ADMIN};
 
 struct zebra_privs_t ospfd_privs = {
 #if defined(FRR_USER) && defined(FRR_GROUP)
@@ -133,7 +134,7 @@ FRR_DAEMON_INFO(ospfd, OSPF, .vty_port = OSPF_VTY_PORT,
 /* OSPFd main routine. */
 int main(int argc, char **argv)
 {
-	u_short instance = 0;
+	unsigned short instance = 0;
 
 #ifdef SUPPORT_OSPF_API
 	/* OSPF apiserver is disabled by default. */
@@ -207,12 +208,16 @@ int main(int argc, char **argv)
 	ospf_route_map_init();
 	ospf_opaque_init();
 
+	/* OSPF errors init */
+	ospf_error_init();
+
 	/* Need to initialize the default ospf structure, so the interface mode
 	   commands can be duly processed if they are received before 'router
 	   ospf',
 	   when quagga(ospfd) is restarted */
 	if (!ospf_get_instance(instance)) {
-		zlog_err("OSPF instance init failed: %s", strerror(errno));
+		flog_err(OSPF_ERR_INIT_FAIL, "OSPF instance init failed: %s",
+			  strerror(errno));
 		exit(1);
 	}
 

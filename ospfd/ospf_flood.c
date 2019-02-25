@@ -91,7 +91,7 @@ struct external_info *ospf_external_info_check(struct ospf *ospf,
 	p.prefix = lsa->data->id;
 	p.prefixlen = ip_masklen(al->mask);
 
-	for (type = 0; type <= ZEBRA_ROUTE_MAX; type++) {
+	for (type = 0; type < ZEBRA_ROUTE_MAX; type++) {
 		int redist_on = 0;
 
 		redist_on =
@@ -218,7 +218,7 @@ static void ospf_process_self_originated_lsa(struct ospf *ospf,
 		break;
 	case OSPF_OPAQUE_AS_LSA:
 		ospf_opaque_lsa_refresh(new);
-			/* Reconsideration may needed. */ /* XXX */
+		/* Reconsideration may needed. */ /* XXX */
 		break;
 	default:
 		break;
@@ -319,7 +319,7 @@ int ospf_flood(struct ospf *ospf, struct ospf_neighbor *nbr,
 
 	/* Do some internal house keeping that is needed here */
 	SET_FLAG(new->flags, OSPF_LSA_RECEIVED);
-	ospf_lsa_is_self_originated(ospf, new); /* Let it set the flag */
+	(void)ospf_lsa_is_self_originated(ospf, new); /* Let it set the flag */
 
 	/* Install the new LSA in the link state database
 	   (replacing the current database copy).  This may cause the
@@ -563,6 +563,7 @@ int ospf_flood_through_area(struct ospf_area *area, struct ospf_neighbor *inbr,
 	struct ospf_interface *oi;
 	int lsa_ack_flag = 0;
 
+	assert(area);
 	/* All other types are specific to a single area (Area A).  The
 	   eligible interfaces are all those interfaces attaching to the
 	   Area A.  If Area A is the backbone, this includes all the virtual
@@ -809,8 +810,7 @@ struct ospf_lsa *ospf_ls_request_new(struct lsa_header *lsah)
 {
 	struct ospf_lsa *new;
 
-	new = ospf_lsa_new();
-	new->data = ospf_lsa_data_new(OSPF_LSA_HEADER_SIZE);
+	new = ospf_lsa_new_and_data(OSPF_LSA_HEADER_SIZE);
 	memcpy(new->data, lsah, OSPF_LSA_HEADER_SIZE);
 
 	return new;

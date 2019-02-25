@@ -22,6 +22,8 @@
 #ifndef _ZEBRA_DEBUG_H
 #define _ZEBRA_DEBUG_H
 
+#include "lib/vty.h"
+
 /* Debug flags. */
 #define ZEBRA_DEBUG_EVENT   0x01
 
@@ -81,5 +83,7 @@ extern unsigned long zebra_debug_vxlan;
 extern unsigned long zebra_debug_pw;
 
 extern void zebra_debug_init(void);
+
+DECLARE_HOOK(zebra_debug_show_debugging, (struct vty *vty), (vty));
 
 #endif /* _ZEBRA_DEBUG_H */

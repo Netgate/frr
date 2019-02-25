@@ -24,13 +24,20 @@
 #include "qobj.h"
 #include "routemap.h"
 
+struct ospf6_master {
+
+	uint32_t zebra_router_id;
+};
+
 /* OSPFv3 top level data structure */
 struct ospf6 {
 	/* my router id */
-	u_int32_t router_id;
+	uint32_t router_id;
 
 	/* static router id */
-	u_int32_t router_id_static;
+	uint32_t router_id_static;
+
+	struct in_addr router_id_zebra;
 
 	/* start time */
 	struct timeval starttime;
@@ -48,7 +55,7 @@ struct ospf6 {
 
 	struct ospf6_route_table *external_table;
 	struct route_table *external_id_table;
-	u_int32_t external_id;
+	uint32_t external_id;
 
 	/* redistribute route-map */
 	struct {
@@ -56,10 +63,10 @@ struct ospf6 {
 		struct route_map *map;
 	} rmap[ZEBRA_ROUTE_MAX];
 
-	u_char flag;
+	uint8_t flag;
 
 	/* Configured flags */
-	u_char config_flags;
+	uint8_t config_flags;
 #define OSPF6_LOG_ADJACENCY_CHANGES      (1 << 0)
 #define OSPF6_LOG_ADJACENCY_DETAIL       (1 << 1)
 
@@ -82,16 +89,21 @@ struct ospf6 {
 	struct thread *t_spf_calc; /* SPF calculation timer. */
 	struct thread *t_ase_calc; /* ASE calculation timer. */
 	struct thread *maxage_remover;
+	struct thread *t_distribute_update; /* Distirbute update timer. */
 
-	u_int32_t ref_bandwidth;
+	uint32_t ref_bandwidth;
 
 	/* Distance parameters */
-	u_char distance_all;
-	u_char distance_intra;
-	u_char distance_inter;
-	u_char distance_external;
+	uint8_t distance_all;
+	uint8_t distance_intra;
+	uint8_t distance_inter;
+	uint8_t distance_external;
 
 	struct route_table *distance_table;
+
+	/* Used during ospf instance going down send LSDB
+	 * update to neighbors immediatly */
+	uint8_t inst_shutdown;
 
 	QOBJ_FIELDS
 };
@@ -102,10 +114,13 @@ DECLARE_QOBJ_TYPE(ospf6)
 
 /* global pointer for OSPF top data structure */
 extern struct ospf6 *ospf6;
+extern struct ospf6_master *om6;
 
 /* prototypes */
+extern void ospf6_master_init(void);
 extern void ospf6_top_init(void);
 extern void ospf6_delete(struct ospf6 *o);
+extern void ospf6_router_id_update(void);
 
 extern void ospf6_maxage_remove(struct ospf6 *o);
 

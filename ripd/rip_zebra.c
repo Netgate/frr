@@ -37,7 +37,7 @@
 struct zclient *zclient = NULL;
 
 /* Send ECMP routes to zebra. */
-static void rip_zebra_ipv4_send(struct route_node *rp, u_char cmd)
+static void rip_zebra_ipv4_send(struct route_node *rp, uint8_t cmd)
 {
 	struct list *list = (struct list *)rp->info;
 	struct zapi_route api;
@@ -56,6 +56,7 @@ static void rip_zebra_ipv4_send(struct route_node *rp, u_char cmd)
 		if (count >= MULTIPATH_NUM)
 			break;
 		api_nh = &api.nexthops[count];
+		api_nh->vrf_id = VRF_DEFAULT;
 		api_nh->gate = rinfo->nh.gate;
 		api_nh->type = NEXTHOP_TYPE_IPV4;
 		if (cmd == ZEBRA_ROUTE_ADD)
@@ -138,8 +139,7 @@ static int rip_zebra_read_route(int command, struct zclient *zclient,
 	if (command == ZEBRA_REDISTRIBUTE_ROUTE_ADD)
 		rip_redistribute_add(api.type, RIP_ROUTE_REDISTRIBUTE,
 				     (struct prefix_ipv4 *)&api.prefix, &nh,
-				     api.metric, api.distance,
-				     api.tag);
+				     api.metric, api.distance, api.tag);
 	else if (command == ZEBRA_REDISTRIBUTE_ROUTE_DEL)
 		rip_redistribute_delete(api.type, RIP_ROUTE_REDISTRIBUTE,
 					(struct prefix_ipv4 *)&api.prefix,

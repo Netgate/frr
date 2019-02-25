@@ -28,8 +28,6 @@
 
 DEFINE_MTYPE_STATIC(LIB, CMD_MATCHSTACK, "Command Match Stack")
 
-#define MAXDEPTH 256
-
 #ifdef TRACE_MATCHER
 #define TM 1
 #else
@@ -84,7 +82,7 @@ static enum match_type match_mac(const char *, bool);
 enum matcher_rv command_match(struct graph *cmdgraph, vector vline,
 			      struct list **argv, const struct cmd_element **el)
 {
-	struct graph_node *stack[MAXDEPTH];
+	struct graph_node *stack[CMD_ARGC_MAX];
 	enum matcher_rv status;
 	*argv = NULL;
 
@@ -100,6 +98,9 @@ enum matcher_rv command_match(struct graph *cmdgraph, vector vline,
 	if (status == MATCHER_OK) { // successful match
 		struct listnode *head = listhead(*argv);
 		struct listnode *tail = listtail(*argv);
+
+		assert(head);
+		assert(tail);
 
 		// delete dummy start node
 		cmd_token_del((struct cmd_token *)head->data);
@@ -200,7 +201,7 @@ static enum matcher_rv command_match_r(struct graph_node *start, vector vline,
 	/* check history/stack of tokens
 	 * this disallows matching the same one more than once if there is a
 	 * circle in the graph (used for keyword arguments) */
-	if (n == MAXDEPTH)
+	if (n == CMD_ARGC_MAX)
 		return MATCHER_NO_MATCH;
 	if (!token->allowrepeat)
 		for (size_t s = 0; s < n; s++)
@@ -607,11 +608,14 @@ static struct cmd_token *disambiguate_tokens(struct cmd_token *first,
 static struct list *disambiguate(struct list *first, struct list *second,
 				 vector vline, unsigned int n)
 {
+	assert(first != NULL);
+	assert(second != NULL);
 	// doesn't make sense for these to be inequal length
 	assert(first->count == second->count);
 	assert(first->count == vector_active(vline) - n + 1);
 
-	struct listnode *fnode = listhead(first), *snode = listhead(second);
+	struct listnode *fnode = listhead_unchecked(first),
+			*snode = listhead_unchecked(second);
 	struct cmd_token *ftok = listgetdata(fnode), *stok = listgetdata(snode),
 			 *best = NULL;
 

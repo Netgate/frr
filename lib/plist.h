@@ -35,9 +35,9 @@ enum prefix_list_type {
 struct prefix_list;
 
 struct orf_prefix {
-	u_int32_t seq;
-	u_char ge;
-	u_char le;
+	uint32_t seq;
+	uint8_t ge;
+	uint8_t le;
 	struct prefix p;
 };
 
@@ -60,18 +60,18 @@ extern struct prefix_list *prefix_list_lookup(afi_t, const char *);
  * If no pointer is sent in, do not return anything.
  * If it is a empty plist return a NULL pointer.
  */
-extern enum prefix_list_type prefix_list_apply_which_prefix(
-	struct prefix_list *plist,
-	struct prefix **which,
-	void *object);
+extern enum prefix_list_type
+prefix_list_apply_which_prefix(struct prefix_list *plist,
+			       const struct prefix **which,
+			       const void *object);
 #define prefix_list_apply(A, B) prefix_list_apply_which_prefix((A), NULL, (B))
 
 extern struct prefix_list *prefix_bgp_orf_lookup(afi_t, const char *);
 extern struct stream *prefix_bgp_orf_entry(struct stream *,
-					   struct prefix_list *, u_char, u_char,
-					   u_char);
+					   struct prefix_list *, uint8_t,
+					   uint8_t, uint8_t);
 extern int prefix_bgp_orf_set(char *, afi_t, struct orf_prefix *, int, int);
 extern void prefix_bgp_orf_remove_all(afi_t, char *);
-extern int prefix_bgp_show_prefix_list(struct vty *, afi_t, char *, u_char);
+extern int prefix_bgp_show_prefix_list(struct vty *, afi_t, char *, uint8_t);
 
 #endif /* _QUAGGA_PLIST_H */

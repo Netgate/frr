@@ -32,7 +32,7 @@ DEFINE_MTYPE_STATIC(LIB, CMD_TEXT, "Command Token Help")
 DEFINE_MTYPE(LIB, CMD_ARG, "Command Argument")
 DEFINE_MTYPE_STATIC(LIB, CMD_VAR, "Command Argument Name")
 
-struct cmd_token *cmd_token_new(enum cmd_token_type type, u_char attr,
+struct cmd_token *cmd_token_new(enum cmd_token_type type, uint8_t attr,
 				const char *text, const char *desc)
 {
 	struct cmd_token *token =
@@ -97,7 +97,7 @@ void cmd_token_varname_set(struct cmd_token *token, const char *varname)
 			token->varname[i] = '_';
 			break;
 		default:
-			token->varname[i] = tolower(varname[i]);
+			token->varname[i] = tolower((int)varname[i]);
 		}
 	token->varname[len] = '\0';
 }
@@ -198,7 +198,7 @@ static bool cmd_nodes_equal(struct graph_node *ga, struct graph_node *gb)
 }
 
 static void cmd_fork_bump_attr(struct graph_node *gn, struct graph_node *join,
-			       u_char attr)
+			       uint8_t attr)
 {
 	size_t i;
 	struct cmd_token *tok = gn->data;
@@ -457,3 +457,95 @@ void cmd_graph_names(struct graph *graph)
 
 	cmd_node_names(start, NULL, NULL);
 }
+
+#ifndef BUILDING_CLIPPY
+
+#include "command.h"
+#include "log.h"
+
+void cmd_graph_node_print_cb(struct graph_node *gn, struct buffer *buf)
+{
+	static bool wasend;
+
+	char nbuf[512];
+	struct cmd_token *tok = gn->data;
+	const char *color;
+
+	if (wasend == true) {
+		wasend = false;
+		return;
+	}
+
+	if (tok->type == END_TKN) {
+		wasend = true;
+		return;
+	}
+
+	snprintf(nbuf, sizeof(nbuf), "  n%p [ shape=box, label=<", gn);
+	buffer_putstr(buf, nbuf);
+	snprintf(nbuf, sizeof(nbuf), "<b>%s</b>",
+		 lookup_msg(tokennames, tok->type, NULL));
+	buffer_putstr(buf, nbuf);
+	if (tok->attr == CMD_ATTR_DEPRECATED)
+		buffer_putstr(buf, " (d)");
+	else if (tok->attr == CMD_ATTR_HIDDEN)
+		buffer_putstr(buf, " (h)");
+	if (tok->text) {
+		if (tok->type == WORD_TKN)
+			snprintf(
+				nbuf, sizeof(nbuf),
+				"<br/>\"<font color=\"#0055ff\" point-size=\"11\"><b>%s</b></font>\"",
+				tok->text);
+		else
+			snprintf(nbuf, sizeof(nbuf), "<br/>%s", tok->text);
+		buffer_putstr(buf, nbuf);
+	}
+
+	switch (tok->type) {
+	case START_TKN:
+		color = "#ccffcc";
+		break;
+	case FORK_TKN:
+		color = "#aaddff";
+		break;
+	case JOIN_TKN:
+		color = "#ddaaff";
+		break;
+	case WORD_TKN:
+		color = "#ffffff";
+		break;
+	default:
+		color = "#ffffff";
+		break;
+	}
+	snprintf(nbuf, sizeof(nbuf),
+		 ">, style = filled, fillcolor = \"%s\" ];\n", color);
+	buffer_putstr(buf, nbuf);
+
+	for (unsigned int i = 0; i < vector_active(gn->to); i++) {
+		struct graph_node *adj = vector_slot(gn->to, i);
+
+		if (((struct cmd_token *)adj->data)->type == END_TKN) {
+			snprintf(nbuf, sizeof(nbuf), "  n%p -> end%p;\n", gn,
+				 adj);
+			buffer_putstr(buf, nbuf);
+			snprintf(
+				nbuf, sizeof(nbuf),
+				"  end%p [ shape=box, label=<end>, style = filled, fillcolor = \"#ffddaa\" ];\n",
+				adj);
+		} else
+			snprintf(nbuf, sizeof(nbuf), "  n%p -> n%p;\n", gn,
+				 adj);
+
+		buffer_putstr(buf, nbuf);
+	}
+}
+
+char *cmd_graph_dump_dot(struct graph *cmdgraph)
+{
+	struct graph_node *start = vector_slot(cmdgraph->nodes, 0);
+
+	return graph_dump_dot(cmdgraph, start, cmd_graph_node_print_cb);
+}
+
+#endif /* BUILDING_CLIPPY */

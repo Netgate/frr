@@ -27,7 +27,7 @@
 struct zlog {
 	const char *ident; /* daemon name (first arg to openlog) */
 	const char *protoname;
-	u_short instance;
+	unsigned short instance;
 	int maxlvl[ZLOG_NUM_DESTS]; /* maximum priority to send to associated
 				       logging destination */
 	int default_lvl;	    /* maxlvl to use if none is specified */
@@ -36,6 +36,7 @@ struct zlog {
 	int facility;	/* as per syslog facility */
 	int record_priority; /* should messages logged through stdio include the
 				priority of the message? */
+	int error_code;
 	int syslog_options;  /* 2nd arg to openlog */
 	int timestamp_precision; /* # of digits of subsecond precision */
 };

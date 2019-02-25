@@ -63,9 +63,9 @@ struct ospf6_nexthop {
 
 /* Path */
 struct ospf6_ls_origin {
-	u_int16_t type;
-	u_int32_t id;
-	u_int32_t adv_router;
+	uint16_t type;
+	uint32_t id;
+	uint32_t adv_router;
 };
 
 struct ospf6_path {
@@ -73,29 +73,35 @@ struct ospf6_path {
 	struct ospf6_ls_origin origin;
 
 	/* Router bits */
-	u_char router_bits;
+	uint8_t router_bits;
 
 	/* Optional Capabilities */
-	u_char options[3];
+	uint8_t options[3];
 
 	/* Prefix Options */
-	u_char prefix_options;
+	uint8_t prefix_options;
 
 	/* Associated Area */
-	u_int32_t area_id;
+	uint32_t area_id;
 
 	/* Path-type */
-	u_char type;
-	u_char subtype; /* only used for redistribute i.e ZEBRA_ROUTE_XXX */
+	uint8_t type;
+	uint8_t subtype; /* only used for redistribute i.e ZEBRA_ROUTE_XXX */
 
 	/* Cost */
-	u_int8_t metric_type;
-	u_int32_t cost;
+	uint8_t metric_type;
+	uint32_t cost;
+
+	struct prefix ls_prefix;
+
 	union {
-		u_int32_t cost_e2;
-		u_int32_t cost_config;
+		uint32_t cost_e2;
+		uint32_t cost_config;
 	} u;
-	u_int32_t tag;
+	uint32_t tag;
+
+	/* nh list for this path */
+	struct list *nh_list;
 };
 
 #define OSPF6_PATH_TYPE_NONE         0
@@ -123,7 +129,7 @@ struct ospf6_route {
 	unsigned int lock;
 
 	/* Destination Type */
-	u_char type;
+	uint8_t type;
 
 	/* XXX: It would likely be better to use separate struct in_addr's
 	 * for the advertising router-ID and prefix IDs, instead of stuffing
@@ -138,16 +144,19 @@ struct ospf6_route {
 	struct timeval changed;
 
 	/* flag */
-	u_char flag;
+	uint8_t flag;
 
 	/* route option */
 	void *route_option;
 
 	/* link state id for advertising */
-	u_int32_t linkstate_id;
+	uint32_t linkstate_id;
 
 	/* path */
 	struct ospf6_path path;
+
+	/* List of Paths. */
+	struct list *paths;
 
 	/* nexthop */
 	struct list *nh_list;
@@ -178,7 +187,7 @@ struct ospf6_route_table {
 	/* patricia tree */
 	struct route_table *table;
 
-	u_int32_t count;
+	uint32_t count;
 
 	bitfield_t idspace;
 
@@ -240,6 +249,7 @@ extern const char *ospf6_path_type_substr[OSPF6_PATH_TYPE_MAX];
 	((ra)->type == (rb)->type                                              \
 	 && memcmp(&(ra)->prefix, &(rb)->prefix, sizeof(struct prefix)) == 0   \
 	 && memcmp(&(ra)->path, &(rb)->path, sizeof(struct ospf6_path)) == 0   \
+	 && listcount(ra->paths) == listcount(rb->paths)		       \
 	 && ospf6_route_cmp_nexthops(ra, rb) == 0)
 
 #define ospf6_route_is_best(r) (CHECK_FLAG ((r)->flag, OSPF6_ROUTE_BEST))
@@ -250,12 +260,13 @@ extern const char *ospf6_path_type_substr[OSPF6_PATH_TYPE_MAX];
 #define ADV_ROUTER_IN_PREFIX(x) ((x)->u.lp.id.s_addr)
 
 /* Function prototype */
-extern void ospf6_linkstate_prefix(u_int32_t adv_router, u_int32_t id,
+extern void ospf6_linkstate_prefix(uint32_t adv_router, uint32_t id,
 				   struct prefix *prefix);
 extern void ospf6_linkstate_prefix2str(struct prefix *prefix, char *buf,
 				       int size);
 
 extern struct ospf6_nexthop *ospf6_nexthop_create(void);
+extern int ospf6_nexthop_cmp(struct ospf6_nexthop *a, struct ospf6_nexthop *b);
 extern void ospf6_nexthop_delete(struct ospf6_nexthop *nh);
 extern void ospf6_clear_nexthops(struct list *nh_list);
 extern int ospf6_num_nexthops(struct list *nh_list);
@@ -331,5 +342,8 @@ extern int config_write_ospf6_debug_route(struct vty *vty);
 extern void install_element_ospf6_debug_route(void);
 extern void ospf6_route_init(void);
 extern void ospf6_clean(void);
+extern void ospf6_path_free(struct ospf6_path *op);
+extern struct ospf6_path *ospf6_path_dup(struct ospf6_path *path);
+extern void ospf6_copy_paths(struct list *dst, struct list *src);
 
 #endif /* OSPF6_ROUTE_H */

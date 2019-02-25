@@ -40,9 +40,11 @@
 #include "md5.h"
 #include "keychain.h"
 #include "privs.h"
+#include "lib_errors.h"
 
 #include "ripd/ripd.h"
 #include "ripd/rip_debug.h"
+#include "ripd/rip_errors.h"
 
 DEFINE_QOBJ_TYPE(rip)
 
@@ -64,7 +66,7 @@ long rip_global_queries = 0;
 /* Prototypes. */
 static void rip_event(enum rip_event, int);
 static void rip_output_process(struct connected *, struct sockaddr_in *, int,
-			       u_char);
+			       uint8_t);
 static int rip_triggered_update(struct thread *);
 static int rip_update_jitter(unsigned long);
 
@@ -451,9 +453,8 @@ static void rip_rte_process(struct rte *rte, struct sockaddr_in *from,
 		/* Get back the object */
 		rte->nexthop = newinfo.nexthop_out;
 		rte->tag = htons(newinfo.tag_out); /* XXX */
-		rte->metric =
-			newinfo.metric_out; /* XXX: the routemap uses the
-					       metric_out field */
+		rte->metric = newinfo.metric_out;  /* XXX: the routemap uses the
+						      metric_out field */
 	}
 
 	/* Once the entry has been validated, update the metric by
@@ -676,8 +677,8 @@ static void rip_packet_dump(struct rip_packet *packet, int size,
 	struct rte *rte;
 	const char *command_str;
 	char pbuf[BUFSIZ], nbuf[BUFSIZ];
-	u_char netmask = 0;
-	u_char *p;
+	uint8_t netmask = 0;
+	uint8_t *p;
 
 	/* Set command string. */
 	if (packet->command > 0 && packet->command < RIP_COMMAND_MAX)
@@ -699,7 +700,7 @@ static void rip_packet_dump(struct rip_packet *packet, int size,
 			if (rte->family == htons(RIP_FAMILY_AUTH)) {
 				if (rte->tag
 				    == htons(RIP_AUTH_SIMPLE_PASSWORD)) {
-					p = (u_char *)&rte->prefix;
+					p = (uint8_t *)&rte->prefix;
 
 					zlog_debug(
 						"  family 0x%X type %d auth string: %s",
@@ -720,11 +721,11 @@ static void rip_packet_dump(struct rip_packet *packet, int size,
 						" Auth Data len %d",
 						ntohs(md5->packet_len),
 						md5->keyid, md5->auth_len);
-					zlog_debug(
-						"    Sequence Number %ld",
-						(u_long)ntohl(md5->sequence));
+					zlog_debug("    Sequence Number %ld",
+						   (unsigned long)ntohl(
+							   md5->sequence));
 				} else if (rte->tag == htons(RIP_AUTH_DATA)) {
-					p = (u_char *)&rte->prefix;
+					p = (uint8_t *)&rte->prefix;
 
 					zlog_debug(
 						"  family 0x%X type %d (MD5 data)",
@@ -754,7 +755,7 @@ static void rip_packet_dump(struct rip_packet *packet, int size,
 						  BUFSIZ),
 					ntohs(rte->family),
 					(route_tag_t)ntohs(rte->tag),
-					(u_long)ntohl(rte->metric));
+					(unsigned long)ntohl(rte->metric));
 		} else {
 			zlog_debug(
 				"  %s family %d tag %" ROUTE_TAG_PRI
@@ -762,7 +763,7 @@ static void rip_packet_dump(struct rip_packet *packet, int size,
 				inet_ntop(AF_INET, &rte->prefix, pbuf, BUFSIZ),
 				ntohs(rte->family),
 				(route_tag_t)ntohs(rte->tag),
-				(u_long)ntohl(rte->metric));
+				(unsigned long)ntohl(rte->metric));
 		}
 	}
 }
@@ -772,7 +773,7 @@ static void rip_packet_dump(struct rip_packet *packet, int size,
    check net 0 because we accept default route. */
 static int rip_destination_check(struct in_addr addr)
 {
-	u_int32_t destination;
+	uint32_t destination;
 
 	/* Convert to host byte order. */
 	destination = ntohl(addr.s_addr);
@@ -800,11 +801,11 @@ static int rip_auth_simple_password(struct rte *rte, struct sockaddr_in *from,
 				    struct interface *ifp)
 {
 	struct rip_interface *ri;
-	char *auth_str = (char *)&rte->prefix;
+	char *auth_str = (char *)rte + offsetof(struct rte, prefix);
 	int i;
 
 	/* reject passwords with zeros in the middle of the string */
-	for (i = strlen(auth_str); i < 16; i++) {
+	for (i = strnlen(auth_str, 16); i < 16; i++) {
 		if (auth_str[i] != '\0')
 			return 0;
 	}
@@ -829,7 +830,7 @@ static int rip_auth_simple_password(struct rte *rte, struct sockaddr_in *from,
 		struct key *key;
 
 		keychain = keychain_lookup(ri->key_chain);
-		if (keychain == NULL)
+		if (keychain == NULL || keychain->key == NULL)
 			return 0;
 
 		key = key_match_for_accept(keychain, auth_str);
@@ -849,8 +850,8 @@ static int rip_auth_md5(struct rip_packet *packet, struct sockaddr_in *from,
 	struct keychain *keychain;
 	struct key *key;
 	MD5_CTX ctx;
-	u_char digest[RIP_AUTH_MD5_SIZE];
-	u_int16_t packet_len;
+	uint8_t digest[RIP_AUTH_MD5_SIZE];
+	uint16_t packet_len;
 	char auth_str[RIP_AUTH_MD5_SIZE];
 
 	if (IS_RIP_DEBUG_EVENT)
@@ -893,7 +894,7 @@ static int rip_auth_md5(struct rip_packet *packet, struct sockaddr_in *from,
 	}
 
 	/* retrieve authentication data */
-	md5data = (struct rip_md5_data *)(((u_char *)packet) + packet_len);
+	md5data = (struct rip_md5_data *)(((uint8_t *)packet) + packet_len);
 
 	memset(auth_str, 0, RIP_AUTH_MD5_SIZE);
 
@@ -903,7 +904,7 @@ static int rip_auth_md5(struct rip_packet *packet, struct sockaddr_in *from,
 			return 0;
 
 		key = key_lookup_for_accept(keychain, md5->keyid);
-		if (key == NULL)
+		if (key == NULL || key->string == NULL)
 			return 0;
 
 		strncpy(auth_str, key->string, RIP_AUTH_MD5_SIZE);
@@ -1057,9 +1058,9 @@ static void rip_auth_md5_set(struct stream *s, struct rip_interface *ri,
 
 	/* Check packet length. */
 	if (len < (RIP_HEADER_SIZE + RIP_RTE_SIZE)) {
-		zlog_err(
-			"rip_auth_md5_set(): packet length %ld is less than minimum length.",
-			len);
+		flog_err(RIP_ERR_PACKET,
+			  "rip_auth_md5_set(): packet length %ld is less than minimum length.",
+			  len);
 		return;
 	}
 
@@ -1180,7 +1181,7 @@ static void rip_response_process(struct rip_packet *packet, int size,
 		   the received Next Hop is not directly reachable, it should be
 		   treated as 0.0.0.0. */
 		if (packet->version == RIPv2 && rte->nexthop.s_addr != 0) {
-			u_int32_t addrval;
+			uint32_t addrval;
 
 			/* Multicast address check. */
 			addrval = ntohl(rte->nexthop.s_addr);
@@ -1246,7 +1247,7 @@ static void rip_response_process(struct rip_packet *packet, int size,
 		    || (packet->version == RIPv2
 			&& (rte->prefix.s_addr != 0
 			    && rte->mask.s_addr == 0))) {
-			u_int32_t destination;
+			uint32_t destination;
 
 			if (subnetted == -1) {
 				memcpy(&ifaddr, ifc->address,
@@ -1340,7 +1341,8 @@ static int rip_create_socket(void)
 	/* Make datagram socket. */
 	sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 	if (sock < 0) {
-		zlog_err("Cannot create UDP socket: %s", safe_strerror(errno));
+		flog_err_sys(LIB_ERR_SOCKET, "Cannot create UDP socket: %s",
+			     safe_strerror(errno));
 		exit(1);
 	}
 
@@ -1355,26 +1357,19 @@ static int rip_create_socket(void)
 	setsockopt_ipv4_tos(sock, IPTOS_PREC_INTERNETCONTROL);
 #endif
 
-	if (ripd_privs.change(ZPRIVS_RAISE))
-		zlog_err("rip_create_socket: could not raise privs");
-	setsockopt_so_recvbuf(sock, RIP_UDP_RCV_BUF);
-	if ((ret = bind(sock, (struct sockaddr *)&addr, sizeof(addr))) < 0)
+	frr_elevate_privs(&ripd_privs) {
+		setsockopt_so_recvbuf(sock, RIP_UDP_RCV_BUF);
+		if ((ret = bind(sock, (struct sockaddr *)&addr, sizeof(addr)))
+		    < 0) {
+			zlog_err("%s: Can't bind socket %d to %s port %d: %s",
+				 __func__, sock, inet_ntoa(addr.sin_addr),
+				 (int)ntohs(addr.sin_port),
+				 safe_strerror(errno));
 
-	{
-		int save_errno = errno;
-		if (ripd_privs.change(ZPRIVS_LOWER))
-			zlog_err("rip_create_socket: could not lower privs");
-
-		zlog_err("%s: Can't bind socket %d to %s port %d: %s", __func__,
-			 sock, inet_ntoa(addr.sin_addr),
-			 (int)ntohs(addr.sin_port), safe_strerror(save_errno));
-
-		close(sock);
-		return ret;
+			close(sock);
+			return ret;
+		}
 	}
-
-	if (ripd_privs.change(ZPRIVS_LOWER))
-		zlog_err("rip_create_socket: could not lower privs");
 
 	return sock;
 }
@@ -1383,7 +1378,7 @@ static int rip_create_socket(void)
  * by connected argument. NULL to argument denotes destination should be
  * should be RIP multicast group
  */
-static int rip_send_packet(u_char *buf, int size, struct sockaddr_in *to,
+static int rip_send_packet(uint8_t *buf, int size, struct sockaddr_in *to,
 			   struct connected *ifc)
 {
 	int ret;
@@ -1463,9 +1458,8 @@ static int rip_send_packet(u_char *buf, int size, struct sockaddr_in *to,
 
 /* Add redistributed route to RIP table. */
 void rip_redistribute_add(int type, int sub_type, struct prefix_ipv4 *p,
-			  struct nexthop *nh,
-			  unsigned int metric, unsigned char distance,
-			  route_tag_t tag)
+			  struct nexthop *nh, unsigned int metric,
+			  unsigned char distance, route_tag_t tag)
 {
 	int ret;
 	struct route_node *rp = NULL;
@@ -1518,9 +1512,8 @@ void rip_redistribute_add(int type, int sub_type, struct prefix_ipv4 *p,
 		(void)rip_ecmp_add(&newinfo);
 
 	if (IS_RIP_DEBUG_EVENT) {
-		zlog_debug(
-			"Redistribute new prefix %s/%d",
-			inet_ntoa(p->prefix), p->prefixlen);
+		zlog_debug("Redistribute new prefix %s/%d",
+			   inet_ntoa(p->prefix), p->prefixlen);
 	}
 
 	rip_event(RIP_TRIGGERED_UPDATE, 0);
@@ -1644,7 +1637,7 @@ static void rip_request_process(struct rip_packet *packet, int size,
 		}
 		packet->command = RIP_RESPONSE;
 
-		rip_send_packet((u_char *)packet, size, from, ifc);
+		(void)rip_send_packet((uint8_t *)packet, size, from, ifc);
 	}
 	rip_global_queries++;
 }
@@ -1664,7 +1657,7 @@ static int setsockopt_pktinfo(int sock)
 }
 
 /* Read RIP packet by recvmsg function. */
-int rip_recvmsg(int sock, u_char *buf, int size, struct sockaddr_in *from,
+int rip_recvmsg(int sock, uint8_t *buf, int size, struct sockaddr_in *from,
 		ifindex_t *ifindex)
 {
 	int ret;
@@ -2012,7 +2005,7 @@ static int rip_read(struct thread *t)
 /* Write routing table entry to the stream and return next index of
    the routing table entry in the stream. */
 static int rip_write_rte(int num, struct stream *s, struct prefix_ipv4 *p,
-			 u_char version, struct rip_info *rinfo)
+			 uint8_t version, struct rip_info *rinfo)
 {
 	struct in_addr mask;
 
@@ -2040,7 +2033,7 @@ static int rip_write_rte(int num, struct stream *s, struct prefix_ipv4 *p,
 
 /* Send update to the ifp or spcified neighbor. */
 void rip_output_process(struct connected *ifc, struct sockaddr_in *to,
-			int route_type, u_char version)
+			int route_type, uint8_t version)
 {
 	int ret;
 	struct stream *s;
@@ -2104,6 +2097,8 @@ void rip_output_process(struct connected *ifc, struct sockaddr_in *to,
 		/* to be passed to auth functions later */
 		rip_auth_prepare_str_send(ri, key, auth_str,
 					  RIP_AUTH_SIMPLE_SIZE);
+		if (strlen(auth_str) == 0)
+			return;
 	}
 
 	if (version == RIPv1) {
@@ -2189,6 +2184,7 @@ void rip_output_process(struct connected *ifc, struct sockaddr_in *to,
 				 */
 				int suppress = 0;
 				struct rip_info *tmp_rinfo = NULL;
+				struct connected *tmp_ifc = NULL;
 
 				for (ALL_LIST_ELEMENTS_RO(list, listnode,
 							  tmp_rinfo))
@@ -2200,10 +2196,17 @@ void rip_output_process(struct connected *ifc, struct sockaddr_in *to,
 					}
 
 				if (!suppress
-				    && rinfo->type == ZEBRA_ROUTE_CONNECT
-				    && prefix_match((struct prefix *)p,
-						    ifc->address))
-					suppress = 1;
+				    && rinfo->type == ZEBRA_ROUTE_CONNECT) {
+					for (ALL_LIST_ELEMENTS_RO(
+						     ifc->ifp->connected,
+						     listnode, tmp_ifc))
+						if (prefix_match(
+							    (struct prefix *)p,
+							    tmp_ifc->address)) {
+							suppress = 1;
+							break;
+						}
+				}
 
 				if (suppress)
 					continue;
@@ -2314,6 +2317,7 @@ void rip_output_process(struct connected *ifc, struct sockaddr_in *to,
 				 * configured on the same interface).
 				 */
 				struct rip_info *tmp_rinfo = NULL;
+				struct connected *tmp_ifc = NULL;
 
 				for (ALL_LIST_ELEMENTS_RO(list, listnode,
 							  tmp_rinfo))
@@ -2322,10 +2326,20 @@ void rip_output_process(struct connected *ifc, struct sockaddr_in *to,
 						       == ifc->ifp->ifindex)
 						rinfo->metric_out =
 							RIP_METRIC_INFINITY;
-				if (tmp_rinfo->type == ZEBRA_ROUTE_CONNECT
-				    && prefix_match((struct prefix *)p,
-						    ifc->address))
-					rinfo->metric_out = RIP_METRIC_INFINITY;
+
+				if (rinfo->metric_out != RIP_METRIC_INFINITY
+				    && rinfo->type == ZEBRA_ROUTE_CONNECT) {
+					for (ALL_LIST_ELEMENTS_RO(
+						     ifc->ifp->connected,
+						     listnode, tmp_ifc))
+						if (prefix_match(
+							    (struct prefix *)p,
+							    tmp_ifc->address)) {
+							rinfo->metric_out =
+								RIP_METRIC_INFINITY;
+							break;
+						}
+				}
 			}
 
 			/* Prepare preamble, auth headers, if needs be */
@@ -2384,7 +2398,7 @@ void rip_output_process(struct connected *ifc, struct sockaddr_in *to,
 }
 
 /* Send RIP packet to the interface. */
-static void rip_update_interface(struct connected *ifc, u_char version,
+static void rip_update_interface(struct connected *ifc, uint8_t version,
 				 int route_type)
 {
 	struct interface *ifp = ifc->ifp;
@@ -2686,7 +2700,7 @@ static int rip_create(void)
 
 /* Sned RIP request to the destination. */
 int rip_request_send(struct sockaddr_in *to, struct interface *ifp,
-		     u_char version, struct connected *connected)
+		     uint8_t version, struct connected *connected)
 {
 	struct rte *rte;
 	struct rip_packet rip_packet;
@@ -2705,7 +2719,7 @@ int rip_request_send(struct sockaddr_in *to, struct interface *ifp,
 		 * interface does not support multicast.  Caller loops
 		 * over each connected address for this case.
 		 */
-		if (rip_send_packet((u_char *)&rip_packet, sizeof(rip_packet),
+		if (rip_send_packet((uint8_t *)&rip_packet, sizeof(rip_packet),
 				    to, connected)
 		    != sizeof(rip_packet))
 			return -1;
@@ -2722,7 +2736,7 @@ int rip_request_send(struct sockaddr_in *to, struct interface *ifp,
 		if (p->family != AF_INET)
 			continue;
 
-		if (rip_send_packet((u_char *)&rip_packet, sizeof(rip_packet),
+		if (rip_send_packet((uint8_t *)&rip_packet, sizeof(rip_packet),
 				    to, connected)
 		    != sizeof(rip_packet))
 			return -1;
@@ -2794,6 +2808,7 @@ DEFUN_NOSH (router_rip,
 			return CMD_WARNING_CONFIG_FAILED;
 		}
 	}
+
 	VTY_PUSH_CONTEXT(RIP_NODE, rip);
 
 	return CMD_SUCCESS;
@@ -2879,8 +2894,8 @@ DEFUN (rip_route,
 
 	node->info = (void *)1;
 
-	rip_redistribute_add(ZEBRA_ROUTE_RIP, RIP_ROUTE_STATIC, &p, &nh, 0,
-			     0, 0);
+	rip_redistribute_add(ZEBRA_ROUTE_RIP, RIP_ROUTE_STATIC, &p, &nh, 0, 0,
+			     0);
 
 	return CMD_SUCCESS;
 }
@@ -3044,7 +3059,7 @@ struct route_table *rip_distance_table;
 
 struct rip_distance {
 	/* Distance value for the IP source prefix. */
-	u_char distance;
+	uint8_t distance;
 
 	/* Name of the access-list to be matched. */
 	char *access_list;
@@ -3065,7 +3080,7 @@ static int rip_distance_set(struct vty *vty, const char *distance_str,
 {
 	int ret;
 	struct prefix_ipv4 p;
-	u_char distance;
+	uint8_t distance;
 	struct route_node *rn;
 	struct rip_distance *rdistance;
 
@@ -3150,7 +3165,7 @@ static void rip_distance_reset(void)
 }
 
 /* Apply RIP information to distance method. */
-u_char rip_distance_apply(struct rip_info *rinfo)
+uint8_t rip_distance_apply(struct rip_info *rinfo)
 {
 	struct route_node *rn;
 	struct prefix_ipv4 p;
@@ -3451,7 +3466,7 @@ DEFUN (show_ip_rip,
 				if (len > 0)
 					vty_out(vty, "%*s", len, " ");
 
-				switch(rinfo->nh.type) {
+				switch (rinfo->nh.type) {
 				case NEXTHOP_TYPE_IPV4:
 				case NEXTHOP_TYPE_IPV4_IFINDEX:
 					vty_out(vty, "%-20s %2d ",

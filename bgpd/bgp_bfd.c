@@ -101,7 +101,7 @@ static void bgp_bfd_peer_sendmsg(struct peer *peer, int command)
 
 	bfd_info = (struct bfd_info *)peer->bfd_info;
 
-	if (peer->bgp && (peer->bgp->inst_type == BGP_INSTANCE_TYPE_VRF))
+	if (peer->bgp->inst_type == BGP_INSTANCE_TYPE_VRF)
 		vrf_id = peer->bgp->vrf_id;
 
 	if (command == ZEBRA_BFD_DEST_DEREGISTER) {
@@ -302,13 +302,13 @@ static int bgp_bfd_dest_update(int command, struct zclient *zclient,
 		prefix2str(&dp, buf[0], sizeof(buf[0]));
 		if (ifp) {
 			zlog_debug(
-				"Zebra: vrf %d interface %s bfd destination %s %s",
+				"Zebra: vrf %u interface %s bfd destination %s %s",
 				vrf_id, ifp->name, buf[0],
 				bfd_get_status_str(status));
 		} else {
 			prefix2str(&sp, buf[1], sizeof(buf[1]));
 			zlog_debug(
-				"Zebra: vrf %d source %s bfd destination %s %s",
+				"Zebra: vrf %u source %s bfd destination %s %s",
 				vrf_id, buf[1], buf[0],
 				bfd_get_status_str(status));
 		}
@@ -383,8 +383,8 @@ static int bgp_bfd_dest_update(int command, struct zclient *zclient,
 /*
  * bgp_bfd_peer_param_set - Set the configured BFD paramter values for peer.
  */
-static int bgp_bfd_peer_param_set(struct peer *peer, u_int32_t min_rx,
-				  u_int32_t min_tx, u_int8_t detect_mult,
+static int bgp_bfd_peer_param_set(struct peer *peer, uint32_t min_rx,
+				  uint32_t min_tx, uint8_t detect_mult,
 				  int defaults)
 {
 	struct peer_group *group;
@@ -509,9 +509,13 @@ void bgp_bfd_peer_config_write(struct vty *vty, struct peer *peer, char *addr)
 	bfd_info = (struct bfd_info *)peer->bfd_info;
 
 	if (CHECK_FLAG(bfd_info->flags, BFD_FLAG_PARAM_CFG))
+#if HAVE_BFDD > 0
+		vty_out(vty, " neighbor %s bfd\n", addr);
+#else
 		vty_out(vty, " neighbor %s bfd %d %d %d\n", addr,
 			bfd_info->detect_mult, bfd_info->required_min_rx,
 			bfd_info->desired_min_tx);
+#endif /* HAVE_BFDD */
 
 	if (bfd_info->type != BFD_TYPE_NOT_CONFIGURED)
 		vty_out(vty, " neighbor %s bfd %s\n", addr,
@@ -526,7 +530,7 @@ void bgp_bfd_peer_config_write(struct vty *vty, struct peer *peer, char *addr)
 /*
  * bgp_bfd_show_info - Show the peer BFD information.
  */
-void bgp_bfd_show_info(struct vty *vty, struct peer *peer, u_char use_json,
+void bgp_bfd_show_info(struct vty *vty, struct peer *peer, uint8_t use_json,
 		       json_object *json_neigh)
 {
 	bfd_show_info(vty, (struct bfd_info *)peer->bfd_info,
@@ -556,7 +560,12 @@ DEFUN (neighbor_bfd,
 	return CMD_SUCCESS;
 }
 
-DEFUN (neighbor_bfd_param,
+#if HAVE_BFDD > 0
+DEFUN_HIDDEN(
+#else
+DEFUN(
+#endif /* HAVE_BFDD */
+       neighbor_bfd_param,
        neighbor_bfd_param_cmd,
        "neighbor <A.B.C.D|X:X::X:X|WORD> bfd (2-255) (50-60000) (50-60000)",
        NEIGHBOR_STR
@@ -571,9 +580,9 @@ DEFUN (neighbor_bfd_param,
 	int idx_number_2 = 4;
 	int idx_number_3 = 5;
 	struct peer *peer;
-	u_int32_t rx_val;
-	u_int32_t tx_val;
-	u_int8_t dm_val;
+	uint32_t rx_val;
+	uint32_t tx_val;
+	uint8_t dm_val;
 	int ret;
 
 	peer = peer_and_group_lookup_vty(vty, argv[idx_peer]->arg);
@@ -628,14 +637,21 @@ DEFUN_HIDDEN (neighbor_bfd_type,
 
 DEFUN (no_neighbor_bfd,
        no_neighbor_bfd_cmd,
+#if HAVE_BFDD > 0
+       "no neighbor <A.B.C.D|X:X::X:X|WORD> bfd",
+#else
        "no neighbor <A.B.C.D|X:X::X:X|WORD> bfd [(2-255) (50-60000) (50-60000)]",
+#endif /* HAVE_BFDD */
        NO_STR
        NEIGHBOR_STR
        NEIGHBOR_ADDR_STR2
        "Disables BFD support\n"
+#if HAVE_BFDD == 0
        "Detect Multiplier\n"
        "Required min receive interval\n"
-       "Desired min transmit interval\n")
+       "Desired min transmit interval\n"
+#endif /* !HAVE_BFDD */
+)
 {
 	int idx_peer = 2;
 	struct peer *peer;

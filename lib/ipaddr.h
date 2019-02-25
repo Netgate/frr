@@ -37,7 +37,7 @@ enum ipaddr_type_t {
 struct ipaddr {
 	enum ipaddr_type_t ipa_type;
 	union {
-		u_char addr;
+		uint8_t addr;
 		struct in_addr _v4_addr;
 		struct in6_addr _v6_addr;
 	} ip;
@@ -85,4 +85,31 @@ static inline char *ipaddr2str(struct ipaddr *ip, char *buf, int size)
 	}
 	return buf;
 }
+
+/*
+ * Convert IPv4 address to IPv4-mapped IPv6 address which is of the
+ * form ::FFFF:<IPv4 address> (RFC 4291). This IPv6 address can then
+ * be used to represent the IPv4 address, wherever only an IPv6 address
+ * is required.
+ */
+static inline void ipv4_to_ipv4_mapped_ipv6(struct in6_addr *in6,
+					    struct in_addr in)
+{
+	uint32_t addr_type = htonl(0xFFFF);
+
+	memset(in6, 0, sizeof(struct in6_addr));
+	memcpy((char *)in6 + 8, &addr_type, sizeof(addr_type));
+	memcpy((char *)in6 + 12, &in, sizeof(struct in_addr));
+}
+
+/*
+ * convert an ipv4 mapped ipv6 address back to ipv4 address
+ */
+static inline void ipv4_mapped_ipv6_to_ipv4(struct in6_addr *in6,
+					    struct in_addr *in)
+{
+	memset(in, 0, sizeof(struct in_addr));
+	memcpy(in, (char *)in6 + 12, sizeof(struct in_addr));
+}
+
 #endif /* __IPADDR_H__ */

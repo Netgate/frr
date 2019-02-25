@@ -32,6 +32,7 @@
 #include "log.h"
 #include "plist.h"
 #include "vrf.h"
+#include "frrstr.h"
 
 #include "ospfd/ospfd.h"
 #include "ospfd/ospf_asbr.h"
@@ -69,15 +70,18 @@ static void ospf_route_map_update(const char *name)
 					struct route_map *old = ROUTEMAP(red);
 
 					/* Update route-map. */
-					ROUTEMAP(red) = route_map_lookup_by_name(
-										 ROUTEMAP_NAME(red));
+					ROUTEMAP(red) =
+						route_map_lookup_by_name(
+							ROUTEMAP_NAME(red));
 
-					/* No update for this distribute type. */
-					if (old == NULL && ROUTEMAP(red) == NULL)
+					/* No update for this distribute type.
+					 */
+					if (old == NULL
+					    && ROUTEMAP(red) == NULL)
 						continue;
 
-					ospf_distribute_list_update(ospf, type,
-								    red->instance);
+					ospf_distribute_list_update(
+						ospf, type, red->instance);
 				}
 			}
 		}
@@ -103,8 +107,8 @@ static void ospf_route_map_event(route_map_event_t event, const char *name)
 			for (ALL_LIST_ELEMENTS_RO(red_list, node, red)) {
 				if (ROUTEMAP_NAME(red) && ROUTEMAP(red)
 				    && !strcmp(ROUTEMAP_NAME(red), name)) {
-					ospf_distribute_list_update(ospf, type,
-								red->instance);
+					ospf_distribute_list_update(
+						ospf, type, red->instance);
 				}
 			}
 		}
@@ -114,7 +118,7 @@ static void ospf_route_map_event(route_map_event_t event, const char *name)
 /* `match ip netxthop ' */
 /* Match function return 1 if match is success else return zero. */
 static route_map_result_t route_match_ip_nexthop(void *rule,
-						 struct prefix *prefix,
+						 const struct prefix *prefix,
 						 route_map_object_t type,
 						 void *object)
 {
@@ -159,7 +163,7 @@ struct route_map_rule_cmd route_match_ip_nexthop_cmd = {
 /* `match ip next-hop prefix-list PREFIX_LIST' */
 
 static route_map_result_t
-route_match_ip_next_hop_prefix_list(void *rule, struct prefix *prefix,
+route_match_ip_next_hop_prefix_list(void *rule, const struct prefix *prefix,
 				    route_map_object_t type, void *object)
 {
 	struct prefix_list *plist;
@@ -201,7 +205,7 @@ struct route_map_rule_cmd route_match_ip_next_hop_prefix_list_cmd = {
 /* Match function should return 1 if match is success else return
    zero. */
 static route_map_result_t route_match_ip_address(void *rule,
-						 struct prefix *prefix,
+						 const struct prefix *prefix,
 						 route_map_object_t type,
 						 void *object)
 {
@@ -240,7 +244,7 @@ struct route_map_rule_cmd route_match_ip_address_cmd = {
 
 /* `match ip address prefix-list PREFIX_LIST' */
 static route_map_result_t
-route_match_ip_address_prefix_list(void *rule, struct prefix *prefix,
+route_match_ip_address_prefix_list(void *rule, const struct prefix *prefix,
 				   route_map_object_t type, void *object)
 {
 	struct prefix_list *plist;
@@ -276,7 +280,7 @@ struct route_map_rule_cmd route_match_ip_address_prefix_list_cmd = {
 /* Match function should return 1 if match is success else return
    zero. */
 static route_map_result_t route_match_interface(void *rule,
-						struct prefix *prefix,
+						const struct prefix *prefix,
 						route_map_object_t type,
 						void *object)
 {
@@ -314,7 +318,8 @@ struct route_map_rule_cmd route_match_interface_cmd = {
 	route_match_interface_free};
 
 /* Match function return 1 if match is success else return zero. */
-static route_map_result_t route_match_tag(void *rule, struct prefix *prefix,
+static route_map_result_t route_match_tag(void *rule,
+					  const struct prefix *prefix,
 					  route_map_object_t type, void *object)
 {
 	route_tag_t *tag;
@@ -337,13 +342,15 @@ static struct route_map_rule_cmd route_match_tag_cmd = {
 };
 
 struct ospf_metric {
+	enum { metric_increment, metric_decrement, metric_absolute } type;
 	bool used;
-	u_int32_t metric;
+	uint32_t metric;
 };
 
 /* `set metric METRIC' */
 /* Set metric to attribute. */
-static route_map_result_t route_set_metric(void *rule, struct prefix *prefix,
+static route_map_result_t route_set_metric(void *rule,
+					   const struct prefix *prefix,
 					   route_map_object_t type,
 					   void *object)
 {
@@ -356,8 +363,19 @@ static route_map_result_t route_set_metric(void *rule, struct prefix *prefix,
 		ei = object;
 
 		/* Set metric out value. */
-		if (metric->used)
+		if (!metric->used)
+			return RMAP_OKAY;
+		if (metric->type == metric_increment)
+			ei->route_map_set.metric += metric->metric;
+		if (metric->type == metric_decrement)
+			ei->route_map_set.metric -= metric->metric;
+		if (metric->type == metric_absolute)
 			ei->route_map_set.metric = metric->metric;
+
+		if ((signed int)ei->route_map_set.metric < 1)
+			ei->route_map_set.metric = -1;
+		if (ei->route_map_set.metric > OSPF_LS_INFINITY)
+			ei->route_map_set.metric = OSPF_LS_INFINITY;
 	}
 	return RMAP_OKAY;
 }
@@ -367,26 +385,31 @@ static void *route_set_metric_compile(const char *arg)
 {
 	struct ospf_metric *metric;
 
-	metric = XCALLOC(MTYPE_ROUTE_MAP_COMPILED, sizeof(u_int32_t));
+	metric = XCALLOC(MTYPE_ROUTE_MAP_COMPILED, sizeof(uint32_t));
 	metric->used = false;
 
-	/* OSPF doesn't support the +/- in
-	   set metric <+/-metric> check
-	   Ignore the +/- component */
-	if (!all_digit(arg)) {
-		if ((arg[0] == '+' || arg[0] == '-') && all_digit(arg + 1)) {
-			zlog_warn("OSPF does not support 'set metric +/-'");
-			arg++;
-		} else {
-			if (strmatch(arg, "+rtt") || strmatch(arg, "-rtt"))
-				zlog_warn(
-					"OSPF does not support 'set metric +rtt / -rtt'");
+	if (all_digit(arg))
+		metric->type = metric_absolute;
 
-			return metric;
-		}
+	if (strmatch(arg, "+rtt") || strmatch(arg, "-rtt")) {
+		zlog_warn("OSPF does not support 'set metric +rtt / -rtt'");
+		return metric;
 	}
+
+	if ((arg[0] == '+') && all_digit(arg + 1)) {
+		metric->type = metric_increment;
+		arg++;
+	}
+
+	if ((arg[0] == '-') && all_digit(arg + 1)) {
+		metric->type = metric_decrement;
+		arg++;
+	}
+
 	metric->metric = strtoul(arg, NULL, 10);
-	metric->used = true;
+
+	if (metric->metric)
+		metric->used = true;
 
 	return metric;
 }
@@ -406,11 +429,11 @@ struct route_map_rule_cmd route_set_metric_cmd = {
 /* `set metric-type TYPE' */
 /* Set metric-type to attribute. */
 static route_map_result_t route_set_metric_type(void *rule,
-						struct prefix *prefix,
+						const struct prefix *prefix,
 						route_map_object_t type,
 						void *object)
 {
-	u_int32_t *metric_type;
+	uint32_t *metric_type;
 	struct external_info *ei;
 
 	if (type == RMAP_OSPF) {
@@ -427,9 +450,9 @@ static route_map_result_t route_set_metric_type(void *rule,
 /* set metric-type compilation. */
 static void *route_set_metric_type_compile(const char *arg)
 {
-	u_int32_t *metric_type;
+	uint32_t *metric_type;
 
-	metric_type = XCALLOC(MTYPE_ROUTE_MAP_COMPILED, sizeof(u_int32_t));
+	metric_type = XCALLOC(MTYPE_ROUTE_MAP_COMPILED, sizeof(uint32_t));
 	if (strcmp(arg, "type-1") == 0)
 		*metric_type = EXTERNAL_METRIC_TYPE_1;
 	else if (strcmp(arg, "type-2") == 0)
@@ -455,7 +478,7 @@ struct route_map_rule_cmd route_set_metric_type_cmd = {
 	route_set_metric_type_free,
 };
 
-static route_map_result_t route_set_tag(void *rule, struct prefix *prefix,
+static route_map_result_t route_set_tag(void *rule, const struct prefix *prefix,
 					route_map_object_t type, void *object)
 {
 	route_tag_t *tag;

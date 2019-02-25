@@ -35,8 +35,12 @@
 #include "privs.h"
 #include "sigevent.h"
 #include "vrf.h"
+#include "logicalrouter.h"
 #include "libfrr.h"
+#include "routemap.h"
+#include "frr_pthread.h"
 
+#include "zebra/zebra_errors.h"
 #include "zebra/rib.h"
 #include "zebra/zserv.h"
 #include "zebra/debug.h"
@@ -48,6 +52,13 @@
 #include "zebra/redistribute.h"
 #include "zebra/zebra_mpls.h"
 #include "zebra/label_manager.h"
+#include "zebra/zebra_netns_notify.h"
+#include "zebra/zebra_rnh.h"
+#include "zebra/zebra_pbr.h"
+
+#if defined(HANDLE_NETLINK_FUZZING)
+#include "zebra/kernel_netlink.h"
+#endif /* HANDLE_NETLINK_FUZZING */
 
 #include <vppmgmt/vpp_mgmt_api.h>
 
@@ -75,26 +86,33 @@ int allow_delete = 0;
 /* Don't delete kernel route. */
 int keep_kernel_mode = 0;
 
+bool v6_rr_semantics = false;
+
 #ifdef HAVE_NETLINK
 /* Receive buffer size for netlink socket */
-u_int32_t nl_rcvbufsize = 4194304;
+uint32_t nl_rcvbufsize = 4194304;
 #endif /* HAVE_NETLINK */
 
+#define OPTION_V6_RR_SEMANTICS 2000
 /* Command line options. */
-struct option longopts[] = {{"batch", no_argument, NULL, 'b'},
-			    {"allow_delete", no_argument, NULL, 'a'},
-			    {"keep_kernel", no_argument, NULL, 'k'},
-			    {"socket", required_argument, NULL, 'z'},
-			    {"ecmp", required_argument, NULL, 'e'},
-			    {"label_socket", no_argument, NULL, 'l'},
-			    {"retain", no_argument, NULL, 'r'},
+struct option longopts[] = {
+	{"batch", no_argument, NULL, 'b'},
+	{"allow_delete", no_argument, NULL, 'a'},
+	{"keep_kernel", no_argument, NULL, 'k'},
+	{"socket", required_argument, NULL, 'z'},
+	{"ecmp", required_argument, NULL, 'e'},
+	{"label_socket", no_argument, NULL, 'l'},
+	{"retain", no_argument, NULL, 'r'},
 #ifdef HAVE_NETLINK
-			    {"nl-bufsize", required_argument, NULL, 's'},
+	{"vrfwnetns", no_argument, NULL, 'n'},
+	{"nl-bufsize", required_argument, NULL, 's'},
+	{"v6-rr-semantics", no_argument, NULL, OPTION_V6_RR_SEMANTICS},
 #endif /* HAVE_NETLINK */
-			    {0}};
+	{0}};
 
 zebra_capabilities_t _caps_p[] = {
 	ZCAP_NET_ADMIN, ZCAP_SYS_ADMIN, ZCAP_NET_RAW,
+	ZCAP_CHOWN, /* ZCAP_FOWNER, ZCAP_SETUID, ZCAP_SETGID */
 };
 
 /* zebra privileges to run with */
@@ -126,11 +144,15 @@ static void sigint(void)
 {
 	struct vrf *vrf;
 	struct zebra_vrf *zvrf;
-	struct zebra_ns *zns;
+	struct listnode *ln, *nn;
+	struct zserv *client;
 
 	zlog_notice("Terminating on signal");
 
 	frr_early_fini();
+
+	for (ALL_LIST_ELEMENTS(zebrad.client_list, ln, nn, client))
+		zserv_close_client(client);
 
 	list_delete_all_node(zebrad.client_list);
 	zebra_ptm_finish();
@@ -141,19 +163,19 @@ static void sigint(void)
 			if (zvrf)
 				SET_FLAG(zvrf->flags, ZEBRA_VRF_RETAIN);
 		}
+	if (zebrad.lsp_process_q)
+		work_queue_free_and_null(&zebrad.lsp_process_q);
 	vrf_terminate();
 
-	zns = zebra_ns_lookup(NS_DEFAULT);
-	zebra_ns_disable(0, (void **)&zns);
+	ns_walk_func(zebra_ns_disabled);
+	zebra_ns_notify_close();
 
 	access_list_reset();
 	prefix_list_reset();
 	route_map_finish();
 
 	list_delete_and_null(&zebrad.client_list);
-	work_queue_free(zebrad.ribq);
-	if (zebrad.lsp_process_q)
-		work_queue_free(zebrad.lsp_process_q);
+	work_queue_free_and_null(&zebrad.ribq);
 	meta_queue_free(zebrad.mq);
 
 	frr_fini();
@@ -206,35 +228,49 @@ int main(int argc, char **argv)
 	struct sockaddr_storage dummy;
 	socklen_t dummylen;
 #if defined(HANDLE_ZAPI_FUZZING)
-	char *fuzzing = NULL;
-#endif
+	char *zapi_fuzzing = NULL;
+#endif /* HANDLE_ZAPI_FUZZING */
+#if defined(HANDLE_NETLINK_FUZZING)
+	char *netlink_fuzzing = NULL;
+#endif /* HANDLE_NETLINK_FUZZING */
+
+	vrf_configure_backend(VRF_BACKEND_VRF_LITE);
+	logicalrouter_configure_backend(LOGICALROUTER_BACKEND_NETNS);
 
 	frr_preinit(&zebra_di, argc, argv);
 
 	frr_opt_add(
 		"bakz:e:l:r"
 #ifdef HAVE_NETLINK
-		"s:"
+		"s:n"
 #endif
 #if defined(HANDLE_ZAPI_FUZZING)
 		"c:"
-#endif
+#endif /* HANDLE_ZAPI_FUZZING */
+#if defined(HANDLE_NETLINK_FUZZING)
+		"w:"
+#endif /* HANDLE_NETLINK_FUZZING */
 		,
 		longopts,
-		"  -b, --batch        Runs in batch mode\n"
-		"  -a, --allow_delete Allow other processes to delete zebra routes\n"
-		"  -z, --socket       Set path of zebra socket\n"
-		"  -e, --ecmp         Specify ECMP to use.\n"
-		"  -l, --label_socket Socket to external label manager\n"
-		"  -k, --keep_kernel  Don't delete old routes which installed by zebra.\n"
-		"  -r, --retain       When program terminates, retain added route by zebra.\n"
+		"  -b, --batch           Runs in batch mode\n"
+		"  -a, --allow_delete    Allow other processes to delete zebra routes\n"
+		"  -z, --socket          Set path of zebra socket\n"
+		"  -e, --ecmp            Specify ECMP to use.\n"
+		"  -l, --label_socket    Socket to external label manager\n"
+		"  -k, --keep_kernel     Don't delete old routes which were installed by zebra.\n"
+		"  -r, --retain          When program terminates, retain added route by zebra.\n"
 #ifdef HAVE_NETLINK
-		"  -s, --nl-bufsize   Set netlink receive buffer size\n"
+		"  -n, --vrfwnetns       Use NetNS as VRF backend\n"
+		"  -s, --nl-bufsize      Set netlink receive buffer size\n"
+		"      --v6-rr-semantics Use v6 RR semantics\n"
 #endif /* HAVE_NETLINK */
 #if defined(HANDLE_ZAPI_FUZZING)
-		"  -c <file>          Bypass normal startup use this file for tetsting of zapi"
-#endif
-		);
+		"  -c <file>             Bypass normal startup and use this file for testing of zapi\n"
+#endif /* HANDLE_ZAPI_FUZZING */
+#if defined(HANDLE_NETLINK_FUZZING)
+		"  -w <file>             Bypass normal startup and use this file for testing of netlink input\n"
+#endif /* HANDLE_NETLINK_FUZZING */
+	);
 
 	while (1) {
 		int opt = frr_getopt(argc, argv, NULL);
@@ -258,7 +294,8 @@ int main(int argc, char **argv)
 			multipath_num = atoi(optarg);
 			if (multipath_num > MULTIPATH_NUM
 			    || multipath_num <= 0) {
-				zlog_err(
+				flog_err(
+					ZEBRA_ERR_BAD_MULTIPATH_NUM,
 					"Multipath Number specified must be less than %d and greater than 0",
 					MULTIPATH_NUM);
 				return 1;
@@ -283,12 +320,30 @@ int main(int argc, char **argv)
 		case 's':
 			nl_rcvbufsize = atoi(optarg);
 			break;
+		case 'n':
+			vrf_configure_backend(VRF_BACKEND_NETNS);
+			logicalrouter_configure_backend(
+				LOGICALROUTER_BACKEND_OFF);
+			break;
+		case OPTION_V6_RR_SEMANTICS:
+			v6_rr_semantics = true;
+			break;
 #endif /* HAVE_NETLINK */
 #if defined(HANDLE_ZAPI_FUZZING)
 		case 'c':
-			fuzzing = optarg;
+			zapi_fuzzing = optarg;
 			break;
-#endif
+#endif /* HANDLE_ZAPI_FUZZING */
+#if defined(HANDLE_NETLINK_FUZZING)
+		case 'w':
+			netlink_fuzzing = optarg;
+			/* This ensures we are aren't writing any of the
+			 * startup netlink messages that happen when we
+			 * just want to read.
+			 */
+			netlink_read = true;
+			break;
+#endif /* HANDLE_NETLINK_FUZZING */
 		default:
 			frr_help_exit(1);
 			break;
@@ -304,6 +359,12 @@ int main(int argc, char **argv)
 	zebra_if_init();
 	zebra_debug_init();
 	router_id_cmd_init();
+
+	/*
+	 * Initialize NS( and implicitly the VRF module), and make kernel
+	 * routing socket. */
+	zebra_ns_init();
+
 	zebra_vty_init();
 	access_list_init();
 	prefix_list_init();
@@ -318,20 +379,10 @@ int main(int argc, char **argv)
 	zebra_mpls_init();
 	zebra_mpls_vty_init();
 	zebra_pw_vty_init();
+	zebra_pbr_init();
 
-	/* For debug purpose. */
-	/* SET_FLAG (zebra_debug_event, ZEBRA_DEBUG_EVENT); */
-
-	/* Initialize NS( and implicitly the VRF module), and make kernel
-	 * routing socket. */
-	zebra_ns_init();
-
-#if defined(HANDLE_ZAPI_FUZZING)
-	if (fuzzing) {
-		zserv_read_file(fuzzing);
-		exit(0);
-	}
-#endif
+/* For debug purpose. */
+/* SET_FLAG (zebra_debug_event, ZEBRA_DEBUG_EVENT); */
 
 	/* Process the configuration file. Among other configuration
 	*  directives we can meet those installing static routes. Such
@@ -340,12 +391,11 @@ int main(int argc, char **argv)
 	*  The notifications from kernel will show originating PID equal
 	*  to that after daemon() completes (if ever called).
 	*/
-	vmgmt_disconnect();
+	frr_elevate_privs(&zserv_privs) {
+		vmgmt_disconnect();
+	}
 	frr_config_fork();
 	kernel_init(NULL);
-
-	/* Clean up rib -- before fork (?) */
-	/* rib_weed_tables (); */
 
 	/* After we have successfully acquired the pidfile, we can be sure
 	*  about being the only copy of zebra process, which is submitting
@@ -361,11 +411,34 @@ int main(int argc, char **argv)
 	/* Needed for BSD routing socket. */
 	pid = getpid();
 
-	/* This must be done only after locking pidfile (bug #403). */
-	zebra_zserv_socket_init(zserv_path);
+	/* Intialize pthread library */
+	frr_pthread_init();
+
+	/* Start Zebra API server */
+	zserv_start(zserv_path);
 
 	/* Init label manager */
 	label_manager_init(lblmgr_path);
+
+	/* RNH init */
+	zebra_rnh_init();
+
+	/* Error init */
+	zebra_error_init();
+
+#if defined(HANDLE_ZAPI_FUZZING)
+	if (zapi_fuzzing) {
+		zserv_read_file(zapi_fuzzing);
+		exit(0);
+	}
+#endif /* HANDLE_ZAPI_FUZZING */
+#if defined(HANDLE_NETLINK_FUZZING)
+	if (netlink_fuzzing) {
+		netlink_read_init(netlink_fuzzing);
+		exit(0);
+	}
+#endif /* HANDLE_NETLINK_FUZZING */
+
 
 	frr_run(zebrad.master);
 

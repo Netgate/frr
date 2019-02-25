@@ -22,6 +22,9 @@
 #ifndef _ZEBRA_STREAM_H
 #define _ZEBRA_STREAM_H
 
+#include <pthread.h>
+
+#include "frratomic.h"
 #include "mpls.h"
 #include "prefix.h"
 
@@ -95,19 +98,27 @@
 struct stream {
 	struct stream *next;
 
-	/* Remainder is ***private*** to stream
+	/*
+	 * Remainder is ***private*** to stream
 	 * direct access is frowned upon!
 	 * Use the appropriate functions/macros
 	 */
-	size_t getp;	 /* next get position */
-	size_t endp;	 /* last valid data position */
-	size_t size;	 /* size of data segment */
-	unsigned char *data; /* data pointer */
+	size_t getp;	       /* next get position */
+	size_t endp;	       /* last valid data position */
+	size_t size;	       /* size of data segment */
+	unsigned char data[0]; /* data pointer */
 };
 
 /* First in first out queue structure. */
 struct stream_fifo {
-	size_t count;
+	/* lock for mt-safe operations */
+	pthread_mutex_t mtx;
+
+	/* number of streams in this fifo */
+	_Atomic size_t count;
+#if defined DEV_BUILD
+	_Atomic size_t max_count;
+#endif
 
 	struct stream *head;
 	struct stream *tail;
@@ -144,11 +155,18 @@ extern struct stream *stream_new(size_t);
 extern void stream_free(struct stream *);
 extern struct stream *stream_copy(struct stream *, struct stream *src);
 extern struct stream *stream_dup(struct stream *);
-extern size_t stream_resize(struct stream *, size_t);
+
+#if CONFDATE > 20190821
+CPP_NOTICE("lib: time to remove stream_resize_orig")
+#endif
+extern size_t stream_resize_orig(struct stream *s, size_t newsize);
+#define stream_resize stream_resize_orig
+extern size_t stream_resize_inplace(struct stream **sptr, size_t newsize);
+
 extern size_t stream_get_getp(struct stream *);
 extern size_t stream_get_endp(struct stream *);
 extern size_t stream_get_size(struct stream *);
-extern u_char *stream_get_data(struct stream *);
+extern uint8_t *stream_get_data(struct stream *);
 
 /**
  * Create a new stream structure; copy offset bytes from s1 to the new
@@ -165,43 +183,43 @@ extern void stream_forward_endp(struct stream *, size_t);
 
 /* steam_put: NULL source zeroes out size_t bytes of stream */
 extern void stream_put(struct stream *, const void *, size_t);
-extern int stream_putc(struct stream *, u_char);
-extern int stream_putc_at(struct stream *, size_t, u_char);
-extern int stream_putw(struct stream *, u_int16_t);
-extern int stream_putw_at(struct stream *, size_t, u_int16_t);
-extern int stream_put3(struct stream *, u_int32_t);
-extern int stream_put3_at(struct stream *, size_t, u_int32_t);
-extern int stream_putl(struct stream *, u_int32_t);
-extern int stream_putl_at(struct stream *, size_t, u_int32_t);
+extern int stream_putc(struct stream *, uint8_t);
+extern int stream_putc_at(struct stream *, size_t, uint8_t);
+extern int stream_putw(struct stream *, uint16_t);
+extern int stream_putw_at(struct stream *, size_t, uint16_t);
+extern int stream_put3(struct stream *, uint32_t);
+extern int stream_put3_at(struct stream *, size_t, uint32_t);
+extern int stream_putl(struct stream *, uint32_t);
+extern int stream_putl_at(struct stream *, size_t, uint32_t);
 extern int stream_putq(struct stream *, uint64_t);
 extern int stream_putq_at(struct stream *, size_t, uint64_t);
-extern int stream_put_ipv4(struct stream *, u_int32_t);
+extern int stream_put_ipv4(struct stream *, uint32_t);
 extern int stream_put_in_addr(struct stream *, struct in_addr *);
 extern int stream_put_in_addr_at(struct stream *, size_t, struct in_addr *);
 extern int stream_put_in6_addr_at(struct stream *, size_t, struct in6_addr *);
 extern int stream_put_prefix_addpath(struct stream *, struct prefix *,
 				     int addpath_encode,
-				     u_int32_t addpath_tx_id);
+				     uint32_t addpath_tx_id);
 extern int stream_put_prefix(struct stream *, struct prefix *);
 extern int stream_put_labeled_prefix(struct stream *, struct prefix *,
 				     mpls_label_t *);
 extern void stream_get(void *, struct stream *, size_t);
 extern bool stream_get2(void *data, struct stream *s, size_t size);
 extern void stream_get_from(void *, struct stream *, size_t, size_t);
-extern u_char stream_getc(struct stream *);
-extern bool stream_getc2(struct stream *s, u_char *byte);
-extern u_char stream_getc_from(struct stream *, size_t);
-extern u_int16_t stream_getw(struct stream *);
+extern uint8_t stream_getc(struct stream *);
+extern bool stream_getc2(struct stream *s, uint8_t *byte);
+extern uint8_t stream_getc_from(struct stream *, size_t);
+extern uint16_t stream_getw(struct stream *);
 extern bool stream_getw2(struct stream *s, uint16_t *word);
-extern u_int16_t stream_getw_from(struct stream *, size_t);
-extern u_int32_t stream_get3(struct stream *);
-extern u_int32_t stream_get3_from(struct stream *, size_t);
-extern u_int32_t stream_getl(struct stream *);
+extern uint16_t stream_getw_from(struct stream *, size_t);
+extern uint32_t stream_get3(struct stream *);
+extern uint32_t stream_get3_from(struct stream *, size_t);
+extern uint32_t stream_getl(struct stream *);
 extern bool stream_getl2(struct stream *s, uint32_t *l);
-extern u_int32_t stream_getl_from(struct stream *, size_t);
+extern uint32_t stream_getl_from(struct stream *, size_t);
 extern uint64_t stream_getq(struct stream *);
 extern uint64_t stream_getq_from(struct stream *, size_t);
-extern u_int32_t stream_get_ipv4(struct stream *);
+extern uint32_t stream_get_ipv4(struct stream *);
 
 /* IEEE-754 floats */
 extern float stream_getf(struct stream *);
@@ -238,14 +256,96 @@ extern int stream_flush(struct stream *, int);
 extern int stream_empty(struct stream *); /* is the stream empty? */
 
 /* deprecated */
-extern u_char *stream_pnt(struct stream *);
+extern uint8_t *stream_pnt(struct stream *);
 
-/* Stream fifo. */
+/*
+ * Operations on struct stream_fifo.
+ *
+ * Each function has a safe variant, which ensures that the operation performed
+ * is atomic with respect to the operations performed by all other safe
+ * variants. In other words, the safe variants lock the stream_fifo's mutex
+ * before performing their action. These are provided for convenience when
+ * using stream_fifo in a multithreaded context, to alleviate the need for the
+ * caller to implement their own synchronization around the stream_fifo.
+ *
+ * The following functions do not have safe variants. The caller must ensure
+ * that these operations are performed safely in a multithreaded context:
+ * - stream_fifo_new
+ * - stream_fifo_free
+ */
+
+/*
+ * Create a new stream_fifo.
+ *
+ * Returns:
+ *    newly created stream_fifo
+ */
 extern struct stream_fifo *stream_fifo_new(void);
+
+/*
+ * Push a stream onto a stream_fifo.
+ *
+ * fifo
+ *    the stream_fifo to push onto
+ *
+ * s
+ *    the stream to push onto the stream_fifo
+ */
 extern void stream_fifo_push(struct stream_fifo *fifo, struct stream *s);
+extern void stream_fifo_push_safe(struct stream_fifo *fifo, struct stream *s);
+
+/*
+ * Pop a stream off a stream_fifo.
+ *
+ * fifo
+ *    the stream_fifo to pop from
+ *
+ * Returns:
+ *    the next stream in the stream_fifo
+ */
 extern struct stream *stream_fifo_pop(struct stream_fifo *fifo);
+extern struct stream *stream_fifo_pop_safe(struct stream_fifo *fifo);
+
+/*
+ * Retrieve the next stream from a stream_fifo without popping it.
+ *
+ * fifo
+ *    the stream_fifo to operate on
+ *
+ * Returns:
+ *    the next stream that would be returned from stream_fifo_pop
+ */
 extern struct stream *stream_fifo_head(struct stream_fifo *fifo);
+extern struct stream *stream_fifo_head_safe(struct stream_fifo *fifo);
+
+/*
+ * Remove all streams from a stream_fifo.
+ *
+ * fifo
+ *    the stream_fifo to clean
+ */
 extern void stream_fifo_clean(struct stream_fifo *fifo);
+extern void stream_fifo_clean_safe(struct stream_fifo *fifo);
+
+/*
+ * Retrieve number of streams on a stream_fifo.
+ *
+ * fifo
+ *    the stream_fifo to retrieve the count for
+ *
+ * Returns:
+ *    the number of streams on the stream_fifo
+ */
+extern size_t stream_fifo_count_safe(struct stream_fifo *fifo);
+
+/*
+ * Free a stream_fifo.
+ *
+ * Calls stream_fifo_clean, then deinitializes the stream_fifo and frees it.
+ *
+ * fifo
+ *    the stream_fifo to free
+ */
 extern void stream_fifo_free(struct stream_fifo *fifo);
 
 /* This is here because "<< 24" is particularly problematic in C.
@@ -281,34 +381,34 @@ static inline uint8_t *ptr_get_be32(uint8_t *ptr, uint32_t *out)
  * the stream functions but we need a transition
  * plan.
  */
-#define STREAM_GETC(S, P)			\
-	do {					\
-		uint8_t	_pval;			\
-		if (!stream_getc2((S), &_pval))	\
-			goto stream_failure;	\
-		(P) = _pval;			\
+#define STREAM_GETC(S, P)                                                      \
+	do {                                                                   \
+		uint8_t _pval;                                                 \
+		if (!stream_getc2((S), &_pval))                                \
+			goto stream_failure;                                   \
+		(P) = _pval;                                                   \
 	} while (0)
 
-#define STREAM_GETW(S, P)			\
-	do {					\
-		uint16_t _pval;			\
-		if (!stream_getw2((S), &_pval))	\
-			goto stream_failure;	\
-		(P) = _pval;			\
+#define STREAM_GETW(S, P)                                                      \
+	do {                                                                   \
+		uint16_t _pval;                                                \
+		if (!stream_getw2((S), &_pval))                                \
+			goto stream_failure;                                   \
+		(P) = _pval;                                                   \
 	} while (0)
 
-#define STREAM_GETL(S, P)				\
-	do {						\
-		uint32_t _pval;				\
-		if (!stream_getl2((S), &_pval))		\
-			goto stream_failure;		\
-		(P) = _pval;				\
+#define STREAM_GETL(S, P)                                                      \
+	do {                                                                   \
+		uint32_t _pval;                                                \
+		if (!stream_getl2((S), &_pval))                                \
+			goto stream_failure;                                   \
+		(P) = _pval;                                                   \
 	} while (0)
 
-#define STREAM_GET(P, STR, SIZE)			\
-	do {						\
-		if (!stream_get2((P), (STR), (SIZE)))	\
-			goto stream_failure;		\
+#define STREAM_GET(P, STR, SIZE)                                               \
+	do {                                                                   \
+		if (!stream_get2((P), (STR), (SIZE)))                          \
+			goto stream_failure;                                   \
 	} while (0)
 
 #endif /* _ZEBRA_STREAM_H */

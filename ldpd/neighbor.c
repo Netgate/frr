@@ -316,7 +316,9 @@ nbr_del(struct nbr *nbr)
 	mapping_list_clr(&nbr->release_list);
 	mapping_list_clr(&nbr->abortreq_list);
 
-	while ((adj = RB_ROOT(nbr_adj_head, &nbr->adj_tree)) != NULL) {
+	while (!RB_EMPTY(nbr_adj_head, &nbr->adj_tree)) {
+		adj = RB_ROOT(nbr_adj_head, &nbr->adj_tree);
+
 		adj->nbr = NULL;
 		RB_REMOVE(nbr_adj_head, &nbr->adj_tree, adj);
 	}
@@ -582,8 +584,8 @@ nbr_connect_cb(struct thread *thread)
 int
 nbr_establish_connection(struct nbr *nbr)
 {
-	struct sockaddr_storage	 local_sa;
-	struct sockaddr_storage	 remote_sa;
+	union sockunion		 local_su;
+	union sockunion		 remote_su;
 	struct adj		*adj;
 	struct nbr_params	*nbrp;
 #ifdef __OpenBSD__
@@ -617,16 +619,14 @@ nbr_establish_connection(struct nbr *nbr)
 #endif
 	}
 
-	memcpy(&local_sa, addr2sa(nbr->af, &nbr->laddr, 0), sizeof(local_sa));
-	memcpy(&remote_sa, addr2sa(nbr->af, &nbr->raddr, LDP_PORT),
-	    sizeof(local_sa));
+	addr2sa(nbr->af, &nbr->laddr, 0, &local_su);
+	addr2sa(nbr->af, &nbr->raddr, LDP_PORT, &remote_su);
 	if (nbr->af == AF_INET6 && nbr->raddr_scope)
-		addscope((struct sockaddr_in6 *)&remote_sa, nbr->raddr_scope);
+		addscope(&remote_su.sin6, nbr->raddr_scope);
 
-	if (bind(nbr->fd, (struct sockaddr *)&local_sa,
-	    sockaddr_len((struct sockaddr *)&local_sa)) == -1) {
+	if (bind(nbr->fd, &local_su.sa, sockaddr_len(&local_su.sa)) == -1) {
 		log_warn("%s: error while binding socket to %s", __func__,
-		    log_sockaddr((struct sockaddr *)&local_sa));
+			 log_sockaddr(&local_su.sa));
 		close(nbr->fd);
 		return (-1);
 	}
@@ -644,15 +644,15 @@ nbr_establish_connection(struct nbr *nbr)
 		send_hello(adj->source.type, adj->source.link.ia,
 		    adj->source.target);
 
-	if (connect(nbr->fd, (struct sockaddr *)&remote_sa,
-	    sockaddr_len((struct sockaddr *)&remote_sa)) == -1) {
+	if (connect(nbr->fd, &remote_su.sa, sockaddr_len(&remote_su.sa))
+	    == -1) {
 		if (errno == EINPROGRESS) {
 			thread_add_write(master, nbr_connect_cb, nbr, nbr->fd,
 					 &nbr->ev_connect);
 			return (0);
 		}
 		log_warn("%s: error while connecting to %s", __func__,
-		    log_sockaddr((struct sockaddr *)&remote_sa));
+			 log_sockaddr(&remote_su.sa));
 		close(nbr->fd);
 		return (-1);
 	}

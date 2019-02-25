@@ -1,17 +1,19 @@
-/* Zebra daemon server header.
- * Copyright (C) 1997, 98 Kunihiro Ishiguro
+/*
+ * Zebra API server.
+ * Portions:
+ *   Copyright (C) 1997-1999  Kunihiro Ishiguro
+ *   Copyright (C) 2015-2018  Cumulus Networks, Inc.
+ *   et al.
  *
- * This file is part of GNU Zebra.
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the Free
+ * Software Foundation; either version 2 of the License, or (at your option)
+ * any later version.
  *
- * GNU Zebra is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2, or (at your option) any
- * later version.
- *
- * GNU Zebra is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
  *
  * You should have received a copy of the GNU General Public License along
  * with this program; see the file COPYING; if not, write to the Free Software
@@ -21,16 +23,22 @@
 #ifndef _ZEBRA_ZSERV_H
 #define _ZEBRA_ZSERV_H
 
-#include "rib.h"
-#include "if.h"
-#include "workqueue.h"
-#include "vrf.h"
-#include "routemap.h"
-#include "vty.h"
-#include "zclient.h"
+/* clang-format off */
+#include <stdint.h>           /* for uint32_t, uint8_t */
+#include <time.h>             /* for time_t */
 
-#include "zebra/zebra_ns.h"
-#include "zebra/zebra_pw.h"
+#include "lib/route_types.h"  /* for ZEBRA_ROUTE_MAX */
+#include "lib/zebra.h"        /* for AFI_MAX */
+#include "lib/vrf.h"          /* for vrf_bitmap_t */
+#include "lib/zclient.h"      /* for redist_proto */
+#include "lib/stream.h"       /* for stream, stream_fifo */
+#include "lib/thread.h"       /* for thread, thread_master */
+#include "lib/linklist.h"     /* for list */
+#include "lib/workqueue.h"    /* for work_queue */
+#include "lib/hook.h"         /* for DECLARE_HOOK, DECLARE_KOOH */
+
+#include "zebra/zebra_vrf.h"  /* for zebra_vrf */
+/* clang-format on */
 
 /* Default port information. */
 #define ZEBRA_VTY_PORT                2601
@@ -42,12 +50,21 @@
 
 /* Client structure. */
 struct zserv {
+	/* Client pthread */
+	struct frr_pthread *pthread;
+
 	/* Client file descriptor. */
 	int sock;
 
 	/* Input/output buffer to the client. */
-	struct stream *ibuf;
-	struct stream *obuf;
+	pthread_mutex_t ibuf_mtx;
+	struct stream_fifo *ibuf_fifo;
+	pthread_mutex_t obuf_mtx;
+	struct stream_fifo *obuf_fifo;
+
+	/* Private I/O buffers */
+	struct stream *ibuf_work;
+	struct stream *obuf_work;
 
 	/* Buffer of data waiting to be written to client. */
 	struct buffer *wb;
@@ -56,8 +73,8 @@ struct zserv {
 	struct thread *t_read;
 	struct thread *t_write;
 
-	/* Thread for delayed close. */
-	struct thread *t_suicide;
+	/* Threads for the main pthread */
+	struct thread *t_cleanup;
 
 	/* default routing table this client munges */
 	int rtm_table;
@@ -78,51 +95,76 @@ struct zserv {
 	bool notify_owner;
 
 	/* client's protocol */
-	u_char proto;
-	u_short instance;
-	u_char is_synchronous;
+	uint8_t proto;
+	uint16_t instance;
+	uint8_t is_synchronous;
 
 	/* Statistics */
-	u_int32_t redist_v4_add_cnt;
-	u_int32_t redist_v4_del_cnt;
-	u_int32_t redist_v6_add_cnt;
-	u_int32_t redist_v6_del_cnt;
-	u_int32_t v4_route_add_cnt;
-	u_int32_t v4_route_upd8_cnt;
-	u_int32_t v4_route_del_cnt;
-	u_int32_t v6_route_add_cnt;
-	u_int32_t v6_route_del_cnt;
-	u_int32_t v6_route_upd8_cnt;
-	u_int32_t connected_rt_add_cnt;
-	u_int32_t connected_rt_del_cnt;
-	u_int32_t ifup_cnt;
-	u_int32_t ifdown_cnt;
-	u_int32_t ifadd_cnt;
-	u_int32_t ifdel_cnt;
-	u_int32_t if_bfd_cnt;
-	u_int32_t bfd_peer_add_cnt;
-	u_int32_t bfd_peer_upd8_cnt;
-	u_int32_t bfd_peer_del_cnt;
-	u_int32_t bfd_peer_replay_cnt;
-	u_int32_t vrfadd_cnt;
-	u_int32_t vrfdel_cnt;
-	u_int32_t if_vrfchg_cnt;
-	u_int32_t bfd_client_reg_cnt;
-	u_int32_t vniadd_cnt;
-	u_int32_t vnidel_cnt;
-	u_int32_t macipadd_cnt;
-	u_int32_t macipdel_cnt;
+	uint32_t redist_v4_add_cnt;
+	uint32_t redist_v4_del_cnt;
+	uint32_t redist_v6_add_cnt;
+	uint32_t redist_v6_del_cnt;
+	uint32_t v4_route_add_cnt;
+	uint32_t v4_route_upd8_cnt;
+	uint32_t v4_route_del_cnt;
+	uint32_t v6_route_add_cnt;
+	uint32_t v6_route_del_cnt;
+	uint32_t v6_route_upd8_cnt;
+	uint32_t connected_rt_add_cnt;
+	uint32_t connected_rt_del_cnt;
+	uint32_t ifup_cnt;
+	uint32_t ifdown_cnt;
+	uint32_t ifadd_cnt;
+	uint32_t ifdel_cnt;
+	uint32_t if_bfd_cnt;
+	uint32_t bfd_peer_add_cnt;
+	uint32_t bfd_peer_upd8_cnt;
+	uint32_t bfd_peer_del_cnt;
+	uint32_t bfd_peer_replay_cnt;
+	uint32_t vrfadd_cnt;
+	uint32_t vrfdel_cnt;
+	uint32_t if_vrfchg_cnt;
+	uint32_t bfd_client_reg_cnt;
+	uint32_t vniadd_cnt;
+	uint32_t vnidel_cnt;
+	uint32_t l3vniadd_cnt;
+	uint32_t l3vnidel_cnt;
+	uint32_t macipadd_cnt;
+	uint32_t macipdel_cnt;
+	uint32_t prefixadd_cnt;
+	uint32_t prefixdel_cnt;
 
-	time_t connect_time;
-	time_t last_read_time;
-	time_t last_write_time;
 	time_t nh_reg_time;
 	time_t nh_dereg_time;
 	time_t nh_last_upd_time;
 
-	int last_read_cmd;
-	int last_write_cmd;
+	/*
+	 * Session information.
+	 *
+	 * These are not synchronous with respect to each other. For instance,
+	 * last_read_cmd may contain a value that has been read in the future
+	 * relative to last_read_time.
+	 */
+
+	/* monotime of client creation */
+	_Atomic uint32_t connect_time;
+	/* monotime of last message received */
+	_Atomic uint32_t last_read_time;
+	/* monotime of last message sent */
+	_Atomic uint32_t last_write_time;
+	/* command code of last message read */
+	_Atomic uint16_t last_read_cmd;
+	/* command code of last message written */
+	_Atomic uint16_t last_write_cmd;
 };
+
+#define ZAPI_HANDLER_ARGS                                                      \
+	struct zserv *client, struct zmsghdr *hdr, struct stream *msg,         \
+		struct zebra_vrf *zvrf
+
+/* Hooks for client connect / disconnect */
+DECLARE_HOOK(zserv_client_connect, (struct zserv *client), (client));
+DECLARE_KOOH(zserv_client_close, (struct zserv *client), (client));
 
 /* Zebra instance */
 struct zebra_t {
@@ -130,58 +172,80 @@ struct zebra_t {
 	struct thread_master *master;
 	struct list *client_list;
 
-	/* default table */
-	u_int32_t rtm_table_default;
+	/* Socket */
+	int sock;
 
-	/* rib work queue */
-	#define ZEBRA_RIB_PROCESS_HOLD_TIME 10
+	/* default table */
+	uint32_t rtm_table_default;
+
+/* rib work queue */
+#define ZEBRA_RIB_PROCESS_HOLD_TIME 10
 	struct work_queue *ribq;
 	struct meta_queue *mq;
 
 	/* LSP work queue */
 	struct work_queue *lsp_process_q;
 
-	#define ZEBRA_ZAPI_PACKETS_TO_PROCESS 10
-	u_int32_t packets_to_process;
+#define ZEBRA_ZAPI_PACKETS_TO_PROCESS 1000
+	_Atomic uint32_t packets_to_process;
 };
 extern struct zebra_t zebrad;
 extern unsigned int multipath_num;
 
-/* Prototypes. */
+/*
+ * Initialize Zebra API server.
+ *
+ * Installs CLI commands and creates the client list.
+ */
 extern void zserv_init(void);
-extern void zebra_zserv_socket_init(char *path);
 
-extern int zsend_vrf_add(struct zserv *, struct zebra_vrf *);
-extern int zsend_vrf_delete(struct zserv *, struct zebra_vrf *);
+/*
+ * Start Zebra API server.
+ *
+ * Allocates resources, creates the server socket and begins listening on the
+ * socket.
+ *
+ * path
+ *    where to place the Unix domain socket
+ */
+extern void zserv_start(char *path);
 
-extern int zsend_interface_add(struct zserv *, struct interface *);
-extern int zsend_interface_delete(struct zserv *, struct interface *);
-extern int zsend_interface_addresses(struct zserv *, struct interface *);
-extern int zsend_interface_address(int, struct zserv *, struct interface *,
-				   struct connected *);
-extern void nbr_connected_add_ipv6(struct interface *, struct in6_addr *);
-extern void nbr_connected_delete_ipv6(struct interface *, struct in6_addr *);
-extern int zsend_interface_update(int, struct zserv *, struct interface *);
-extern int zsend_redistribute_route(int, struct zserv *, struct prefix *,
-				    struct prefix *, struct route_entry *);
-extern int zsend_router_id_update(struct zserv *, struct prefix *, vrf_id_t);
-extern int zsend_interface_vrf_update(struct zserv *, struct interface *,
-				      vrf_id_t);
+/*
+ * Send a message to a connected Zebra API client.
+ *
+ * client
+ *    the client to send to
+ *
+ * msg
+ *    the message to send
+ */
+extern int zserv_send_message(struct zserv *client, struct stream *msg);
 
-extern int zsend_interface_link_params(struct zserv *, struct interface *);
-extern int zsend_pw_update(struct zserv *, struct zebra_pw *);
+/*
+ * Retrieve a client by its protocol and instance number.
+ *
+ * proto
+ *    protocol number
+ *
+ * instance
+ *    instance number
+ *
+ * Returns:
+ *    The Zebra API client.
+ */
+extern struct zserv *zserv_find_client(uint8_t proto, unsigned short instance);
 
-extern int zsend_route_notify_owner(u_char proto, u_short instance,
-				    vrf_id_t vrf_id, struct prefix *p,
-				    enum zapi_route_notify_owner note);
 
-extern void zserv_create_header(struct stream *s, uint16_t cmd,
-				vrf_id_t vrf_id);
-extern void zserv_nexthop_num_warn(const char *, const struct prefix *,
-				   const unsigned int);
-extern int zebra_server_send_message(struct zserv *client);
-
-extern struct zserv *zebra_find_client(u_char proto, u_short instance);
+/*
+ * Close a client.
+ *
+ * Kills a client's thread, removes the client from the client list and cleans
+ * up its resources.
+ *
+ * client
+ *    the client to close
+ */
+extern void zserv_close_client(struct zserv *client);
 
 #if defined(HANDLE_ZAPI_FUZZING)
 extern void zserv_read_file(char *input);

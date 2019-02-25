@@ -1,7 +1,13 @@
 /*
  *
- * Copyright (C) 2000  Robert Olsson.
- * Swedish University of Agricultural Sciences
+ * Copyright (C) 1997, 2000
+ * Portions:
+ *   Swedish University of Agricultural Sciences
+ *   Robert Olsson
+ *   Kunihiro Ishiguro
+ *
+ * Thanks to Jens Laas at Swedish University of Agricultural Sciences
+ * for reviewing and tests.
  *
  * This file is part of GNU Zebra.
  *
@@ -19,19 +25,6 @@
  * with this program; see the file COPYING; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
  */
-
-/*
- * This work includes work with the following copywrite:
- *
- * Copyright (C) 1997, 2000 Kunihiro Ishiguro
- *
- */
-
-/*
- * Thanks to Jens Låås at Swedish University of Agricultural Sciences
- * for reviewing and tests.
- */
-
 
 #include <zebra.h>
 
@@ -63,14 +56,14 @@ extern int irdp_sock;
 
 DEFINE_MTYPE_STATIC(ZEBRA, IRDP_IF, "IRDP interface data")
 
-#define IRDP_CONFIGED							\
-	do {								\
-		if (!irdp) {						\
-			vty_out(vty, "Please Configure IRDP before using this command\n"); \
-			return CMD_WARNING_CONFIG_FAILED;		\
-		}							\
-	}								\
-	while (0)
+#define IRDP_CONFIGED                                                                 \
+	do {                                                                          \
+		if (!irdp) {                                                          \
+			vty_out(vty,                                                  \
+				"Please Configure IRDP before using this command\n"); \
+			return CMD_WARNING_CONFIG_FAILED;                             \
+		}                                                                     \
+	} while (0)
 
 static struct irdp_interface *irdp_if_get(struct interface *ifp)
 {
@@ -97,7 +90,7 @@ static int irdp_if_delete(struct interface *ifp)
 	return 0;
 }
 
-static const char *inet_2a(u_int32_t a, char *b)
+static const char *inet_2a(uint32_t a, char *b)
 {
 	sprintf(b, "%u.%u.%u.%u", (a)&0xFF, (a >> 8) & 0xFF, (a >> 16) & 0xFF,
 		(a >> 24) & 0xFF);
@@ -118,7 +111,7 @@ static struct prefix *irdp_get_prefix(struct interface *ifp)
 }
 
 /* Join to the add/leave multicast group. */
-static int if_group(struct interface *ifp, int sock, u_int32_t group,
+static int if_group(struct interface *ifp, int sock, uint32_t group,
 		    int add_leave)
 {
 	struct ip_mreq m;
@@ -216,7 +209,7 @@ static void irdp_if_start(struct interface *ifp, int multicast,
 	struct irdp_interface *irdp = zi->irdp;
 	struct listnode *node;
 	struct connected *ifc;
-	u_int32_t timer, seed;
+	uint32_t timer, seed;
 
 	assert(irdp);
 

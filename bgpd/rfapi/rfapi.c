@@ -31,6 +31,8 @@
 #include "lib/linklist.h"
 #include "lib/command.h"
 #include "lib/stream.h"
+#include "lib/ringbuf.h"
+#include "lib/lib_errors.h"
 
 #include "bgpd/bgpd.h"
 #include "bgpd/bgp_ecommunity.h"
@@ -382,9 +384,8 @@ void del_vnc_route(struct rfapi_descriptor *rfd,
 
 	vnc_zlog_debug_verbose(
 		"%s: peer=%p, prefix=%s, prd=%s afi=%d, safi=%d bn=%p, bn->info=%p",
-		__func__, peer, buf,
-		prefix_rd2str(prd, buf2, sizeof(buf2)), afi, safi, bn,
-		(bn ? bn->info : NULL));
+		__func__, peer, buf, prefix_rd2str(prd, buf2, sizeof(buf2)),
+		afi, safi, bn, (bn ? bn->info : NULL));
 
 	for (bi = (bn ? bn->info : NULL); bi; bi = bi->next) {
 
@@ -748,9 +749,8 @@ void add_vnc_route(struct rfapi_descriptor *rfd, /* cookie, VPN UN addr, peer */
 	if (lifetime && *lifetime != RFAPI_INFINITE_LIFETIME) {
 		uint32_t lt;
 
-		encaptlv =
-			XCALLOC(MTYPE_ENCAP_TLV,
-				sizeof(struct bgp_attr_encap_subtlv) + 4);
+		encaptlv = XCALLOC(MTYPE_ENCAP_TLV,
+				   sizeof(struct bgp_attr_encap_subtlv) + 4);
 		assert(encaptlv);
 		encaptlv->type =
 			BGP_VNC_SUBTLV_TYPE_LIFETIME; /* prefix lifetime */
@@ -794,8 +794,8 @@ void add_vnc_route(struct rfapi_descriptor *rfd, /* cookie, VPN UN addr, peer */
 				 */
 				encaptlv = XCALLOC(
 					MTYPE_ENCAP_TLV,
-					sizeof(struct bgp_attr_encap_subtlv)
-					+ 2 + hop->length);
+					sizeof(struct bgp_attr_encap_subtlv) + 2
+						+ hop->length);
 				assert(encaptlv);
 				encaptlv->type =
 					BGP_VNC_SUBTLV_TYPE_RFPOPTION; /* RFP
@@ -912,7 +912,7 @@ void add_vnc_route(struct rfapi_descriptor *rfd, /* cookie, VPN UN addr, peer */
 	 *  aspath: points to interned hash from aspath hash table
 	 */
 
-	red = bgp_redist_lookup(bgp, afi, type, VRF_DEFAULT);
+	red = bgp_redist_lookup(bgp, afi, type, 0);
 
 	if (red && red->redist_metric_flag) {
 		attr.med = red->redist_metric;
@@ -1082,7 +1082,7 @@ void add_vnc_route(struct rfapi_descriptor *rfd, /* cookie, VPN UN addr, peer */
 	/* save backref to rfapi handle */
 	assert(bgp_info_extra_get(new));
 	new->extra->vnc.export.rfapi_handle = (void *)rfd;
-	encode_label(label_val, &new->extra->label);
+	encode_label(label_val, &new->extra->label[0]);
 
 	/* debug */
 
@@ -1310,7 +1310,7 @@ static int rfapi_open_inner(struct rfapi_descriptor *rfd, struct bgp *bgp,
 			stream_fifo_free(rfd->peer->obuf);
 
 		if (rfd->peer->ibuf_work)
-			stream_free(rfd->peer->ibuf_work);
+			ringbuf_del(rfd->peer->ibuf_work);
 		if (rfd->peer->obuf_work)
 			stream_free(rfd->peer->obuf_work);
 
@@ -2337,7 +2337,7 @@ int rfapi_reopen(struct rfapi_descriptor *rfd, struct bgp *bgp)
 
 		h = bgp->rfapi;
 
-		assert(!CHECK_FLAG(h->flags, RFAPI_INCALLBACK));
+		assert(h != NULL && !CHECK_FLAG(h->flags, RFAPI_INCALLBACK));
 
 		if (CHECK_FLAG(rfd->flags,
 			       RFAPI_HD_FLAG_CLOSING_ADMINISTRATIVELY)
@@ -3198,8 +3198,8 @@ DEFUN (debug_rfapi_register_vn_un_l2o,
 	memset(optary, 0, sizeof(optary));
 	optary[opt_next].v.l2addr.logical_net_id =
 		strtoul(argv[14]->arg, NULL, 10);
-	if ((rc = rfapiStr2EthAddr(argv[12]->arg,
-				   &optary[opt_next].v.l2addr.macaddr))) {
+	if (rfapiStr2EthAddr(argv[12]->arg,
+			     &optary[opt_next].v.l2addr.macaddr)) {
 		vty_out(vty, "Bad mac address \"%s\"\n", argv[12]->arg);
 		return CMD_WARNING_CONFIG_FAILED;
 	}
@@ -3369,13 +3369,7 @@ DEFUN (debug_rfapi_query_vn_un_l2o,
 {
 	struct rfapi_ip_addr vn;
 	struct rfapi_ip_addr un;
-	struct rfapi_ip_addr target;
-	rfapi_handle handle;
 	int rc;
-	struct rfapi_next_hop_entry *pNextHopEntry;
-	struct rfapi_l2address_option l2o_buf;
-	struct bgp_tea_options hopt;
-	uint8_t valbuf[14];
 
 	/*
 	 * Get VN addr
@@ -3390,69 +3384,8 @@ DEFUN (debug_rfapi_query_vn_un_l2o,
 	if ((rc = rfapiCliGetRfapiIpAddr(vty, argv[6]->arg, &un)))
 		return rc;
 
-
-#if 0 /* there is no IP target arg here ?????? */
-  /*
-   * Get target addr
-   */
-  if ((rc = rfapiCliGetRfapiIpAddr (vty, argv[2], &target)))
-    return rc;
-#else
 	vty_out(vty, "%% This command is broken.\n");
 	return CMD_WARNING_CONFIG_FAILED;
-#endif
-
-	if (rfapi_find_handle_vty(vty, &vn, &un, &handle)) {
-		vty_out(vty, "can't locate handle matching vn=%s, un=%s\n",
-			argv[4]->arg, argv[6]->arg);
-		return CMD_WARNING_CONFIG_FAILED;
-	}
-
-	/*
-	 * Set up L2 parameters
-	 */
-	memset(&l2o_buf, 0, sizeof(l2o_buf));
-	if (rfapiStr2EthAddr(argv[10]->arg, &l2o_buf.macaddr)) {
-		vty_out(vty, "Bad mac address \"%s\"\n", argv[10]->arg);
-		return CMD_WARNING_CONFIG_FAILED;
-	}
-
-	l2o_buf.logical_net_id = strtoul(argv[8]->arg, NULL, 10);
-
-	/* construct option chain */
-
-	memset(valbuf, 0, sizeof(valbuf));
-	memcpy(valbuf, &l2o_buf.macaddr.octet, ETH_ALEN);
-	valbuf[11] = (l2o_buf.logical_net_id >> 16) & 0xff;
-	valbuf[12] = (l2o_buf.logical_net_id >> 8) & 0xff;
-	valbuf[13] = l2o_buf.logical_net_id & 0xff;
-
-	memset(&hopt, 0, sizeof(hopt));
-	hopt.options_count = 1;
-	hopt.options_length = sizeof(valbuf); /* is this right? */
-	hopt.type = RFAPI_VN_OPTION_TYPE_L2ADDR;
-	hopt.length = sizeof(valbuf);
-	hopt.value = valbuf;
-
-
-	/*
-	 * options parameter not used? Set to NULL for now
-	 */
-	rc = rfapi_query(handle, &target, &l2o_buf, &pNextHopEntry);
-
-	if (rc) {
-		vty_out(vty, "rfapi_query failed with rc=%d (%s)\n", rc,
-			strerror(rc));
-	} else {
-		/*
-		 * print nexthop list
-		 */
-		/* TBD enhance to print L2 information */
-		test_nexthops_callback(/*&target, */ pNextHopEntry,
-				       vty); /* frees nh list! */
-	}
-
-	return CMD_SUCCESS;
 }
 
 
@@ -4001,7 +3934,8 @@ void *rfapi_rfp_init_group_config_ptr_vty(void *rfp_start_val,
 							    size);
 		break;
 	default:
-		zlog_err("%s: Unknown group type=%d", __func__, type);
+		flog_err(LIB_ERR_DEVELOPMENT, "%s: Unknown group type=%d",
+			  __func__, type);
 		/* should never happen */
 		assert("Unknown type" == NULL);
 		break;
@@ -4115,7 +4049,8 @@ void *rfapi_rfp_get_group_config_ptr_name(
 							 criteria, search_cb);
 		break;
 	default:
-		zlog_err("%s: Unknown group type=%d", __func__, type);
+		flog_err(LIB_ERR_DEVELOPMENT, "%s: Unknown group type=%d",
+			  __func__, type);
 		/* should never happen */
 		assert("Unknown type" == NULL);
 		break;

@@ -124,7 +124,7 @@ static void keychain_delete(struct keychain *keychain)
 	keychain_free(keychain);
 }
 
-static struct key *key_lookup(const struct keychain *keychain, u_int32_t index)
+static struct key *key_lookup(const struct keychain *keychain, uint32_t index)
 {
 	struct listnode *node;
 	struct key *key;
@@ -137,7 +137,7 @@ static struct key *key_lookup(const struct keychain *keychain, u_int32_t index)
 }
 
 struct key *key_lookup_for_accept(const struct keychain *keychain,
-				  u_int32_t index)
+				  uint32_t index)
 {
 	struct listnode *node;
 	struct key *key;
@@ -172,7 +172,7 @@ struct key *key_match_for_accept(const struct keychain *keychain,
 		if (key->accept.start == 0
 		    || (key->accept.start <= now
 			&& (key->accept.end >= now || key->accept.end == -1)))
-			if (strncmp(key->string, auth_str, 16) == 0)
+			if (key->string && (strncmp(key->string, auth_str, 16) == 0))
 				return key;
 	}
 	return NULL;
@@ -197,7 +197,7 @@ struct key *key_lookup_for_send(const struct keychain *keychain)
 	return NULL;
 }
 
-static struct key *key_get(const struct keychain *keychain, u_int32_t index)
+static struct key *key_get(const struct keychain *keychain, uint32_t index)
 {
 	struct key *key;
 
@@ -270,7 +270,7 @@ DEFUN_NOSH (key,
 	int idx_number = 1;
 	VTY_DECLVAR_CONTEXT(keychain, keychain);
 	struct key *key;
-	u_int32_t index;
+	uint32_t index;
 
 	index = strtoul(argv[idx_number]->arg, NULL, 10);
 	key = key_get(keychain, index);
@@ -289,7 +289,7 @@ DEFUN (no_key,
 	int idx_number = 2;
 	VTY_DECLVAR_CONTEXT(keychain, keychain);
 	struct key *key;
-	u_int32_t index;
+	uint32_t index;
 
 	index = strtoul(argv[idx_number]->arg, NULL, 10);
 	key = key_lookup(keychain, index);
@@ -469,7 +469,7 @@ static int key_lifetime_duration_set(struct vty *vty, struct key_range *krange,
 				     const char *duration_str)
 {
 	time_t time_start;
-	u_int32_t duration;
+	uint32_t duration;
 
 	time_start = key_str2time(stime_str, sday_str, smonth_str, syear_str);
 	if (time_start < 0) {
@@ -715,6 +715,24 @@ DEFUN (accept_lifetime_duration_month_day,
 		argv[idx_number_3]->arg);
 }
 
+DEFUN (no_accept_lifetime,
+       no_accept_lifetime_cmd,
+       "no accept-lifetime",
+       NO_STR
+       "Unset accept-lifetime\n")
+{
+	VTY_DECLVAR_CONTEXT_SUB(key, key);
+
+	if (key->accept.start)
+		key->accept.start = 0;
+	if (key->accept.end)
+		key->accept.end = 0;
+	if (key->accept.duration)
+		key->accept.duration = 0;
+
+	return CMD_SUCCESS;
+}
+
 DEFUN (send_lifetime_day_month_day_month,
        send_lifetime_day_month_day_month_cmd,
        "send-lifetime HH:MM:SS (1-31) MONTH (1993-2035) HH:MM:SS (1-31) MONTH (1993-2035)",
@@ -925,6 +943,24 @@ DEFUN (send_lifetime_duration_month_day,
 		argv[idx_number_3]->arg);
 }
 
+DEFUN (no_send_lifetime,
+       no_send_lifetime_cmd,
+       "no send-lifetime",
+       NO_STR
+       "Unset send-lifetime\n")
+{
+	VTY_DECLVAR_CONTEXT_SUB(key, key);
+
+	if (key->send.start)
+		key->send.start = 0;
+	if (key->send.end)
+		key->send.end = 0;
+	if (key->send.duration)
+		key->send.duration = 0;
+
+	return CMD_SUCCESS;
+}
+
 static struct cmd_node keychain_node = {KEYCHAIN_NODE, "%s(config-keychain)# ",
 					1};
 
@@ -1047,6 +1083,7 @@ void keychain_init()
 			&accept_lifetime_duration_day_month_cmd);
 	install_element(KEYCHAIN_KEY_NODE,
 			&accept_lifetime_duration_month_day_cmd);
+	install_element(KEYCHAIN_KEY_NODE, &no_accept_lifetime_cmd);
 
 	install_element(KEYCHAIN_KEY_NODE,
 			&send_lifetime_day_month_day_month_cmd);
@@ -1064,4 +1101,5 @@ void keychain_init()
 			&send_lifetime_duration_day_month_cmd);
 	install_element(KEYCHAIN_KEY_NODE,
 			&send_lifetime_duration_month_day_cmd);
+	install_element(KEYCHAIN_KEY_NODE, &no_send_lifetime_cmd);
 }

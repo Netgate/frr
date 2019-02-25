@@ -28,13 +28,14 @@
 #ifndef _ZEBRA_EIGRP_MACROS_H_
 #define _ZEBRA_EIGRP_MACROS_H_
 
-
 //--------------------------------------------------------------------------
 
 #define EIGRP_IF_STRING_MAXLEN  40
 #define IF_NAME(I)      eigrp_if_name_string ((I))
 
 //--------------------------------------------------------------------------
+
+#define EIGRP_PACKET_MTU(mtu) ((mtu) - (sizeof(struct ip)))
 
 /* Topology Macros */
 

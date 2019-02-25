@@ -87,8 +87,10 @@ struct route_map_rule_cmd {
 	const char *str;
 
 	/* Function for value set or match. */
-	route_map_result_t (*func_apply)(void *, struct prefix *,
-					 route_map_object_t, void *);
+	route_map_result_t (*func_apply)(void *rule,
+					 const struct prefix *prefix,
+					 route_map_object_t type,
+					 void *object);
 
 	/* Compile argument and return result as void *. */
 	void *(*func_compile)(const char *);
@@ -98,15 +100,13 @@ struct route_map_rule_cmd {
 };
 
 /* Route map apply error. */
-enum {
-	RMAP_COMPILE_SUCCESS,
+enum { RMAP_COMPILE_SUCCESS,
 
-	/* Route map rule is missing. */
-	RMAP_RULE_MISSING,
+       /* Route map rule is missing. */
+       RMAP_RULE_MISSING,
 
-	/* Route map rule can't compile */
-	RMAP_COMPILE_ERROR
-};
+       /* Route map rule can't compile */
+       RMAP_COMPILE_ERROR };
 
 /* Route map rule list. */
 struct route_map_rule_list {
@@ -160,8 +160,8 @@ struct route_map {
 	struct route_map *prev;
 
 	/* Maintain update info */
-	int to_be_processed; /* True if modification isn't acted on yet */
-	int deleted;	 /* If 1, then this node will be deleted */
+	bool to_be_processed; /* True if modification isn't acted on yet */
+	bool deleted;         /* If 1, then this node will be deleted */
 
 	QOBJ_FIELDS
 };
@@ -169,6 +169,12 @@ DECLARE_QOBJ_TYPE(route_map)
 
 /* Prototypes. */
 extern void route_map_init(void);
+
+/*
+ * This should only be called on shutdown
+ * Additionally this function sets the hooks to NULL
+ * before any processing is done.
+ */
 extern void route_map_finish(void);
 
 /* Add match statement to route map. */
@@ -210,16 +216,15 @@ extern struct route_map *route_map_lookup_by_name(const char *name);
 
 /* Apply route map to the object. */
 extern route_map_result_t route_map_apply(struct route_map *map,
-					  struct prefix *,
+					  const struct prefix *prefix,
 					  route_map_object_t object_type,
 					  void *object);
 
 extern void route_map_add_hook(void (*func)(const char *));
 extern void route_map_delete_hook(void (*func)(const char *));
 extern void route_map_event_hook(void (*func)(route_map_event_t, const char *));
-extern int route_map_mark_updated(const char *name, int deleted);
-extern int route_map_clear_updated(struct route_map *rmap);
-extern void route_map_walk_update_list(int (*update_fn)(char *name));
+extern int route_map_mark_updated(const char *name);
+extern void route_map_walk_update_list(void (*update_fn)(char *name));
 extern void route_map_upd8_dependency(route_map_event_t type, const char *arg,
 				      const char *rmap_name);
 extern void route_map_notify_dependencies(const char *affected_name,

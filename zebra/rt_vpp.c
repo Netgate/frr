@@ -48,7 +48,7 @@ void vpp_neigh_read(struct zebra_ns *zns)
 
 
 int kernel_neigh_update(int add, int ifindex, uint32_t addr,
-			char *lla, int llalen)
+			char *lla, int llalen, ns_id_t ns_id)
 
 {
 	return -1;
@@ -56,7 +56,7 @@ int kernel_neigh_update(int add, int ifindex, uint32_t addr,
 
 
 int kernel_add_neigh(struct interface *ifp, struct ipaddr *ip,
-			    struct ethaddr *mac)
+		     struct ethaddr *mac, uint8_t flags)
 {
 	return -1;
 }
@@ -135,7 +135,7 @@ static int route_multipath(u_int8_t is_add,
 		rt_table_name = ROUTE_DEFAULT_IPV4_NAME;
 	}
 
-	for (nh = re->nexthop; nh; nh = nh->next) {
+	for (ALL_NEXTHOPS(re->ng, nh)) {
 		u_int8_t *nhaddr;
 		struct route_add_del_args rada;
 		int ret;
@@ -191,20 +191,33 @@ static int route_multipath(u_int8_t is_add,
 }
 
 
-void kernel_route_rib(struct prefix *p,
-		      struct prefix *src_p,
-		      struct route_entry *re_old,
-		      struct route_entry *re_new)
+enum dp_req_result kernel_route_rib(struct route_node *rn,
+				    const struct prefix *p,
+				    const struct prefix *src_p,
+				    struct route_entry *re_old,
+				    struct route_entry *re_new)
 {
-	int ret;
+	int ret = 0;
+	enum dp_req_result pass_fail;
 
-	ret = 0;
 	if (re_old) {
 		ret = route_multipath(0, p, re_old);
+		pass_fail = (!ret) ? DP_DELETE_SUCCESS : DP_DELETE_FAILURE;
 	}
-	if (re_new && !ret) {
+	if (re_new) {
 		ret = route_multipath(1, p, re_new);
+		pass_fail = (!ret) ? DP_INSTALL_SUCCESS : DP_INSTALL_FAILURE;
 	}
+
+        kernel_route_rib_pass_fail(rn, p,
+				   (re_new) ? re_new : re_old,
+				   pass_fail);
+
+	if (ret < 0) {
+		return DP_REQUEST_FAILURE;
+	}
+
+	return DP_REQUEST_SUCCESS;
 }
 
 

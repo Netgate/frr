@@ -109,8 +109,7 @@ static int config_write_interfaces(struct vty *vty, struct eigrp *eigrp)
 		if (ei->params.auth_keychain) {
 			vty_out(vty,
 				" ip authentication key-chain eigrp %d %s\n",
-				eigrp->AS,
-				ei->params.auth_keychain);
+				eigrp->AS, ei->params.auth_keychain);
 		}
 
 		if (ei->params.v_hello != EIGRP_HELLO_INTERVAL_DEFAULT) {
@@ -147,8 +146,7 @@ static int eigrp_write_interface(struct vty *vty)
 			vty_out(vty, " description %s\n", ifp->desc);
 
 		if (ei->params.bandwidth != EIGRP_BANDWIDTH_DEFAULT)
-			vty_out(vty, " bandwidth %u\n",
-				ei->params.bandwidth);
+			vty_out(vty, " bandwidth %u\n", ei->params.bandwidth);
 		if (ei->params.delay != EIGRP_DELAY_DEFAULT)
 			vty_out(vty, " delay %u\n", ei->params.delay);
 		if (ei->params.v_hello != EIGRP_HELLO_INTERVAL_DEFAULT)
@@ -495,7 +493,7 @@ DEFUN (show_ip_eigrp_topology,
 				     & EIGRP_NEXTHOP_ENTRY_FSUCCESSOR_FLAG)
 				    == EIGRP_NEXTHOP_ENTRY_FSUCCESSOR_FLAG))) {
 				show_ip_eigrp_nexthop_entry(vty, eigrp, te,
-							     &first);
+							    &first);
 				first = 0;
 			}
 		}
@@ -610,7 +608,7 @@ DEFUN (eigrp_if_delay,
 	VTY_DECLVAR_CONTEXT(interface, ifp);
 	struct eigrp_interface *ei = ifp->info;
 	struct eigrp *eigrp;
-	u_int32_t delay;
+	uint32_t delay;
 
 	eigrp = eigrp_lookup();
 	if (eigrp == NULL) {
@@ -668,7 +666,7 @@ DEFUN (eigrp_if_bandwidth,
 {
 	VTY_DECLVAR_CONTEXT(interface, ifp);
 	struct eigrp_interface *ei = ifp->info;
-	u_int32_t bandwidth;
+	uint32_t bandwidth;
 	struct eigrp *eigrp;
 
 	eigrp = eigrp_lookup();
@@ -729,7 +727,7 @@ DEFUN (eigrp_if_ip_hellointerval,
 {
 	VTY_DECLVAR_CONTEXT(interface, ifp);
 	struct eigrp_interface *ei = ifp->info;
-	u_int32_t hello;
+	uint32_t hello;
 	struct eigrp *eigrp;
 
 	eigrp = eigrp_lookup();
@@ -777,8 +775,7 @@ DEFUN (no_eigrp_if_ip_hellointerval,
 	ei->params.v_hello = EIGRP_HELLO_INTERVAL_DEFAULT;
 
 	THREAD_TIMER_OFF(ei->t_hello);
-	thread_add_timer(master, eigrp_hello_timer, ei, 1,
-			 &ei->t_hello);
+	thread_add_timer(master, eigrp_hello_timer, ei, 1, &ei->t_hello);
 
 	return CMD_SUCCESS;
 }
@@ -793,7 +790,7 @@ DEFUN (eigrp_if_ip_holdinterval,
 {
 	VTY_DECLVAR_CONTEXT(interface, ifp);
 	struct eigrp_interface *ei = ifp->info;
-	u_int32_t hold;
+	uint32_t hold;
 	struct eigrp *eigrp;
 
 	eigrp = eigrp_lookup();
@@ -824,7 +821,7 @@ DEFUN (eigrp_ip_summary_address,
        "Summary <network>/<length>, e.g. 192.168.0.0/16\n")
 {
 	// VTY_DECLVAR_CONTEXT(interface, ifp);
-	// u_int32_t AS;
+	// uint32_t AS;
 	struct eigrp *eigrp;
 
 	eigrp = eigrp_lookup();
@@ -851,7 +848,7 @@ DEFUN (no_eigrp_ip_summary_address,
        "Summary <network>/<length>, e.g. 192.168.0.0/16\n")
 {
 	// VTY_DECLVAR_CONTEXT(interface, ifp);
-	// u_int32_t AS;
+	// uint32_t AS;
 	struct eigrp *eigrp;
 
 	eigrp = eigrp_lookup();
@@ -1008,11 +1005,9 @@ DEFUN (eigrp_authentication_keychain,
 	if (keychain != NULL) {
 		if (ei->params.auth_keychain) {
 			free(ei->params.auth_keychain);
-			ei->params.auth_keychain =
-				strdup(keychain->name);
+			ei->params.auth_keychain = strdup(keychain->name);
 		} else
-			ei->params.auth_keychain =
-				strdup(keychain->name);
+			ei->params.auth_keychain = strdup(keychain->name);
 	} else
 		vty_out(vty, "Key chain with specified name not found\n");
 
@@ -1125,7 +1120,7 @@ DEFUN (eigrp_variance,
        "Metric variance multiplier\n")
 {
 	struct eigrp *eigrp;
-	u_char variance;
+	uint8_t variance;
 
 	eigrp = eigrp_lookup();
 	if (eigrp == NULL) {
@@ -1169,7 +1164,7 @@ DEFUN (eigrp_maximum_paths,
        "Number of paths\n")
 {
 	struct eigrp *eigrp;
-	u_char max;
+	uint8_t max;
 
 	eigrp = eigrp_lookup();
 	if (eigrp == NULL) {
@@ -1339,8 +1334,7 @@ DEFUN (clear_ip_eigrp_neighbors_IP,
 	struct in_addr nbr_addr;
 
 	if (!inet_aton(argv[4]->arg, &nbr_addr)) {
-		vty_out(vty, "Unable to parse %s",
-			argv[4]->arg);
+		vty_out(vty, "Unable to parse %s", argv[4]->arg);
 		return CMD_WARNING;
 	}
 
@@ -1446,8 +1440,7 @@ DEFUN (clear_ip_eigrp_neighbors_IP_soft,
 	struct in_addr nbr_addr;
 
 	if (!inet_aton(argv[4]->arg, &nbr_addr)) {
-		vty_out(vty, "Unable to parse: %s",
-			argv[4]->arg);
+		vty_out(vty, "Unable to parse: %s", argv[4]->arg);
 		return CMD_WARNING;
 	}
 

@@ -654,12 +654,12 @@ int pim_parse_addr_source(struct prefix_sg *sg, uint8_t *flags,
 	return addr - buf;
 }
 
-#define FREE_ADDR_LIST(hello_option_addr_list)				\
-	{								\
-		if (hello_option_addr_list) {				\
-			list_delete_and_null(&hello_option_addr_list);	\
-			hello_option_addr_list = 0;			\
-		}							\
+#define FREE_ADDR_LIST(hello_option_addr_list)                                 \
+	{                                                                      \
+		if (hello_option_addr_list) {                                  \
+			list_delete_and_null(&hello_option_addr_list);         \
+			hello_option_addr_list = 0;                            \
+		}                                                              \
 	}
 
 int pim_tlv_parse_addr_list(const char *ifname, struct in_addr src_addr,
@@ -757,12 +757,6 @@ int pim_tlv_parse_addr_list(const char *ifname, struct in_addr src_addr,
 		 */
 		if (!*hello_option_addr_list) {
 			*hello_option_addr_list = list_new();
-			if (!*hello_option_addr_list) {
-				zlog_err(
-					"%s %s: failure: hello_option_addr_list=list_new()",
-					__FILE__, __PRETTY_FUNCTION__);
-				return -2;
-			}
 			(*hello_option_addr_list)->del =
 				(void (*)(void *))prefix_free;
 		}
@@ -773,12 +767,6 @@ int pim_tlv_parse_addr_list(const char *ifname, struct in_addr src_addr,
 		{
 			struct prefix *p;
 			p = prefix_new();
-			if (!p) {
-				zlog_err("%s %s: failure: prefix_new()",
-					 __FILE__, __PRETTY_FUNCTION__);
-				FREE_ADDR_LIST(*hello_option_addr_list);
-				return -3;
-			}
 			prefix_copy(p, &tmp);
 			listnode_add(*hello_option_addr_list, p);
 		}

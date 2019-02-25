@@ -23,6 +23,7 @@
 
 #include "linklist.h"
 #include "vector.h"
+#include "lib_errors.h"
 #include "vty.h"
 #include "command.h"
 #include "vrf.h"
@@ -48,8 +49,8 @@ RB_GENERATE(if_index_head, interface, index_entry, if_cmp_index_func);
 
 DEFINE_QOBJ_TYPE(interface)
 
-DEFINE_HOOK(if_add, (struct interface *ifp), (ifp))
-DEFINE_KOOH(if_del, (struct interface *ifp), (ifp))
+DEFINE_HOOK(if_add, (struct interface * ifp), (ifp))
+DEFINE_KOOH(if_del, (struct interface * ifp), (ifp))
 
 /* List of interfaces in only the default VRF */
 int ptm_enable = 0;
@@ -152,7 +153,7 @@ struct interface *if_create(const char *name, vrf_id_t vrf_id)
 	SET_FLAG(ifp->status, ZEBRA_INTERFACE_LINKDETECTION);
 
 	QOBJ_REG(ifp, interface);
-        hook_call(if_add, ifp);
+	hook_call(if_add, ifp);
 	return ifp;
 }
 
@@ -181,7 +182,7 @@ void if_update_to_new_vrf(struct interface *ifp, vrf_id_t vrf_id)
 /* Delete interface structure. */
 void if_delete_retain(struct interface *ifp)
 {
-        hook_call(if_del, ifp);
+	hook_call(if_del, ifp);
 	QOBJ_UNREG(ifp);
 
 	/* Free connected address list */
@@ -209,6 +210,9 @@ void if_delete(struct interface *ifp)
 	list_delete_and_null(&ifp->nbr_connected);
 
 	if_link_params_free(ifp);
+
+	if (ifp->desc)
+		XFREE(MTYPE_TMP, ifp->desc);
 
 	XFREE(MTYPE_IF, ifp);
 }
@@ -369,29 +373,35 @@ struct interface *if_get_by_name(const char *name, vrf_id_t vrf_id, int vty)
 {
 	struct interface *ifp;
 
+	ifp = if_lookup_by_name(name, vrf_id);
+	if (ifp)
+		return ifp;
+	/* Not Found on same VRF. If the interface command
+	 * was entered in vty without a VRF (passed as VRF_DEFAULT),
+	 * accept the ifp we found. If a vrf was entered and there is
+	 * a mismatch, reject it if from vty.
+	 */
 	ifp = if_lookup_by_name_all_vrf(name);
-	if (ifp) {
-		if (ifp->vrf_id == vrf_id)
+	if (!ifp)
+		return if_create(name, vrf_id);
+	if (vty) {
+		if (vrf_id == VRF_DEFAULT)
 			return ifp;
-
-		/* Found a match on a different VRF. If the interface command
-		 * was entered in vty without a VRF (passed as VRF_DEFAULT),
-		 * accept the ifp we found. If a vrf was entered and there is
-		 * a mismatch, reject it if from vty. If it came from the kernel
-		 * or by way of zclient, believe it and update the ifp
-		 * accordingly.
-		 */
-		if (vty) {
-			if (vrf_id == VRF_DEFAULT)
-				return ifp;
-			return NULL;
-		} else {
-			if_update_to_new_vrf(ifp, vrf_id);
-			return ifp;
-		}
+		return NULL;
 	}
-
-	return if_create(name, vrf_id);
+	/* if vrf backend uses NETNS, then
+	 * this should not be considered as an update
+	 * then create the new interface
+	 */
+	if (ifp->vrf_id != vrf_id && vrf_is_mapped_on_netns(
+					vrf_lookup_by_id(vrf_id)))
+		return if_create(name, vrf_id);
+	/* If it came from the kernel
+	 * or by way of zclient, believe it and update
+	 * the ifp accordingly.
+	 */
+	if_update_to_new_vrf(ifp, vrf_id);
+	return ifp;
 }
 
 void if_set_index(struct interface *ifp, ifindex_t ifindex)
@@ -454,6 +464,20 @@ int if_is_loopback(struct interface *ifp)
 	 * but Y on platform N?
 	 */
 	return (ifp->flags & (IFF_LOOPBACK | IFF_NOXMIT | IFF_VIRTUAL));
+}
+
+/* Check interface is VRF */
+int if_is_vrf(struct interface *ifp)
+{
+	return CHECK_FLAG(ifp->status, ZEBRA_INTERFACE_VRF_LOOPBACK);
+}
+
+bool if_is_loopback_or_vrf(struct interface *ifp)
+{
+	if (if_is_loopback(ifp) || if_is_vrf(ifp))
+		return true;
+
+	return false;
 }
 
 /* Does this interface support broadcast ? */
@@ -612,7 +636,7 @@ static struct interface *if_sunwzebra_get(char *name, vrf_id_t vrf_id)
 }
 #endif /* SUNOS_5 */
 
-DEFUN (interface,
+DEFUN_NOSH (interface,
        interface_cmd,
        "interface IFNAME [vrf NAME]",
        "Select an interface to configure\n"
@@ -638,7 +662,7 @@ DEFUN (interface,
 	/*Pending: need proper vrf name based lookup/(possible creation of VRF)
 	 Imagine forward reference of a vrf by name in this interface config */
 	if (vrfname)
-		VRF_GET_ID(vrf_id, vrfname);
+		VRF_GET_ID(vrf_id, vrfname, false);
 
 #ifdef SUNOS_5
 	ifp = if_sunwzebra_get(ifname, vrf_id);
@@ -655,23 +679,24 @@ DEFUN (interface,
 	return CMD_SUCCESS;
 }
 
-DEFUN_NOSH (no_interface,
-           no_interface_cmd,
-           "no interface IFNAME [vrf NAME]",
-           NO_STR
-           "Delete a pseudo interface's configuration\n"
-           "Interface's name\n"
-           VRF_CMD_HELP_STR)
+DEFUN (no_interface,
+       no_interface_cmd,
+       "no interface IFNAME [vrf NAME]",
+       NO_STR
+       "Delete a pseudo interface's configuration\n"
+       "Interface's name\n"
+       VRF_CMD_HELP_STR)
 {
+	int idx_vrf = 4;
 	const char *ifname = argv[2]->arg;
-	const char *vrfname = (argc > 3) ? argv[3]->arg : NULL;
+	const char *vrfname = (argc > 3) ? argv[idx_vrf]->arg : NULL;
 
 	// deleting interface
 	struct interface *ifp;
 	vrf_id_t vrf_id = VRF_DEFAULT;
 
 	if (argc > 3)
-		VRF_GET_ID(vrf_id, vrfname);
+		VRF_GET_ID(vrf_id, vrfname, false);
 
 	ifp = if_lookup_by_name(ifname, vrf_id);
 
@@ -1048,7 +1073,7 @@ ifaddr_ipv4_lookup (struct in_addr *addr, ifindex_t ifindex)
       rn = route_node_lookup (ifaddr_ipv4_table, (struct prefix *) &p);
       if (! rn)
 	return NULL;
-      
+
       ifp = rn->info;
       route_unlock_node (rn);
       return ifp;
@@ -1062,7 +1087,9 @@ void if_terminate(struct vrf *vrf)
 {
 	struct interface *ifp;
 
-	while ((ifp = RB_ROOT(if_name_head, &vrf->ifaces_by_name)) != NULL) {
+	while (!RB_EMPTY(if_name_head, &vrf->ifaces_by_name)) {
+		ifp = RB_ROOT(if_name_head, &vrf->ifaces_by_name);
+
 		if (ifp->node) {
 			ifp->node->info = NULL;
 			route_unlock_node(ifp->node);
@@ -1122,7 +1149,7 @@ const char *if_link_type_str(enum zebra_link_type llt)
 		llts(ZEBRA_LLT_IEEE802154, "IEEE 802.15.4");
 		llts(ZEBRA_LLT_IEEE802154_PHY, "IEEE 802.15.4 Phy");
 	default:
-		zlog_warn("Unknown value %d", llt);
+		flog_err(LIB_ERR_DEVELOPMENT, "Unknown value %d", llt);
 		return "Unknown type!";
 #undef llts
 	}
