@@ -29,6 +29,7 @@
 %{!?with_rpki:          %global  with_rpki          0 }
 %{!?with_rtadv:         %global  with_rtadv         1 }
 %{!?with_watchfrr:      %global  with_watchfrr      1 }
+%{!?with_caps:          %global  with_caps          0 }
 
 # user and group
 %{!?frr_user:           %global  frr_user           frr }
@@ -359,7 +360,11 @@ developing OSPF-API and frr applications.
 %if "%{vpp_dir}" != "/"
     --with-vppdir=%vpp_dir \
 %endif
-    --enable-poll=yes
+%if %{with_caps}
+    --enable-capabilities \
+%else
+    --disable-capabilities \
+%endif
     SPHINXBUILD=%{sphinx}
 
 make %{?_smp_mflags} MAKEINFO="makeinfo --no-split"
@@ -581,7 +586,7 @@ fi
 %files
 %doc */*.sample* COPYING
 %doc doc/mpls
-%doc ChangeLog NEWS README
+%doc README.md
 %if 0%{?frr_user:1}
     %dir %attr(751,%{frr_user},%{frr_user}) %{configdir}
     %dir %attr(750,%{frr_user},%{frr_user}) %{_localstatedir}/log/frr
@@ -650,6 +655,9 @@ fi
 %config(noreplace) %{_sysconfdir}/pam.d/frr
 %config(noreplace) %{_sysconfdir}/logrotate.d/frr
 %{_sbindir}/frr-reload
+%{_sbindir}/frrcommon.sh
+%{_sbindir}/frrinit.sh
+%{_sbindir}/watchfrr.sh
 
 
 %files contrib
@@ -664,9 +672,6 @@ fi
 
 %files devel
 %{_libdir}/lib*.so
-%if %{with_ospfclient}
-    %{_sbindir}/ospfclient
-%endif
 %dir %{_includedir}/%{name}
 %{_includedir}/%{name}/*.h
 %dir %{_includedir}/%{name}/ospfd
@@ -682,7 +687,16 @@ fi
 
 
 %changelog
-* Sun Oct  7 2018 Martin Winter <mwinter@opensourcerouting.org> - %{version}
+* Tue Jan  8 2019 Martin Winter <mwinter@opensourcerouting.org> - %{version}
+- Security Issue (Denial of Service): Fix BGP Attribute 255 (experimental VNC)
+  handling
+
+* Sat Dec 29 2018 Martin Winter <mwinter@opensourcerouting.org> - 6.0.1
+- Various fixes for label manager
+- Fix BGP unnumbered peer setup
+- Various other fixes
+
+* Sun Oct  7 2018 Martin Winter <mwinter@opensourcerouting.org> - 6.0
 - Staticd: New daemon responsible for management of static routes
 - ISISd: Implement dst-src routing as per draft-ietf-isis-ipv6-dst-src-routing
 - BFDd: new daemon for BFD (Bidrectional Forwarding Detection). Responsiblei

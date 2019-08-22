@@ -1,6 +1,7 @@
 [Unit]
 Description=FRRouting (FRR)
-After=syslog.target networking.service
+Requires=vpp.service
+After=syslog.target networking.service vpp.service
 OnFailure=heartbeat-failed@%n.service
 
 [Service]
