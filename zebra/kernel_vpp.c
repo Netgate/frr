@@ -23,6 +23,7 @@
 #include "table.h"
 #include "memory.h"
 #include "rib.h"
+#include "thread.h"
 #include "privs.h"
 
 #include "zebra/zserv.h"
@@ -42,6 +43,70 @@ unsigned int debug;		/* FIXME -- remove form libvppmgmt */
 
 extern struct zebra_privs_t zserv_privs;
 
+sw_interface_event_t *vpp_intf_events;
+struct connected *ifc_add_events;
+struct connected *ifc_del_events;
+int vpp_event_fds[2];
+
+
+static int kernel_read(struct thread *thread)
+{
+	ssize_t ret;
+	char *buf[8];
+
+	while (1) {
+		ret = read(vpp_event_fds[0], buf, sizeof(buf));
+		if (ret < 0) {
+			if (errno == EAGAIN || errno == EWOULDBLOCK) {
+				break;
+			}
+
+			zlog_err("Unable to read from VPP event fd %d",
+				 vpp_event_fds[0]);
+			return -1;
+		}
+	}
+
+	if (vec_len(vpp_intf_events) > 0) {
+		vmgmt_intf_refresh_all();
+
+		sw_interface_event_t *event;
+
+		vec_foreach(event, vpp_intf_events) {
+			vpp_intf_events_process(event);
+		}
+
+		vec_reset_length(vpp_intf_events);
+	}
+
+	if (vec_len(ifc_add_events) > 0) {
+		struct connected *ifc;
+
+		vec_foreach(ifc, ifc_add_events) {
+			vpp_ifc_events_process(ifc, /* is_del */ 0);
+		}
+
+		vec_reset_length(ifc_add_events);
+	}
+
+	if (vec_len(ifc_del_events) > 0) {
+		struct connected *ifc;
+
+		vec_foreach(ifc, ifc_del_events) {
+			vpp_ifc_events_process(ifc, /* is_del */ 1);
+		}
+
+		vec_reset_length(ifc_del_events);
+	}
+
+	struct zebra_ns *zns = (struct zebra_ns *)THREAD_ARG(thread);
+
+	thread_add_read(zebrad.master, kernel_read, zns, vpp_event_fds[0], 0);
+
+	return 0;
+}
+
+
 void kernel_init(struct zebra_ns *zns)
 {
 	int ret;
@@ -55,15 +120,30 @@ void kernel_init(struct zebra_ns *zns)
 			zlog_err("vmgmt_init failed with status %d", ret);
 		} else {
 			zlog_info("vmgmt_init success");
+			vmgmt_intf_refresh_all();
 		}
 		vmgmt_intf_event_register(vpp_link_change);
 
+	}
+
+	vpp_intf_events = NULL;
+
+	ret = pipe2(vpp_event_fds, O_NONBLOCK);
+	if (ret < 0) {
+		zlog_err("pipe2 failed with status %d", ret);
+	} else {
+		thread_add_read(zebrad.master, kernel_read, zns,
+				vpp_event_fds[0], 0);
 	}
 }
 
 
 void kernel_terminate(struct zebra_ns *zns)
 {
+	vec_free(vpp_intf_events);
+	close(vpp_event_fds[0]);
+	close(vpp_event_fds[1]);
+
 	frr_elevate_privs(&zserv_privs) {
 		vmgmt_disconnect();
 		zlog_info("vmgmt_disconnect success");

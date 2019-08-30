@@ -348,10 +348,10 @@ static int bgp_accept(struct thread *thread)
 		return -1;
 	}
 
-	if (CHECK_FLAG(peer1->flags, PEER_FLAG_SHUTDOWN)) {
+	if (BGP_PEER_START_SUPPRESSED(peer1)) {
 		if (bgp_debug_neighbor_events(peer1))
 			zlog_debug(
-				"[Event] connection from %s rejected due to admin shutdown",
+				"[Event] connection from %s rejected due to admin shutdown or prefix overflow",
 				inet_sutop(&su, buf));
 		close(bgp_sock);
 		return -1;
@@ -377,6 +377,17 @@ static int bgp_accept(struct thread *thread)
 		if (bgp_debug_neighbor_events(peer1))
 			zlog_debug(
 				"%s - incoming conn rejected - no AF activated for peer",
+				peer1->host);
+		close(bgp_sock);
+		return -1;
+	}
+
+	/* Check whether max prefix restart timer is set for the peer */
+	if (peer1->t_pmax_restart) {
+		if (bgp_debug_neighbor_events(peer1))
+			zlog_debug(
+				"%s - incoming conn rejected - "
+				"peer max prefix timer is active",
 				peer1->host);
 		close(bgp_sock);
 		return -1;

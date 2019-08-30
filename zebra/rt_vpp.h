@@ -28,3 +28,5 @@ void vpp_macfdb_read_for_bridge(struct zebra_ns *zns,
 				struct interface *ifp,
 				struct interface *br_if);
 void vpp_link_change(sw_interface_event_t *event);
+void vpp_intf_events_process(sw_interface_event_t *event);
+void vpp_ifc_events_process(struct connected *ifc, u8 is_del);

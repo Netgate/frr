@@ -61,32 +61,98 @@ static void vpp_rt_add_v6_route(ip6_fib_details_t *v6_route,
 	table_id = RT_TABLE_MAIN;
 
 
-	for (p = 0; p < v6_route->count; ++p) {
+	for (p = 0; p < count; ++p) {
 		ip_fib_path_t *path;
+		u_int8_t *ip6nh;
 		u_int32_t ifindex;
+		struct nexthop nh;
 
 		path = &fib_path_vec[p];
+
+		ip6nh = path->next_hop;
+		if (pref.prefixlen == 128
+		    && memcmp(&pref.u.prefix6, ip6nh, 16) == 0) {
+			continue;
+		}
+
 		ifindex = vpp_map_swif_to_ifindex(path->sw_if_index);
 
-#if 0
-		rib_add(AFI_IP6,
-			SAFI_UNICAST,
-			zvrf->vrf_id,
-			ZEBRA_ROUTE_KERNEL,
-			0,
-			0,
-			&pref,
-			(struct in6_addr *) path->next_hop,
-			0,
-			ifindex,
-			table_id,
-			0,
-			0 /* mtu */,
-			0,
-			0 /* tag */
-			);
-#endif
+		memset(&nh, 0, sizeof(nh));
+
+		if (path->is_drop || path->is_unreach || path->is_prohibit) {
+			if (path->is_drop) {
+				nh.type = NEXTHOP_TYPE_BLACKHOLE;
+				nh.bh_type = BLACKHOLE_NULL;
+			}
+			if (path->is_unreach) {
+				nh.type = NEXTHOP_TYPE_BLACKHOLE;
+				nh.bh_type = BLACKHOLE_REJECT;
+			}
+			if (path->is_prohibit) {
+				nh.type = NEXTHOP_TYPE_BLACKHOLE;
+				nh.bh_type = BLACKHOLE_ADMINPROHIB;
+			}
+		} else {
+			if (path->sw_if_index != ~0U && !(*ip6nh)) {
+				nh.type = NEXTHOP_TYPE_IFINDEX;
+			} else if (path->sw_if_index != ~0U && (*ip6nh)) {
+				nh.type = NEXTHOP_TYPE_IPV6_IFINDEX;
+			} else {
+				nh.type = NEXTHOP_TYPE_BLACKHOLE;
+				nh.bh_type = BLACKHOLE_UNSPEC;
+			}
+		}
+
+		nh.ifindex = ifindex;
+		if (*ip6nh) {
+			memcpy(&nh.gate.ipv6.s6_addr, ip6nh, 16);
+		}
+
+		if (count == 1) {
+			rib_add(AFI_IP6,
+				SAFI_UNICAST,
+				vrf_id,
+				ZEBRA_ROUTE_KERNEL,
+				0,	/* source protocol instance */
+				0,	/* ZEBRA_FLAG_* */
+				&pref,	/* prefix */
+				0,	/* src prefix_ipv6 */
+				&nh,	/* nexthop */
+				table_id,	/* routing table_id */
+				0,	/* metric */
+				0,	/* mtu */
+				0,	/* distance */
+				0	/* tag */
+				);
+		}
 	}
+}
+
+
+static int vpp_is_ipv6_default_route(ip_fib_details_t *v6_route)
+{
+	u_int8_t ip6_zero[16] = {0};
+
+	if (v6_route->address[0] == 0) {
+		if (v6_route->address_length == 0
+		    || v6_route->address_length == 128) {
+			return (memcmp(ip6_zero, v6_route->address, 16) == 0);
+		}
+	}
+
+	return 0;
+}
+
+
+static int vpp_is_ipv6_fe80_10(ip_fib_details_t *v6_route)
+{
+	if (v6_route->address[0] == 0xfe
+	    && v6_route->address[1] == 0x80
+	    && v6_route->address_length == 10) {
+		return 1;
+	}
+
+	return 0;
 }
 
 
@@ -108,7 +174,10 @@ static void vpp_rt_add_ipv6(ip6_fib_details_t *v6_routes,
 
 	for (r = 0; r < n_routes; ++r) {
 		v6_route = vec_elt_at_index(v6_routes, r);
-		vpp_rt_add_v6_route(v6_route, zns);
+		if (!vpp_is_ipv6_default_route(v6_route)
+		    && !vpp_is_ipv6_fe80_10(v6_route)) {
+			vpp_rt_add_v6_route(v6_route, zns);
+		}
 	}
 }
 

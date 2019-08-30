@@ -144,17 +144,17 @@ class Config(object):
 
         self.load_contexts()
 
-    def load_from_show_running(self):
+    def load_from_show_running(self, daemon=''):
         """
         Read running configuration and slurp it into internal memory
         The internal representation has been marked appropriately by passing it
         through vtysh with the -m parameter
         """
-        log.info('Loading Config object from vtysh show running')
+        log.info('Loading Config object from vtysh show running %s' % daemon)
 
         try:
             config_text = subprocess.check_output(
-                "/usr/bin/vtysh -c 'show run' | /usr/bin/tail -n +4 | /usr/bin/vtysh -m -f -",
+                "/usr/bin/vtysh -c 'show run %s' | /usr/bin/tail -n +4 | /usr/bin/vtysh -m -f -" % daemon,
                 shell=True, stderr=subprocess.STDOUT)
         except subprocess.CalledProcessError as e:
             ve = VtyshMarkException(e)
@@ -1231,7 +1231,13 @@ if __name__ == '__main__':
 
         for x in range(2):
             running = Config()
-            running.load_from_show_running()
+            if args.input:
+                if x == 0:
+                    running.load_from_file(args.input)
+                else:
+                    running.load_from_show_running(args.input.split("/")[-1].split(".")[0])
+            else:
+                running.load_from_show_running()
             log.debug('Running Frr Config (Pass #%d)\n%s', x, running.get_lines())
 
             (lines_to_add, lines_to_del) = compare_context_objects(newconf, running)
@@ -1334,7 +1340,7 @@ if __name__ == '__main__':
                     os.unlink(filename)
 
         # Make these changes persistent
-        if args.overwrite or args.filename != '/etc/frr/frr.conf':
+        if args.overwrite:
             subprocess.call(['/usr/bin/vtysh', '-c', 'write'])
 
     if not reload_ok:

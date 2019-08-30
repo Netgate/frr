@@ -168,6 +168,7 @@ static void sigint(void)
 	vrf_terminate();
 
 	ns_walk_func(zebra_ns_disabled);
+	vmgmt_disconnect();
 	zebra_ns_notify_close();
 
 	access_list_reset();
