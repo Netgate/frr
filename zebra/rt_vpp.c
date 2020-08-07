@@ -140,17 +140,24 @@ static int route_multipath(u_int8_t is_add,
 		struct route_add_del_args rada;
 		int ret;
 
-		if (nh->next) {
-			multipath = 1;
+		/* we are always modifying the existing set of paths, not
+		 * replacing them
+		 */
+		multipath = 1;
+
+		if (nh->flags & NEXTHOP_FLAG_RECURSIVE) {
+			continue;
+		}
+
+		if (is_add && !NEXTHOP_IS_ACTIVE(nh->flags)) {
+			continue;
+		}
+
+		if (!is_add && !CHECK_FLAG(nh->flags, NEXTHOP_FLAG_FIB)) {
+			continue;
 		}
 
 		nhaddr = (u_int8_t *)&nh->gate;
-		if ((nh->flags & NEXTHOP_FLAG_RECURSIVE) && nh->resolved) {
-			nhaddr = (u_int8_t *)&nh->resolved->gate;
-		}
-		if (!nhaddr) {
-			continue;
-		}
 
 		drop = !!(nh->type == NEXTHOP_TYPE_BLACKHOLE
 			  && nh->bh_type == BLACKHOLE_NULL);
@@ -165,6 +172,13 @@ static int route_multipath(u_int8_t is_add,
 
 		strncpy(rada.route_table_name, rt_table_name,
 			sizeof(rada.route_table_name) - 1);
+
+		/*
+		 * FRR sets priority of routes that are added to the kernel
+		 * to 20. So kernel (static) routes will take precedence by
+		 * default.
+		 */
+		rada.nh_preference = 20;
 
 		rada.is_add = is_add;
 		rada.is_drop = drop;
@@ -190,6 +204,8 @@ static int route_multipath(u_int8_t is_add,
 	return 0;
 }
 
+#define RIB_SYSTEM_ROUTE(R)	\
+	((R)->type == ZEBRA_ROUTE_KERNEL || (R)->type == ZEBRA_ROUTE_CONNECT)
 
 enum dp_req_result kernel_route_rib(struct route_node *rn,
 				    const struct prefix *p,
@@ -200,7 +216,11 @@ enum dp_req_result kernel_route_rib(struct route_node *rn,
 	int ret = 0;
 	enum dp_req_result pass_fail;
 
-	if (re_old) {
+	/*
+	 * If there is an old route being replaced, delete its paths if it
+	 * is not a kernel or connected route
+	 */
+	if (re_old && !RIB_SYSTEM_ROUTE(re_old)) {
 		ret = route_multipath(0, p, re_old);
 		pass_fail = (!ret) ? DP_DELETE_SUCCESS : DP_DELETE_FAILURE;
 	}

@@ -417,9 +417,12 @@ void vpp_route_read(struct zebra_ns *zns)
 	vpp_route_table_add(rt_table, zns);
 }
 
+int vpp_link_flags_sync(void);
 
 void route_read(struct zebra_ns *zns)
 {
+	vpp_link_flags_sync();
+
 	vpp_route_read(zns);
 }
 

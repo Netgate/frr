@@ -310,6 +310,60 @@ static int vpp_intf_convert_one_if(u32 ifi)
 }
 
 
+int vpp_link_flags_sync(void)
+{
+	int ret;
+	u32 num_intfs, sw_if_index;
+
+	vmgmt_intf_mark_dirty();
+	vmgmt_intf_refresh_all();
+	num_intfs = vmgmt_intf_get_num_interfaces();
+
+	/* skip local0 */
+	for (sw_if_index = 1; sw_if_index < num_intfs; sw_if_index++) {
+
+		sw_interface_details_t *intf = 0;
+		struct interface *ifp = 0;
+		u64 flags;
+		char *name;
+
+		ret = vmgmt_intf_interface_data_get(sw_if_index, 0, 0, &intf);
+		if (ret < 0 || !intf || (intf->sw_if_index != sw_if_index)) {
+			continue;
+		}
+
+		name = (char *)intf->interface_name;
+		if (*name == '\0') {
+			continue;
+		}
+
+		ifp = if_lookup_by_name_all_vrf(name);
+		if (!ifp) {
+			continue;
+		}
+
+		flags = ifp->flags;
+		if (intf->admin_up) {
+			flags |= IFF_UP;
+		} else {
+			flags &= ~IFF_UP;
+		}
+
+		if (intf->link_up) {
+			flags |= IFF_RUNNING;
+		} else {
+			flags &= ~IFF_RUNNING;
+		}
+
+		if (flags != ifp->flags) {
+			if_flags_update(ifp, flags);
+		}
+	}
+
+	return 0;
+}
+
+
 /*
  * Convert VPP interfaces to FRR interfaces.
  */
@@ -334,6 +388,9 @@ static int vpp_intf_convert_all(struct zebra_ns *zns)
 		}
 	});
 	/* *INDENT-ON* */
+
+	/* If VPP started right before FRR, links may be on their way up */
+	vpp_link_flags_sync();
 
 	return 0;
 }
@@ -485,6 +542,69 @@ static void vpp_intf_events_process_subif_link(uint32_t parent_ifi,
 }
 
 
+typedef struct vpp_iter {
+	rib_tables_iter_t table_iter;
+	route_table_iter_t route_iter;
+} vpp_iter_t;
+
+
+void vpp_intf_update_kernel_routes(struct interface *ifp)
+{
+	vpp_iter_t iter;
+	struct route_table *table;
+
+	rib_tables_iter_init(&iter.table_iter);
+
+	while ((table = rib_tables_iter_next(&iter.table_iter))) {
+		struct route_node *rn;
+
+		printf("Processing a route table\n");
+
+		route_table_iter_init(&iter.route_iter, table);
+
+		while ((rn = route_table_iter_next(&iter.route_iter))) {
+			struct route_entry *re, *next;
+
+			printf("Processing a route node\n");
+			RNODE_FOREACH_RE_SAFE(rn, re, next) {
+				struct nexthop *nh;
+
+				printf("Processing a route entry\n");
+
+				if (re->type != ZEBRA_ROUTE_KERNEL) {
+					continue;
+				}
+
+				for (nh = re->ng.nexthop; nh; nh = nh->next) {
+					printf("Processing a route nexthop\n");
+
+					if (nh->ifindex != ifp->ifindex) {
+						continue;
+					}
+
+					switch (nh->type) {
+
+					case NEXTHOP_TYPE_IPV4_IFINDEX:
+					case NEXTHOP_TYPE_IPV6_IFINDEX:
+						break;
+					default:
+						continue;
+
+					}
+
+					SET_FLAG(nh->flags, NEXTHOP_FLAG_FIB);
+				}
+			}
+		}
+
+		route_table_iter_cleanup(&iter.route_iter);
+	}
+
+	rib_tables_iter_cleanup(&iter.table_iter);
+
+}
+
+
 void vpp_intf_events_process(sw_interface_event_t *event)
 {
 	if (event->added) {
@@ -520,6 +640,7 @@ void vpp_intf_events_process(sw_interface_event_t *event)
 							   event->link_state);
 		}
 
+		vpp_intf_update_kernel_routes(ifp);
 		if_flags_update(ifp, flags);
 		return;
 	}
