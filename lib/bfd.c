@@ -344,6 +344,7 @@ static void bfd_last_update(time_t last_update, char *buf, size_t len)
 void bfd_show_param(struct vty *vty, struct bfd_info *bfd_info, int bfd_tag,
 		    int extra_space, uint8_t use_json, json_object *json_obj)
 {
+	/*
 	json_object *json_bfd = NULL;
 
 	if (!bfd_info)
@@ -372,6 +373,7 @@ void bfd_show_param(struct vty *vty, struct bfd_info *bfd_info, int bfd_tag,
 			bfd_info->detect_mult, bfd_info->required_min_rx,
 			bfd_info->desired_min_tx);
 	}
+	*/
 }
 
 /*

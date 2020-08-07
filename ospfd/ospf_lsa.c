@@ -2839,8 +2839,31 @@ static int ospf_maxage_lsa_remover(struct thread *thread)
 
 			/* Remove from lsdb. */
 			if (lsa->lsdb) {
+				struct external_info *ei;
+				struct external_info ei_copy;
+				int ei_found;
+
+				/* This LSA was added on the MaxAge LSA list
+				   and now being deleted but redistribution
+				   settings might have changed since then.
+				   Therefore, check if we need to originate
+				   this LSA according to the current
+				   redistribution settings. And if so, save
+				   the external info before removal in order
+				   to originate a new LSA after that. */
+				ei = ospf_external_info_check(ospf, lsa);
+				ei_found = 0;
+				if (ei) {
+					ei_copy = *ei;
+					ei_found = 1;
+				}
+
 				ospf_discard_from_db(ospf, lsa->lsdb, lsa);
 				ospf_lsdb_delete(lsa->lsdb, lsa);
+
+				if (ei_found)
+					ospf_external_lsa_originate(ospf,
+								    &ei_copy);
 			} else
 				zlog_warn(
 					"%s: LSA[Type%d:%s]: No associated LSDB!",

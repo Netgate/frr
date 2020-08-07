@@ -229,7 +229,14 @@ static int ospf_bfd_interface_dest_update(int command, struct zclient *zclient,
 		if ((oi = node->info) == NULL)
 			continue;
 
-		nbr = ospf_nbr_lookup_by_addr(oi->nbrs, &p.u.prefix4);
+		if (oi->type == OSPF_IFTYPE_POINTOPOINT) {
+			nbr = ospf_nbr_lookup_ptop(oi);
+
+			if (nbr && !IPV4_ADDR_SAME(&nbr->src, &p.u.prefix4))
+				nbr = NULL;
+		} else
+			nbr = ospf_nbr_lookup_by_addr(oi->nbrs, &p.u.prefix4);
+
 		if (!nbr || !nbr->bfd_info)
 			continue;
 

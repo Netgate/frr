@@ -27,9 +27,9 @@
 #include "zebra/interface.h"
 #include "zebra/ioctl.h"
 
-#include <vppinfra/types.h>
+#include <tnsrinfra/types.h>
+#include <tnsrinfra/mhash.h>
 #include <vppmgmt/vpp_mgmt_api.h>
-#include <vnet/interface.h>
 
 #include "zebra/rt_vpp.h"
 
@@ -213,7 +213,7 @@ static int vpp_intf_convert_one_if(u32 ifi)
 	flags |= (intf->admin_up) ? IFF_UP : 0;
 	flags |= (intf->link_up) ? IFF_RUNNING : 0;
 	flags |= (strncmp((const char *)intf->interface_name, "loop", 4)) ?
-		0 : IFF_LOOPBACK;
+		(IFF_BROADCAST | IFF_MULTICAST) : IFF_LOOPBACK;
 
 	/*
 	 * FIXME: Zebra VRF in VPP tinkerings.
@@ -223,11 +223,11 @@ static int vpp_intf_convert_one_if(u32 ifi)
 
 	ifp = if_get_by_name((char *)intf->interface_name, vrf_id, 0);
 	if_set_index(ifp, vpp_map_swif_to_ifindex(ifi));
-	ifp->mtu6 = ifp->mtu = intf->mtu[VNET_MTU_L3];
+	ifp->mtu6 = ifp->mtu = intf->mtu[VMGMT_MTU_L3];
 	ifp->metric = 0;
 	ifp->flags = flags & 0x0000fffff;
 	ifp->ll_type = ZEBRA_LLT_ETHER;
-	clib_memcpy(ifp->hw_addr, intf->l2_address, sizeof(intf->l2_address));
+	memcpy(ifp->hw_addr, intf->l2_address, sizeof(intf->l2_address));
 	ifp->hw_addr_len = intf->l2_address_length;
 	ifp->speed = vpp_intf_link_speed(ifi);
 
@@ -237,10 +237,10 @@ static int vpp_intf_convert_one_if(u32 ifi)
 	 * IPv4 addresses.
 	 */
 	if (ipd_v4
-	    && vec_len(ipd_v4->addr) > 0
+	    && tnsr_vec_len(ipd_v4->addr) > 0
 	    && ipd_v4->present) {
 		printf("    IPv4 addresses:\n");
-		vec_foreach(addr, ipd_v4->addr) {
+		tnsr_vec_foreach(addr, ipd_v4->addr) {
 			u_int32_t bc;
 
 			memset(addrbuf, 0, sizeof(addrbuf));
@@ -267,10 +267,10 @@ static int vpp_intf_convert_one_if(u32 ifi)
 	 * IPv6 addresses.
 	 */
 	if (ipd_v6
-	    && vec_len(ipd_v6->addr) > 0
+	    && tnsr_vec_len(ipd_v6->addr) > 0
 	    && ipd_v6->present) {
 		printf("    IPv6 addresses:\n");
-		vec_foreach(addr, ipd_v6->addr) {
+		tnsr_vec_foreach(addr, ipd_v6->addr) {
 			memset(addrbuf, 0, sizeof(addrbuf));
 			inet_ntop(AF_INET6,
 				  addr->ip, addrbuf, sizeof(addrbuf));
@@ -316,7 +316,7 @@ static int vpp_intf_convert_one_if(u32 ifi)
 static int vpp_intf_convert_all(struct zebra_ns *zns)
 {
 	int ret;
-	mhash_t *mhash_ifi_by_name;
+	tnsr_mhash_t *mhash_ifi_by_name;
 	uword *ifk;
 	uword *ifv;
 
@@ -324,7 +324,7 @@ static int vpp_intf_convert_all(struct zebra_ns *zns)
 	mhash_ifi_by_name = vmgmt_intf_hash_by_name_get();
 
 	/* *INDENT-OFF* */
-	mhash_foreach(ifk, ifv, mhash_ifi_by_name,
+	tnsr_mhash_foreach(ifk, ifv, mhash_ifi_by_name,
 	{
 		u32 ifi_v = (int)*ifv;
 		(void)ifk;
@@ -371,7 +371,7 @@ void if_get_flags(struct interface *ifp)
 
 int if_set_prefix(struct interface *ifp, struct connected *ifc)
 {
-	vec_add1(ifc_add_events, *ifc);
+	tnsr_vec_add1(ifc_add_events, *ifc);
 
 	if (write(vpp_event_fds[1], "\0", 1) == -1) {
 		zlog_err("%s: Unable to write to VPP event fd %d",
@@ -384,7 +384,7 @@ int if_set_prefix(struct interface *ifp, struct connected *ifc)
 
 int if_unset_prefix(struct interface *ifp, struct connected *ifc)
 {
-	vec_add1(ifc_del_events, *ifc);
+	tnsr_vec_add1(ifc_del_events, *ifc);
 
 	if (write(vpp_event_fds[1], "\0", 1) == -1) {
 		zlog_err("%s: Unable to write to VPP event fd %d",
@@ -407,7 +407,7 @@ void if_get_mtu(struct interface *ifp)
 
 int if_prefix_add_ipv6(struct interface *ifp, struct connected *ifc)
 {
-	vec_add1(ifc_add_events, *ifc);
+	tnsr_vec_add1(ifc_add_events, *ifc);
 
 	if (write(vpp_event_fds[1], "\0", 1) == -1) {
 		zlog_err("%s: Unable to write to VPP event fd %d",
@@ -420,7 +420,7 @@ int if_prefix_add_ipv6(struct interface *ifp, struct connected *ifc)
 
 int if_prefix_delete_ipv6(struct interface *ifp, struct connected *ifc)
 {
-	vec_add1(ifc_del_events, *ifc);
+	tnsr_vec_add1(ifc_del_events, *ifc);
 
 	if (write(vpp_event_fds[1], "\0", 1) == -1) {
 		zlog_err("%s: Unable to write to VPP event fd %d",
@@ -444,7 +444,7 @@ void vpp_link_change(sw_interface_event_t *event)
 		return;
 	}
 
-	vec_add1(vpp_intf_events, *event);
+	tnsr_vec_add1(vpp_intf_events, *event);
 
 	if (write(vpp_event_fds[1], "\0", 1) == -1) {
 		zlog_err("%s: Unable to write to VPP event fd %d",
@@ -464,7 +464,7 @@ static void vpp_intf_events_process_subif_link(uint32_t parent_ifi,
 
 	sub_ifis = vmgmt_intf_get_sub_ifis(parent_ifi);
 
-	vec_foreach(sub_ifi, sub_ifis) {
+	tnsr_vec_foreach(sub_ifi, sub_ifis) {
 		char *if_name;
 		struct interface *ifp;
 
@@ -481,7 +481,7 @@ static void vpp_intf_events_process_subif_link(uint32_t parent_ifi,
 		}
 	}
 
-	vec_free(sub_ifis);
+	tnsr_vec_free(sub_ifis);
 }
 
 

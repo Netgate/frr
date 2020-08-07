@@ -43,6 +43,8 @@
 #include "zebra/zserv.h"
 #include "zebra_vrf.h"
 
+#include "zebra/zebra_ptm_vpp.h"
+
 /*
  * Choose the BFD implementation that we'll use.
  *
@@ -1333,6 +1335,11 @@ static void zebra_ptm_send_clients(struct stream *msg)
 	stream_free(msg);
 }
 
+void zebra_ptm_send_clients_proxy(struct stream *msg)
+{
+	zebra_ptm_send_clients(msg);
+}
+
 static int _zebra_ptm_bfd_client_deregister(struct zserv *zs)
 {
 	struct stream *msg;
@@ -1402,6 +1409,8 @@ void zebra_ptm_init(void)
 	 * unnecessary notification messages.
 	 */
 	hook_register(zserv_client_close, _zebra_ptm_bfd_client_deregister);
+
+	zebra_ptm_vpp_init();
 }
 
 void zebra_ptm_finish(void)
@@ -1409,6 +1418,8 @@ void zebra_ptm_finish(void)
 	/* Remove the client disconnect hook and free all memory. */
 	hook_unregister(zserv_client_close, _zebra_ptm_bfd_client_deregister);
 	pp_free_all();
+
+	zebra_ptm_vpp_finish();
 }
 
 
@@ -1469,7 +1480,7 @@ void zebra_ptm_bfd_dst_register(ZAPI_HANDLER_ARGS)
 		zlog_debug("bfd_dst_register msg from client %s: length=%d",
 			   zebra_route_string(client->proto), hdr->length);
 
-	_zebra_ptm_reroute(client, msg, ZEBRA_BFD_DEST_REGISTER);
+	zebra_ptm_vpp_reroute(client, msg, ZEBRA_BFD_DEST_REGISTER);
 }
 
 void zebra_ptm_bfd_dst_deregister(ZAPI_HANDLER_ARGS)
@@ -1478,7 +1489,7 @@ void zebra_ptm_bfd_dst_deregister(ZAPI_HANDLER_ARGS)
 		zlog_debug("bfd_dst_deregister msg from client %s: length=%d",
 			   zebra_route_string(client->proto), hdr->length);
 
-	_zebra_ptm_reroute(client, msg, ZEBRA_BFD_DEST_DEREGISTER);
+	zebra_ptm_vpp_reroute(client, msg, ZEBRA_BFD_DEST_DEREGISTER);
 }
 
 void zebra_ptm_bfd_client_register(ZAPI_HANDLER_ARGS)

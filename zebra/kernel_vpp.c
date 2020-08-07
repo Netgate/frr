@@ -32,8 +32,6 @@
 #include "zebra/interface.h"
 #include "zebra/debug.h"
 
-#include <vppinfra/mem.h>
-
 #include <vppmgmt/vpp_mgmt_api.h>
 
 #include "zebra/rt_vpp.h"
@@ -67,36 +65,36 @@ static int kernel_read(struct thread *thread)
 		}
 	}
 
-	if (vec_len(vpp_intf_events) > 0) {
+	if (tnsr_vec_len(vpp_intf_events) > 0) {
 		vmgmt_intf_refresh_all();
 
 		sw_interface_event_t *event;
 
-		vec_foreach(event, vpp_intf_events) {
+		tnsr_vec_foreach(event, vpp_intf_events) {
 			vpp_intf_events_process(event);
 		}
 
-		vec_reset_length(vpp_intf_events);
+		tnsr_vec_reset_length(vpp_intf_events);
 	}
 
-	if (vec_len(ifc_add_events) > 0) {
+	if (tnsr_vec_len(ifc_add_events) > 0) {
 		struct connected *ifc;
 
-		vec_foreach(ifc, ifc_add_events) {
+		tnsr_vec_foreach(ifc, ifc_add_events) {
 			vpp_ifc_events_process(ifc, /* is_del */ 0);
 		}
 
-		vec_reset_length(ifc_add_events);
+		tnsr_vec_reset_length(ifc_add_events);
 	}
 
-	if (vec_len(ifc_del_events) > 0) {
+	if (tnsr_vec_len(ifc_del_events) > 0) {
 		struct connected *ifc;
 
-		vec_foreach(ifc, ifc_del_events) {
+		tnsr_vec_foreach(ifc, ifc_del_events) {
 			vpp_ifc_events_process(ifc, /* is_del */ 1);
 		}
 
-		vec_reset_length(ifc_del_events);
+		tnsr_vec_reset_length(ifc_del_events);
 	}
 
 	struct zebra_ns *zns = (struct zebra_ns *)THREAD_ARG(thread);
@@ -110,8 +108,6 @@ static int kernel_read(struct thread *thread)
 void kernel_init(struct zebra_ns *zns)
 {
 	int ret;
-
-	clib_mem_init(NULL, 64 << 20);
 
 	frr_elevate_privs(&zserv_privs) {
 
@@ -140,7 +136,7 @@ void kernel_init(struct zebra_ns *zns)
 
 void kernel_terminate(struct zebra_ns *zns)
 {
-	vec_free(vpp_intf_events);
+	tnsr_vec_free(vpp_intf_events);
 	close(vpp_event_fds[0]);
 	close(vpp_event_fds[1]);
 

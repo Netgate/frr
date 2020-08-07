@@ -37,7 +37,8 @@
 
 # VPP attachments
 %{!?libvppmgmt_dir:	%global  libvppmgmt_dir     / }
-%{!?vpp_dir:		%global  vpp_dir            / }
+%{!?libtnsrinfra_dir:	%global  libtnsrinfra_dir            / }
+%{!?vpp_dir:		%global  vpp_dir     / }
 
 # path defines
 %define     configdir   %{_sysconfdir}/%{name}
@@ -174,8 +175,13 @@ BuildRequires:  texinfo
 BuildRequires:  python27-devel
 BuildRequires:  python27-sphinx
 %else
+%if 0%{?rhel} && 0%{?rhel} > 7
+BuildRequires:  python36-devel
+BuildRequires:  python3-sphinx
+%else
 BuildRequires:  python-devel >= 2.7
 BuildRequires:  python-sphinx
+%endif
 %endif
 %if %{with_pam}
 BuildRequires:  pam-devel
@@ -222,8 +228,13 @@ Contributed/3rd party tools which may be of use with frr.
 
 %package pythontools
 Summary: python tools for frr
+%if 0%{?rhel} && 0%{?rhel} > 7
+BuildRequires: python2
+Requires: python2-ipaddress
+%else
 BuildRequires: python
 Requires: python-ipaddress
+%endif
 Group: System Environment/Daemons
 
 %description pythontools
@@ -353,6 +364,9 @@ developing OSPF-API and frr applications.
     --enable-bfdd \
 %else
     --disable-bfdd \
+%endif
+%if "%{libtnsrinfra_dir}" != "/"
+    --with-libtnsrinfradir=%libtnsrinfra_dir \
 %endif
 %if "%{libvppmgmt_dir}" != "/"
     --with-libvppmgmtdir=%libvppmgmt_dir \
@@ -666,8 +680,10 @@ fi
 
 %files pythontools
 %{_sbindir}/frr-reload.py
+%if 0%{?rhel} && 0%{?rhel} <= 7
 %{_sbindir}/frr-reload.pyc
 %{_sbindir}/frr-reload.pyo
+%endif
 
 
 %files devel
@@ -724,7 +740,7 @@ fi
 - BGPD: Flowspec
 - PBRD: Add a new Policy Based Routing Daemon
 
-* Sun May 28 2018 Rafael Zalamena <rzalamena@opensourcerouting.org> - %{version}
+* Sun May 28 2018 Rafael Zalamena <rzalamena@opensourcerouting.org> - 4.0.1
 - Add BFDd support
 
 * Sun May 20 2018 Martin Winter <mwinter@opensourcerouting.org> - 4.0.1

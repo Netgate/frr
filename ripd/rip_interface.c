@@ -161,24 +161,7 @@ static void rip_request_interface_send(struct interface *ifp, uint8_t version)
 			if (connected->address->family == AF_INET) {
 				memset(&to, 0, sizeof(struct sockaddr_in));
 				to.sin_port = htons(RIP_PORT_DEFAULT);
-				if (connected->destination)
-					/* use specified broadcast or peer
-					 * destination addr */
-					to.sin_addr = connected->destination->u
-							      .prefix4;
-				else if (connected->address->prefixlen
-					 < IPV4_MAX_PREFIXLEN)
-					/* calculate the appropriate broadcast
-					 * address */
-					to.sin_addr
-						.s_addr = ipv4_broadcast_addr(
-						connected->address->u.prefix4
-							.s_addr,
-						connected->address->prefixlen);
-				else
-					/* do not know where to send the packet
-					 */
-					continue;
+				to.sin_addr.s_addr = 0xFFFFFFFF;
 
 				if (IS_RIP_DEBUG_EVENT)
 					zlog_debug("SEND request to %s",

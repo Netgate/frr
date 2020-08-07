@@ -22,9 +22,8 @@
 #include "zebra/rt_netlink.h"
 #include "zebra/rt.h"
 
-#include <vppinfra/string.h>
-#include <vppinfra/types.h>
-#include <vppinfra/vec.h>
+#include <tnsrinfra/types.h>		/* For u32, u64, u8, etc */
+#include <tnsrinfra/vec.h>
 #include <vppmgmt/vpp_mgmt_api.h>
 
 #include "zebra/rt_vpp.h"
@@ -167,13 +166,13 @@ static void vpp_rt_add_ipv6(ip6_fib_details_t *v6_routes,
 		return;
 	}
 
-	n_routes = vec_len(v6_routes);
+	n_routes = tnsr_vec_len(v6_routes);
 	if (!n_routes) {
 		return;
 	}
 
 	for (r = 0; r < n_routes; ++r) {
-		v6_route = vec_elt_at_index(v6_routes, r);
+		v6_route = tnsr_vec_elt_at_index(v6_routes, r);
 		if (!vpp_is_ipv6_default_route(v6_route)
 		    && !vpp_is_ipv6_fe80_10(v6_route)) {
 			vpp_rt_add_v6_route(v6_route, zns);
@@ -372,13 +371,13 @@ static void vpp_rt_add_ipv4(ip_fib_details_t *v4_routes,
 		return;
 	}
 
-	n_routes = vec_len(v4_routes);
+	n_routes = tnsr_vec_len(v4_routes);
 	if (!n_routes) {
 		return;
 	}
 
 	for (r = 0; r < n_routes; ++r) {
-		v4_route = vec_elt_at_index(v4_routes, r);
+		v4_route = tnsr_vec_elt_at_index(v4_routes, r);
 		if (!vpp_is_ipv4_default_route(v4_route)) {
 			vpp_rt_add_v4_route(v4_route, zns);
 		}

@@ -45,6 +45,7 @@ if OS_IS_DEBIAN
 endif
 
 zebra_zebra_LDADD = lib/libfrr.la $(LIBCAP)
+zebra_zebra_LDFLAGS =
 
 if LIBVPPMGMT_DIR_SET
 LIBVPPMGMT_INCLUDE_DIR	= ${LIBVPPMGMT_DIR}/usr/include
@@ -53,16 +54,24 @@ AM_CFLAGS		+= -I${LIBVPPMGMT_INCLUDE_DIR}
 zebra_zebra_LDADD	+= -L${LIBVPPMGMT_LIB_DIR}
 endif
 
+if LIBTNSRINFRA_DIR_SET
+LIBTNSRINFRA_INCLUDE_DIR	= ${LIBTNSRINFRA_DIR}/usr/include
+LIBTNSRINFRA_LIB_DIR	= ${LIBTNSRINFRA_DIR}/usr/$(strip $(OS_LIB_DIR))
+AM_CFLAGS	+= -I${LIBTNSRINFRA_INCLUDE_DIR}
+zebra_zebra_LDADD	+= -L${LIBTNSRINFRA_LIB_DIR}
+zebra_zebra_LDFLAGS	+= -Wl,-rpath-link ${LIBTNSRINFRA_LIB_DIR}
+endif
+
 if VPP_DIR_SET
 VPP_INCLUDE_DIR	= ${VPP_DIR}/build-root/install-vpp-native/vpp/include
 VPP_LIB_DIR	= ${VPP_DIR}/build-root/install-vpp-native/vpp/lib
-AM_CFLAGS	+= -I${VPP_INCLUDE_DIR}
+AM_CFLAGS		+= -I${VPP_INCLUDE_DIR}
 zebra_zebra_LDADD	+= -L${VPP_LIB_DIR}
-zebra_zebra_LDFLAGS	= -Wl,-rpath-link ${VPP_LIB_DIR}
+zebra_zebra_LDFLAGS	+= -Wl,-rpath-link ${VPP_LIB_DIR}
 endif
 
 zebra_zebra_LDADD	+= -lvppmgmt
-zebra_zebra_LDADD	+= -lvppinfra
+zebra_zebra_LDADD	+= -ltnsrinfra
 zebra_zebra_LDADD	+= -lpthread -lm -lrt
 
 
@@ -110,6 +119,7 @@ zebra_zebra_SOURCES = \
 	zebra/zebra_pbr.c \
 	zebra/zebra_ptm.c \
 	zebra/zebra_ptm_redistribute.c \
+	zebra/zebra_ptm_vpp.c \
 	zebra/zebra_pw.c \
 	zebra/zebra_rib.c \
 	zebra/zebra_rnh.c \
@@ -157,6 +167,7 @@ noinst_HEADERS += \
 	zebra/zebra_pbr.h \
 	zebra/zebra_ptm.h \
 	zebra/zebra_ptm_redistribute.h \
+	zebra/zebra_ptm_vpp.h \
 	zebra/zebra_pw.h \
 	zebra/zebra_rnh.h \
 	zebra/zebra_routemap.h \

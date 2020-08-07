@@ -102,8 +102,8 @@ override_dh_shlibdeps:
 	dh_shlibdeps -- \
 		--ignore-missing-info \
 		-l${LIBVPPMGMT_DIR}/usr/lib \
-		-l${VPP_DIR}/build-root/build-vpp-native/vpp/lib \
-		-l${VPP_DIR}/lib64
+		-l${LIBTNSRINFRA_DIR}/build-root/build-vpp-native/vpp/lib \
+		-l${LIBTNSRINFRA_DIR}/lib64
 
 override_dh_auto_build:
 	dh_auto_build -- $(MAKE_SILENT)

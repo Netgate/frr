@@ -105,12 +105,17 @@ AC_ARG_WITH([libvppmgmtdir], [AS_HELP_STRING([--with-libvppmgmtdir=DIR], [use li
 AC_SUBST(LIBVPPMGMT_DIR)
 AM_CONDITIONAL([LIBVPPMGMT_DIR_SET], [test "x$LIBVPPMGMT_DIR" != "x" ])
 
-AC_ARG_WITH([vppdir], [AS_HELP_STRING([--with-vppdir=DIR], [use VPP in DIR for build])], [
+AC_ARG_WITH([libtnsrinfradir], [AS_HELP_STRING([--with-libtnsrinfradir=DIR], [use libtnsrinfra in DIR for build])], [
+   LIBTNSRINFRA_DIR="$withval"
+])
+AC_SUBST(LIBTNSRINFRA_DIR)
+AM_CONDITIONAL([LIBTNSRINFRA_DIR_SET], [test "x$LIBTNSRINFRA_DIR" != "x" ])
+
+AC_ARG_WITH([vppdir], [AS_HELP_STRING([--with-vppdir=DIR], [use vpp in DIR for build])], [
    VPP_DIR="$withval"
 ])
 AC_SUBST(VPP_DIR)
 AM_CONDITIONAL([VPP_DIR_SET], [test "x$VPP_DIR" != "x" ])
-
 
 AC_ARG_ENABLE(tcmalloc,
 	AS_HELP_STRING([--enable-tcmalloc], [Turn on tcmalloc]),
