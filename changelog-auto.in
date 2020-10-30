@@ -6,6 +6,91 @@ frr (@VERSION@-0) UNRELEASED; urgency=medium
 
  -- FRRouting-Dev <dev@lists.frrouting.org>  Thu, 25 Oct 2018 16:36:50 +0200
 
+frr (7.3.1-0) testing; urgency=medium
+
+  * upstream 7.3.1 release
+
+ -- David Lamparter <equinox@opensourcerouting.org>  Wed, 06 May 2020 13:40:53 +0200
+
+frr (7.3-0) testing; urgency=medium
+
+  * BGPd
+  *    EVPN PIP Support
+  *    Route Aggregation code speed ups
+  *    BGP Vector I/O speed ups
+  *    New CLI: `set distance XXX`
+  *    New CLI: `aggregate-address A.B.C.D/M route-map WORD`
+  *    New CLI: `bgp reject-as-sets`
+  *    New CLI: `advertise pip ...`
+  *    New CLI: `match evpn rd ASN:NN_OR_IP-ADDRESS:NN`
+  *    New CLI: `show bgp l2vpn evpn community|large-community X`
+  *    New CLI: `show bgp l2vpn evpn A.B.C.D`
+  *    Auto-completion for clear bgp command
+  *    Add ability to set tcp socket buffer size
+  * OSPFd
+  *    Partial MPLS TE support
+  * PBRd
+  *    New CLI: `set vrf unchanged|NAME`
+  * BFDd
+  *    VRF Support
+  *    New CLI: 'show bfd peers brief'
+  *    New CLI: 'clear bfd peer ...'
+  * PIMd
+  *    Significant Speedups in accessing Internal Data for higher scale
+  *    Support for joining any-source Multicast
+  *    Updated CLI: 'show ip pim upstream-join-desired'
+  *    New CLI: 'show ip pim channel'
+  *    Debug Cleanup
+  *    MLAG experimental support
+  * VRRPd
+  *    VRF Support
+  *    Northbound Conversion- NHRPd
+  * LDPd
+  * vtysh
+  *    New CLI: `banner motd line LINE...`
+  * yang
+  *    New CLI: `show yang operational-data XPATH`
+  *    New CLI: `debug northbound`
+  * Zebra
+  *    Nexthop Group support
+  *    New CLI: 'debug zebra nexthop [detail]'
+  *    New CLI: 'show router-id'
+  *    MLAG experimental support
+  * watchfrr
+  *    Additional status messages of system state to systemd
+  *    New CLI: `watchfrr ignore DAEMON`
+  * Others
+  *    As always all daemons have received too many bug fixes to fully list
+  *    There has been a significant focus on increasing test coverage
+  * Change in Behavior:
+  *    ISISd
+  *       All areas created default automatically to level-1-2
+  *    Zebra
+  *       Nexthop Group Installation in Kernel is turned on by default
+          if the kernel supports-    New CLI: 'show nexthop-group rib [singleton]'
+  *    Man Pages
+  *       Renamed to frr-* to remove collision with other packages
+
+ -- Martin Winter <mwinter@opensourcerouting.org>  Fri, 14 Feb 2020 02:20:00 +0200
+
+frr (7.2-1) testing; urgency=medium
+
+  * upstream 7.2.1 release
+
+ -- Martin Winter <mwinter@opensourcerouting.org>  Fri, 17 Jan 2020 16:40:00 +0200
+
+frr (7.2-0) testing; urgency=medium
+
+  * upstream 7.2 release
+
+ -- Martin Winter <mwinter@opensourcerouting.org>  Tue, 17 Oct 2019 16:42:20 +0200
+
+frr (7.1-0) testing; urgency=medium
+
+  * upstream 7.1 release
+
+ -- David Lamparter <equinox-debian@diac24.net>  Tue, 18 Jun 2019 06:08:13 +0200
+
 frr (6.0-2) testing; urgency=medium
 
   * add install-info to build deps
@@ -44,60 +129,6 @@ frr (6.0-2) testing; urgency=medium
  -- David Lamparter <equinox-debian@diac24.net>  Thu, 25 Oct 2018 16:36:50 +0200
 
 frr (6.0-1) RELEASED; urgency=medium
-
-  * Staticd: New daemon responsible for management of static routes
-  * ISISd: Implement dst-src routing as per draft-ietf-isis-ipv6-dst-src-routing
-  * BFDd: new daemon for BFD (Bidrectional Forwarding Detection). Responsible
-    for notifying link changes to make routing protocols converge faster.
-  * various bug fixes
-
- -- FRRouting-Dev <dev@lists.frrouting.org>  Sun,  7 Oct 2018 08:10:00 -0700
-
-frr (5.0.1-0) RELEASED; urgency=medium
-
-  * Support Automake 1.16.1
-  * BGPd: Support for flowspec ICMP, DSCP, packet length, fragment and tcp flags
-  * BGPd: fix rpki validation for ipv6
-  * VRF: Workaround for kernel bug on Linux 4.14 and newer
-  * Zebra: Fix interface based routes from zebra not marked up
-  * Zebra: Fix large zebra memory usage when redistribute between protocols
-  * Zebra: Allow route-maps to match on source instance
-  * BGPd: Backport peer-attr overrides, peer-level enforce-first-as and filtered-routes fix
-  * BGPd: fix for crash during display of filtered-routes
-  * BGPd: Actually display labeled unicast routes received
-  * Label Manager: Fix to work correctly behind a label manager proxy
-  * Debian Pkg: Fix build dependency for install-info
-
- -- FRRouting-Dev <dev@lists.frrouting.org>  Thu,  5 Jul 2018 00:38:00 -0700
-
-frr (5.0-0) RELEASED; urgency=medium
-
-  * PIM: Add a Multicast Trace Command draft-ietf-idmr-traceroute-ipm-05
-  * IS-IS: Implement Three-Way Handshake as per RFC5303
-  * BGPD: Implement VPN-VRF route leaking per RFC4364.
-  * BGPD: Implement VRF with NETNS backend
-  * BGPD: Flowspec
-  * PBRD: Add a new Policy Based Routing Daemon
-
- -- FRRouting-Dev <dev@lists.frrouting.org>  Thu,  7 Jun 2018 17:47:00 -0700
-
-frr (4.0-0) RELEASED; urgency=medium
-
-  * ISIS-MT - https://tools.ietf.org/html/rfc5120
-  * BGP - RPKI (RFC 6810)
-  * BGP - v4 labeled unicast as per RFC 3107
-  * BGP/Zebra - Type 2 and 3 EVPN with symmetric and asymmetric routing
-  * EIGRP - https://tools.ietf.org/html/rfc7868
-  * FRR - Tab completion for iface names, prefix-lists, route-maps, BGP peers
-  * BABEL - https://tools.ietf.org/html/rfc6126
-  * PIM VRF - Added the ability to work with VRF’s to PIM
-  * OSPFv2 VRF - Added the ability to work with VRF’s to OSPFv2
-  * OSPFv2 Experimental SR - draft-ietf-ospf-segment-routing-extensions-24
-  * ZEBRA - Add ability to create a static route that leaks across VRF’s.
-
- -- FRRouting-Dev <dev@lists.frrouting.org>  Sun, 11 Mar 2018 17:22:20 -0700
-
-frr (3.0.3-1) RELEASED; urgency=medium
 
   * New Enabled: PIM draft Unnumbered
 

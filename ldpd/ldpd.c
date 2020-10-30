@@ -86,6 +86,8 @@ static struct imsgev	*iev_lde, *iev_lde_sync;
 static pid_t		 ldpe_pid;
 static pid_t		 lde_pid;
 
+enum ldpd_process ldpd_process;
+
 #define LDP_DEFAULT_CONFIG	"ldpd.conf"
 #define LDP_VTY_PORT		2612
 
@@ -116,11 +118,11 @@ struct zebra_privs_t ldpd_privs =
 };
 
 /* CTL Socket path */
-char ctl_sock_path[MAXPATHLEN] = LDPD_SOCKET;
+char ctl_sock_path[MAXPATHLEN];
 
 /* LDPd options. */
 #define OPTION_CTLSOCK 1001
-static struct option longopts[] =
+static const struct option longopts[] =
 {
 	{ "ctl_socket",  required_argument, NULL, OPTION_CTLSOCK},
 	{ "instance",    required_argument, NULL, 'n'},
@@ -138,7 +140,7 @@ sighup(void)
 	 * and build a new configuartion from scratch.
 	 */
 	ldp_config_reset(vty_conf);
-	vty_read_config(ldpd_di.config_file, config_default);
+	vty_read_config(NULL, ldpd_di.config_file, config_default);
 	ldp_config_apply(NULL, vty_conf);
 }
 
@@ -177,6 +179,9 @@ static struct quagga_signal_t ldp_signals[] =
 	}
 };
 
+static const struct frr_yang_module_info *const ldpd_yang_modules[] = {
+};
+
 FRR_DAEMON_INFO(ldpd, LDP,
 	.vty_port = LDP_VTY_PORT,
 
@@ -186,6 +191,9 @@ FRR_DAEMON_INFO(ldpd, LDP,
 	.n_signals = array_size(ldp_signals),
 
 	.privs = &ldpd_privs,
+
+	.yang_modules = ldpd_yang_modules,
+	.n_yang_modules = array_size(ldpd_yang_modules),
 )
 
 static int ldp_config_fork_apply(struct thread *t)
@@ -213,6 +221,10 @@ main(int argc, char *argv[])
 	int			 pipe_parent2lde[2], pipe_parent2lde_sync[2];
 	char			*ctl_sock_name;
 	struct thread           *thread = NULL;
+	bool                    ctl_sock_used = false;
+
+	snprintf(ctl_sock_path, sizeof(ctl_sock_path), LDPD_SOCKET,
+		 "", "");
 
 	ldpd_process = PROC_MAIN;
 	log_procname = log_procnames[ldpd_process];
@@ -226,6 +238,9 @@ main(int argc, char *argv[])
 		"      --ctl_socket   Override ctl socket path\n"
 		"  -n, --instance     Instance id\n");
 
+	/* set default instance (to differentiate ldpd socket from lde one */
+	init.instance = 1;
+
 	while (1) {
 		int opt;
 
@@ -238,6 +253,7 @@ main(int argc, char *argv[])
 		case 0:
 			break;
 		case OPTION_CTLSOCK:
+			ctl_sock_used = true;
 			ctl_sock_name = strrchr(LDPD_SOCKET, '/');
 			if (ctl_sock_name)
 				/* skip '/' */
@@ -270,6 +286,10 @@ main(int argc, char *argv[])
 			break;
 		}
 	}
+
+	if (ldpd_di.pathspace && !ctl_sock_used)
+		snprintf(ctl_sock_path, sizeof(ctl_sock_path), LDPD_SOCKET,
+			 "/", ldpd_di.pathspace);
 
 	strlcpy(init.user, ldpd_privs.user, sizeof(init.user));
 	strlcpy(init.group, ldpd_privs.group, sizeof(init.group));
@@ -329,8 +349,7 @@ main(int argc, char *argv[])
 
 	master = frr_init();
 
-	vty_config_lockless();
-	vrf_init(NULL, NULL, NULL, NULL);
+	vrf_init(NULL, NULL, NULL, NULL, NULL);
 	access_list_init();
 	ldp_vty_init();
 	ldp_zebra_init(master);
@@ -433,7 +452,7 @@ ldpd_shutdown(void)
 			if (errno == EINTR)
 				continue;
 			/* No more processes were found. */
-			if (errno != ECHILD)
+			if (errno == ECHILD)
 				break;
 
 			/* Unhandled errno condition. */
@@ -484,7 +503,7 @@ start_child(enum ldpd_process p, char *argv0, int fd_async, int fd_sync)
 
 	nullfd = open("/dev/null", O_RDONLY | O_NOCTTY);
 	if (nullfd == -1) {
-		flog_err_sys(LIB_ERR_SYSTEM_CALL,
+		flog_err_sys(EC_LIB_SYSTEM_CALL,
 			     "%s: failed to open /dev/null: %s", __func__,
 			     safe_strerror(errno));
 	} else {

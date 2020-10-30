@@ -26,6 +26,10 @@
 #include "qobj.h"
 #include "vty.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 DECLARE_MTYPE(ROUTE_MAP_NAME)
 DECLARE_MTYPE(ROUTE_MAP_RULE)
 DECLARE_MTYPE(ROUTE_MAP_COMPILED)
@@ -34,12 +38,34 @@ DECLARE_MTYPE(ROUTE_MAP_COMPILED)
 enum route_map_type { RMAP_PERMIT, RMAP_DENY, RMAP_ANY };
 
 typedef enum {
-	RMAP_MATCH,
 	RMAP_DENYMATCH,
-	RMAP_NOMATCH,
-	RMAP_ERROR,
-	RMAP_OKAY
+	RMAP_PERMITMATCH
 } route_map_result_t;
+
+/*
+ * Route-map match or set result "Eg: match evpn vni xx"
+ * route-map match cmd always returns match/nomatch/noop
+ *    match--> found a match
+ *    nomatch--> didnt find a match
+ *    noop--> not applicable
+ * route-map set retuns okay/error
+ *    okay --> set was successful
+ *    error --> set was not successful
+ */
+enum route_map_cmd_result_t {
+	/*
+	 * route-map match cmd results
+	 */
+	RMAP_MATCH,
+	RMAP_NOMATCH,
+	RMAP_NOOP,
+	/*
+	 * route-map set cmd results
+	 */
+	RMAP_OKAY,
+	RMAP_ERROR
+};
+
 
 typedef enum {
 	RMAP_RIP,
@@ -87,26 +113,32 @@ struct route_map_rule_cmd {
 	const char *str;
 
 	/* Function for value set or match. */
-	route_map_result_t (*func_apply)(void *rule,
-					 const struct prefix *prefix,
-					 route_map_object_t type,
-					 void *object);
+	enum route_map_cmd_result_t (*func_apply)(void *rule,
+						  const struct prefix *prefix,
+						  route_map_object_t type,
+						  void *object);
 
 	/* Compile argument and return result as void *. */
 	void *(*func_compile)(const char *);
 
 	/* Free allocated value by func_compile (). */
 	void (*func_free)(void *);
+
+	/** To get the rule key after Compilation **/
+	void *(*func_get_rmap_rule_key)(void *val);
 };
 
 /* Route map apply error. */
-enum { RMAP_COMPILE_SUCCESS,
+enum rmap_compile_rets {
+	RMAP_COMPILE_SUCCESS,
 
-       /* Route map rule is missing. */
-       RMAP_RULE_MISSING,
+	/* Route map rule is missing. */
+	RMAP_RULE_MISSING,
 
-       /* Route map rule can't compile */
-       RMAP_COMPILE_ERROR };
+	/* Route map rule can't compile */
+	RMAP_COMPILE_ERROR,
+
+};
 
 /* Route map rule list. */
 struct route_map_rule_list {
@@ -142,6 +174,10 @@ struct route_map_index {
 	struct route_map_index *next;
 	struct route_map_index *prev;
 
+	/* Keep track how many times we've try to apply */
+	uint64_t applied;
+	uint64_t applied_clear;
+
 	QOBJ_FIELDS
 };
 DECLARE_QOBJ_TYPE(route_map_index)
@@ -163,6 +199,13 @@ struct route_map {
 	bool to_be_processed; /* True if modification isn't acted on yet */
 	bool deleted;         /* If 1, then this node will be deleted */
 
+	/* How many times have we applied this route-map */
+	uint64_t applied;
+	uint64_t applied_clear;
+
+	/* Counter to track active usage of this route-map */
+	uint16_t use_count;
+
 	QOBJ_FIELDS
 };
 DECLARE_QOBJ_TYPE(route_map)
@@ -178,27 +221,32 @@ extern void route_map_init(void);
 extern void route_map_finish(void);
 
 /* Add match statement to route map. */
-extern int route_map_add_match(struct route_map_index *index,
-			       const char *match_name, const char *match_arg);
+extern enum rmap_compile_rets route_map_add_match(struct route_map_index *index,
+						  const char *match_name,
+						  const char *match_arg,
+						  route_map_event_t type);
 
 /* Delete specified route match rule. */
-extern int route_map_delete_match(struct route_map_index *index,
-				  const char *match_name,
-				  const char *match_arg);
+extern enum rmap_compile_rets
+route_map_delete_match(struct route_map_index *index,
+		       const char *match_name, const char *match_arg,
+		       route_map_event_t type);
 
 extern const char *route_map_get_match_arg(struct route_map_index *index,
 					   const char *match_name);
 
 /* Add route-map set statement to the route map. */
-extern int route_map_add_set(struct route_map_index *index,
-			     const char *set_name, const char *set_arg);
+extern enum rmap_compile_rets route_map_add_set(struct route_map_index *index,
+						const char *set_name,
+						const char *set_arg);
 
 /* Delete route map set rule. */
-extern int route_map_delete_set(struct route_map_index *index,
-				const char *set_name, const char *set_arg);
+extern enum rmap_compile_rets
+route_map_delete_set(struct route_map_index *index,
+		     const char *set_name, const char *set_arg);
 
 /* Install rule command to the match list. */
-extern void route_map_install_match(struct route_map_rule_cmd *cmd);
+extern void route_map_install_match(const struct route_map_rule_cmd *cmd);
 
 /*
  * Install rule command to the set list.
@@ -209,10 +257,13 @@ extern void route_map_install_match(struct route_map_rule_cmd *cmd);
  * in the apply command).  See 'set metric' command
  * as it is handled in ripd/ripngd and ospfd.
  */
-extern void route_map_install_set(struct route_map_rule_cmd *cmd);
+extern void route_map_install_set(const struct route_map_rule_cmd *cmd);
 
 /* Lookup route map by name. */
 extern struct route_map *route_map_lookup_by_name(const char *name);
+
+/* Simple helper to warn if route-map does not exist. */
+struct route_map *route_map_lookup_warn_noexist(struct vty *vty, const char *name);
 
 /* Apply route map to the object. */
 extern route_map_result_t route_map_apply(struct route_map *map,
@@ -222,7 +273,15 @@ extern route_map_result_t route_map_apply(struct route_map *map,
 
 extern void route_map_add_hook(void (*func)(const char *));
 extern void route_map_delete_hook(void (*func)(const char *));
-extern void route_map_event_hook(void (*func)(route_map_event_t, const char *));
+
+/*
+ * This is the callback for when something has changed about a
+ * route-map.  The interested parties can register to receive
+ * this data.
+ *
+ * name - Is the name of the changed route-map
+ */
+extern void route_map_event_hook(void (*func)(const char *name));
 extern int route_map_mark_updated(const char *name);
 extern void route_map_walk_update_list(void (*update_fn)(char *name));
 extern void route_map_upd8_dependency(route_map_event_t type, const char *arg,
@@ -283,6 +342,14 @@ extern void route_map_match_ip_next_hop_prefix_list_hook(int (*func)(
 extern void route_map_no_match_ip_next_hop_prefix_list_hook(int (*func)(
 	struct vty *vty, struct route_map_index *index, const char *command,
 	const char *arg, route_map_event_t type));
+/* match ip next hop type */
+extern void route_map_match_ip_next_hop_type_hook(int (*func)(
+	struct vty *vty, struct route_map_index *index, const char *command,
+	const char *arg, route_map_event_t type));
+/* no match ip next hop type */
+extern void route_map_no_match_ip_next_hop_type_hook(int (*func)(
+	struct vty *vty, struct route_map_index *index, const char *command,
+	const char *arg, route_map_event_t type));
 /* match ipv6 address */
 extern void route_map_match_ipv6_address_hook(int (*func)(
 	struct vty *vty, struct route_map_index *index, const char *command,
@@ -297,6 +364,14 @@ extern void route_map_match_ipv6_address_prefix_list_hook(int (*func)(
 	const char *arg, route_map_event_t type));
 /* no match ipv6 address prefix list */
 extern void route_map_no_match_ipv6_address_prefix_list_hook(int (*func)(
+	struct vty *vty, struct route_map_index *index, const char *command,
+	const char *arg, route_map_event_t type));
+/* match ipv6 next-hop type */
+extern void route_map_match_ipv6_next_hop_type_hook(int (*func)(
+	struct vty *vty, struct route_map_index *index, const char *command,
+	const char *arg, route_map_event_t type));
+/* no match ipv6 next-hop type */
+extern void route_map_no_match_ipv6_next_hop_type_hook(int (*func)(
 	struct vty *vty, struct route_map_index *index, const char *command,
 	const char *arg, route_map_event_t type));
 /* match metric */
@@ -353,5 +428,15 @@ extern void route_map_no_set_tag_hook(int (*func)(struct vty *vty,
 
 extern void *route_map_rule_tag_compile(const char *arg);
 extern void route_map_rule_tag_free(void *rule);
+
+/* Increment the route-map used counter */
+extern void route_map_counter_increment(struct route_map *map);
+
+/* Decrement the route-map used counter */
+extern void route_map_counter_decrement(struct route_map *map);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* _ZEBRA_ROUTEMAP_H */

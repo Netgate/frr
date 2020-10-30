@@ -34,24 +34,24 @@ static struct hash *comhash;
 /* Allocate a new communities value.  */
 static struct community *community_new(void)
 {
-	return (struct community *)XCALLOC(MTYPE_COMMUNITY,
-					   sizeof(struct community));
+	return XCALLOC(MTYPE_COMMUNITY, sizeof(struct community));
 }
 
 /* Free communities value.  */
-void community_free(struct community *com)
+void community_free(struct community **com)
 {
-	if (com->val)
-		XFREE(MTYPE_COMMUNITY_VAL, com->val);
-	if (com->str)
-		XFREE(MTYPE_COMMUNITY_STR, com->str);
+	if (!(*com))
+		return;
 
-	if (com->json) {
-		json_object_free(com->json);
-		com->json = NULL;
+	XFREE(MTYPE_COMMUNITY_VAL, (*com)->val);
+	XFREE(MTYPE_COMMUNITY_STR, (*com)->str);
+
+	if ((*com)->json) {
+		json_object_free((*com)->json);
+		(*com)->json = NULL;
 	}
 
-	XFREE(MTYPE_COMMUNITY, com);
+	XFREE(MTYPE_COMMUNITY, (*com));
 }
 
 /* Add one community value to the community. */
@@ -208,7 +208,6 @@ static void set_community_string(struct community *com, bool make_json)
 {
 	int i;
 	char *str;
-	char *pnt;
 	int len;
 	int first;
 	uint32_t comval;
@@ -300,7 +299,7 @@ static void set_community_string(struct community *com, bool make_json)
 	}
 
 	/* Allocate memory.  */
-	str = pnt = XMALLOC(MTYPE_COMMUNITY_STR, len);
+	str = XCALLOC(MTYPE_COMMUNITY_STR, len);
 	first = 1;
 
 	/* Fill in string.  */
@@ -311,12 +310,11 @@ static void set_community_string(struct community *com, bool make_json)
 		if (first)
 			first = 0;
 		else
-			*pnt++ = ' ';
+			strlcat(str, " ", len);
 
 		switch (comval) {
 		case COMMUNITY_INTERNET:
-			strcpy(pnt, "internet");
-			pnt += strlen("internet");
+			strlcat(str, "internet", len);
 			if (make_json) {
 				json_string =
 					json_object_new_string("internet");
@@ -325,8 +323,7 @@ static void set_community_string(struct community *com, bool make_json)
 			}
 			break;
 		case COMMUNITY_GSHUT:
-			strcpy(pnt, "graceful-shutdown");
-			pnt += strlen("graceful-shutdown");
+			strlcat(str, "graceful-shutdown", len);
 			if (make_json) {
 				json_string = json_object_new_string(
 					"gracefulShutdown");
@@ -335,8 +332,7 @@ static void set_community_string(struct community *com, bool make_json)
 			}
 			break;
 		case COMMUNITY_ACCEPT_OWN:
-			strcpy(pnt, "accept-own");
-			pnt += strlen("accept-own");
+			strlcat(str, "accept-own", len);
 			if (make_json) {
 				json_string = json_object_new_string(
 					"acceptown");
@@ -345,8 +341,7 @@ static void set_community_string(struct community *com, bool make_json)
 			}
 			break;
 		case COMMUNITY_ROUTE_FILTER_TRANSLATED_v4:
-			strcpy(pnt, "route-filter-translated-v4");
-			pnt += strlen("route-filter-translated-v4");
+			strlcat(str, "route-filter-translated-v4", len);
 			if (make_json) {
 				json_string = json_object_new_string(
 					"routeFilterTranslatedV4");
@@ -355,8 +350,7 @@ static void set_community_string(struct community *com, bool make_json)
 			}
 			break;
 		case COMMUNITY_ROUTE_FILTER_v4:
-			strcpy(pnt, "route-filter-v4");
-			pnt += strlen("route-filter-v4");
+			strlcat(str, "route-filter-v4", len);
 			if (make_json) {
 				json_string = json_object_new_string(
 					"routeFilterV4");
@@ -365,8 +359,7 @@ static void set_community_string(struct community *com, bool make_json)
 			}
 			break;
 		case COMMUNITY_ROUTE_FILTER_TRANSLATED_v6:
-			strcpy(pnt, "route-filter-translated-v6");
-			pnt += strlen("route-filter-translated-v6");
+			strlcat(str, "route-filter-translated-v6", len);
 			if (make_json) {
 				json_string = json_object_new_string(
 					"routeFilterTranslatedV6");
@@ -375,8 +368,7 @@ static void set_community_string(struct community *com, bool make_json)
 			}
 			break;
 		case COMMUNITY_ROUTE_FILTER_v6:
-			strcpy(pnt, "route-filter-v6");
-			pnt += strlen("route-filter-v6");
+			strlcat(str, "route-filter-v6", len);
 			if (make_json) {
 				json_string = json_object_new_string(
 					"routeFilterV6");
@@ -385,8 +377,7 @@ static void set_community_string(struct community *com, bool make_json)
 			}
 			break;
 		case COMMUNITY_LLGR_STALE:
-			strcpy(pnt, "llgr-stale");
-			pnt += strlen("llgr-stale");
+			strlcat(str, "llgr-stale", len);
 			if (make_json) {
 				json_string = json_object_new_string(
 					"llgrStale");
@@ -395,8 +386,7 @@ static void set_community_string(struct community *com, bool make_json)
 			}
 			break;
 		case COMMUNITY_NO_LLGR:
-			strcpy(pnt, "no-llgr");
-			pnt += strlen("no-llgr");
+			strlcat(str, "no-llgr", len);
 			if (make_json) {
 				json_string = json_object_new_string(
 					"noLlgr");
@@ -405,8 +395,7 @@ static void set_community_string(struct community *com, bool make_json)
 			}
 			break;
 		case COMMUNITY_ACCEPT_OWN_NEXTHOP:
-			strcpy(pnt, "accept-own-nexthop");
-			pnt += strlen("accept-own-nexthop");
+			strlcat(str, "accept-own-nexthop", len);
 			if (make_json) {
 				json_string = json_object_new_string(
 					"acceptownnexthop");
@@ -415,8 +404,7 @@ static void set_community_string(struct community *com, bool make_json)
 			}
 			break;
 		case COMMUNITY_BLACKHOLE:
-			strcpy(pnt, "blackhole");
-			pnt += strlen("blackhole");
+			strlcat(str, "blackhole", len);
 			if (make_json) {
 				json_string = json_object_new_string(
 					"blackhole");
@@ -425,8 +413,7 @@ static void set_community_string(struct community *com, bool make_json)
 			}
 			break;
 		case COMMUNITY_NO_EXPORT:
-			strcpy(pnt, "no-export");
-			pnt += strlen("no-export");
+			strlcat(str, "no-export", len);
 			if (make_json) {
 				json_string =
 					json_object_new_string("noExport");
@@ -435,8 +422,7 @@ static void set_community_string(struct community *com, bool make_json)
 			}
 			break;
 		case COMMUNITY_NO_ADVERTISE:
-			strcpy(pnt, "no-advertise");
-			pnt += strlen("no-advertise");
+			strlcat(str, "no-advertise", len);
 			if (make_json) {
 				json_string =
 					json_object_new_string("noAdvertise");
@@ -445,8 +431,7 @@ static void set_community_string(struct community *com, bool make_json)
 			}
 			break;
 		case COMMUNITY_LOCAL_AS:
-			strcpy(pnt, "local-AS");
-			pnt += strlen("local-AS");
+			strlcat(str, "local-AS", len);
 			if (make_json) {
 				json_string = json_object_new_string("localAs");
 				json_object_array_add(json_community_list,
@@ -454,8 +439,7 @@ static void set_community_string(struct community *com, bool make_json)
 			}
 			break;
 		case COMMUNITY_NO_PEER:
-			strcpy(pnt, "no-peer");
-			pnt += strlen("no-peer");
+			strlcat(str, "no-peer", len);
 			if (make_json) {
 				json_string = json_object_new_string("noPeer");
 				json_object_array_add(json_community_list,
@@ -465,17 +449,17 @@ static void set_community_string(struct community *com, bool make_json)
 		default:
 			as = (comval >> 16) & 0xFFFF;
 			val = comval & 0xFFFF;
-			sprintf(pnt, "%u:%d", as, val);
+			char buf[32];
+			snprintf(buf, sizeof(buf), "%u:%d", as, val);
+			strlcat(str, buf, len);
 			if (make_json) {
-				json_string = json_object_new_string(pnt);
+				json_string = json_object_new_string(buf);
 				json_object_array_add(json_community_list,
 						      json_string);
 			}
-			pnt += strlen(pnt);
 			break;
 		}
 	}
-	*pnt = '\0';
 
 	if (make_json) {
 		json_object_string_add(com->json, "string", str);
@@ -498,7 +482,7 @@ struct community *community_intern(struct community *com)
 	/* Arguemnt com is allocated temporary.  So when it is not used in
 	   hash, it should be freed.  */
 	if (find != com)
-		community_free(com);
+		community_free(&com);
 
 	/* Increment refrence counter.  */
 	find->refcnt++;
@@ -524,8 +508,7 @@ void community_unintern(struct community **com)
 		ret = (struct community *)hash_release(comhash, *com);
 		assert(ret != NULL);
 
-		community_free(*com);
-		*com = NULL;
+		community_free(com);
 	}
 }
 
@@ -578,7 +561,7 @@ char *community_str(struct community *com, bool make_json)
 
 /* Make hash value of community attribute. This function is used by
    hash package.*/
-unsigned int community_hash_make(struct community *com)
+unsigned int community_hash_make(const struct community *com)
 {
 	uint32_t *pnt = (uint32_t *)com->val;
 
@@ -614,17 +597,17 @@ int community_match(const struct community *com1, const struct community *com2)
 
 /* If two aspath have same value then return 1 else return 0. This
    function is used by hash package. */
-int community_cmp(const struct community *com1, const struct community *com2)
+bool community_cmp(const struct community *com1, const struct community *com2)
 {
 	if (com1 == NULL && com2 == NULL)
-		return 1;
+		return true;
 	if (com1 == NULL || com2 == NULL)
-		return 0;
+		return false;
 
 	if (com1->size == com2->size)
 		if (memcmp(com1->val, com2->val, com1->size * 4) == 0)
-			return 1;
-	return 0;
+			return true;
+	return false;
 }
 
 /* Add com2 to the end of com1. */
@@ -671,7 +654,7 @@ community_gettoken(const char *buf, enum community_token *token, uint32_t *val)
 	const char *p = buf;
 
 	/* Skip white space. */
-	while (isspace((int)*p))
+	while (isspace((unsigned char)*p))
 		p++;
 
 	/* Check the end of the line. */
@@ -679,7 +662,7 @@ community_gettoken(const char *buf, enum community_token *token, uint32_t *val)
 		return NULL;
 
 	/* Well known community string check. */
-	if (isalpha((int)*p)) {
+	if (isalpha((unsigned char)*p)) {
 		if (strncmp(p, "internet", strlen("internet")) == 0) {
 			*val = COMMUNITY_INTERNET;
 			*token = community_token_no_export;
@@ -790,13 +773,13 @@ community_gettoken(const char *buf, enum community_token *token, uint32_t *val)
 	}
 
 	/* Community value. */
-	if (isdigit((int)*p)) {
+	if (isdigit((unsigned char)*p)) {
 		int separator = 0;
 		int digit = 0;
 		uint32_t community_low = 0;
 		uint32_t community_high = 0;
 
-		while (isdigit((int)*p) || *p == ':') {
+		while (isdigit((unsigned char)*p) || *p == ':') {
 			if (*p == ':') {
 				if (separator) {
 					*token = community_token_unknown;
@@ -874,13 +857,13 @@ struct community *community_str2com(const char *str)
 			break;
 		case community_token_unknown:
 			if (com)
-				community_free(com);
+				community_free(&com);
 			return NULL;
 		}
 	} while (str);
 
 	com_sort = community_uniq_sort(com);
-	community_free(com);
+	community_free(&com);
 
 	return com_sort;
 }
@@ -901,8 +884,8 @@ struct hash *community_hash(void)
 void community_init(void)
 {
 	comhash =
-		hash_create((unsigned int (*)(void *))community_hash_make,
-			    (int (*)(const void *, const void *))community_cmp,
+		hash_create((unsigned int (*)(const void *))community_hash_make,
+			    (bool (*)(const void *, const void *))community_cmp,
 			    "BGP Community Hash");
 }
 
@@ -910,4 +893,154 @@ void community_finish(void)
 {
 	hash_free(comhash);
 	comhash = NULL;
+}
+
+static struct community *bgp_aggr_community_lookup(
+						struct bgp_aggregate *aggregate,
+						struct community *community)
+{
+	return hash_lookup(aggregate->community_hash, community);
+}
+
+static void *bgp_aggr_communty_hash_alloc(void *p)
+{
+	struct community *ref = (struct community *)p;
+	struct community *community = NULL;
+
+	community = community_dup(ref);
+	return community;
+}
+
+static void bgp_aggr_community_prepare(struct hash_backet *hb, void *arg)
+{
+	struct community *hb_community = hb->data;
+	struct community **aggr_community = arg;
+
+	if (*aggr_community)
+		*aggr_community = community_merge(*aggr_community,
+						  hb_community);
+	else
+		*aggr_community = community_dup(hb_community);
+}
+
+void bgp_aggr_community_remove(void *arg)
+{
+	struct community *community = arg;
+
+	community_free(&community);
+}
+
+void bgp_compute_aggregate_community(struct bgp_aggregate *aggregate,
+				     struct community *community)
+{
+	bgp_compute_aggregate_community_hash(aggregate, community);
+	bgp_compute_aggregate_community_val(aggregate);
+}
+
+
+void bgp_compute_aggregate_community_hash(struct bgp_aggregate *aggregate,
+					  struct community *community)
+{
+	struct community *aggr_community = NULL;
+
+	if ((aggregate == NULL) || (community == NULL))
+		return;
+
+	/* Create hash if not already created.
+	 */
+	if (aggregate->community_hash == NULL)
+		aggregate->community_hash = hash_create(
+			(unsigned int (*)(const void *))community_hash_make,
+			(bool (*)(const void *, const void *))community_cmp,
+			"BGP Aggregator community hash");
+
+	aggr_community = bgp_aggr_community_lookup(aggregate, community);
+	if (aggr_community == NULL) {
+		/* Insert community into hash.
+		 */
+		aggr_community = hash_get(aggregate->community_hash, community,
+					  bgp_aggr_communty_hash_alloc);
+	}
+
+	/* Increment reference counter.
+	 */
+	aggr_community->refcnt++;
+}
+
+void bgp_compute_aggregate_community_val(struct bgp_aggregate *aggregate)
+{
+	struct community *commerge = NULL;
+
+	if (aggregate == NULL)
+		return;
+
+	/* Re-compute aggregate's community.
+	 */
+	if (aggregate->community)
+		community_free(&aggregate->community);
+	if (aggregate->community_hash &&
+	    aggregate->community_hash->count) {
+		hash_iterate(aggregate->community_hash,
+			     bgp_aggr_community_prepare,
+			     &aggregate->community);
+		commerge = aggregate->community;
+		aggregate->community = community_uniq_sort(commerge);
+		if (commerge)
+			community_free(&commerge);
+	}
+}
+
+
+
+void bgp_remove_community_from_aggregate(struct bgp_aggregate *aggregate,
+					 struct community *community)
+{
+	struct community *aggr_community = NULL;
+	struct community *ret_comm = NULL;
+
+	if ((!aggregate)
+	    || (!aggregate->community_hash)
+	    || (!community))
+		return;
+
+	/* Look-up the community in the hash.
+	 */
+	aggr_community = bgp_aggr_community_lookup(aggregate, community);
+	if (aggr_community) {
+		aggr_community->refcnt--;
+
+		if (aggr_community->refcnt == 0) {
+			ret_comm = hash_release(aggregate->community_hash,
+						aggr_community);
+			community_free(&ret_comm);
+
+			bgp_compute_aggregate_community_val(aggregate);
+		}
+	}
+}
+
+void bgp_remove_comm_from_aggregate_hash(struct bgp_aggregate *aggregate,
+		struct community *community)
+{
+
+	struct community *aggr_community = NULL;
+	struct community *ret_comm = NULL;
+
+	if ((!aggregate)
+	    || (!aggregate->community_hash)
+	    || (!community))
+		return;
+
+	/* Look-up the community in the hash.
+	 */
+	aggr_community = bgp_aggr_community_lookup(aggregate, community);
+	if (aggr_community) {
+		aggr_community->refcnt--;
+
+		if (aggr_community->refcnt == 0) {
+			ret_comm = hash_release(aggregate->community_hash,
+						aggr_community);
+			community_free(&ret_comm);
+		}
+	}
 }

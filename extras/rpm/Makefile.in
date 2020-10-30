@@ -23,6 +23,10 @@ ifneq ($(strip ${VPP_DIR}),)
 	VPP_DEF=--define "vpp_dir $(VPP_DIR)"
 endif
 
+ifneq ($(strip ${LIBYANG_DIR}),)
+	LIBYANG_DEF=--define "libyang_dir $(LIBYANG_DIR)"
+endif
+
 all: RPM
 
 spec:
@@ -36,6 +40,7 @@ srpm: spec
 	  $(LIBTNSRINFRA_DEF) \
 	  $(LIBVPPMGMT_DEF) \
 	  $(VPP_DEF) \
+	  $(LIBYANG_DEF) \
 	  --define "_topdir $(RPMBUILD)" \
 	  --define "package_dirname $(BASENAME)" \
 	  --define "_version $(VERSION)" \
@@ -50,6 +55,7 @@ RPM: spec
 	  $(LIBTNSRINFRA_DEF) \
 	  $(LIBVPPMGMT_DEF) \
 	  $(VPP_DEF) \
+	  $(LIBYANG_DEF) \
 	  --define "_topdir $(RPMBUILD)" \
 	  --define "package_dirname $(BASENAME)" \
 	  --define "_version $(VERSION)" \

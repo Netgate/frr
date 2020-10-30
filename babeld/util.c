@@ -21,6 +21,10 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 */
 
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
 #include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
@@ -437,7 +441,7 @@ uchar_to_in6addr(struct in6_addr *dest, const unsigned char *src)
 }
 
 int
-daemonise()
+daemonise(void)
 {
     int rc;
 

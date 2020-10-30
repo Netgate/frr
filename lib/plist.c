@@ -218,7 +218,7 @@ static struct prefix_list *prefix_list_insert(afi_t afi, int orf,
 	/* If name is made by all digit character.  We treat it as
 	   number. */
 	for (number = 0, i = 0; i < strlen(name); i++) {
-		if (isdigit((int)name[i]))
+		if (isdigit((unsigned char)name[i]))
 			number = (number * 10) + (name[i] - '0');
 		else
 			break;
@@ -326,8 +326,7 @@ static void prefix_list_delete(struct prefix_list *plist)
 	else
 		list->head = plist->next;
 
-	if (plist->desc)
-		XFREE(MTYPE_TMP, plist->desc);
+	XFREE(MTYPE_TMP, plist->desc);
 
 	/* Make sure master's recent changed prefix-list information is
 	   cleared. */
@@ -338,8 +337,7 @@ static void prefix_list_delete(struct prefix_list *plist)
 	if (master->delete_hook)
 		(*master->delete_hook)(plist);
 
-	if (plist->name)
-		XFREE(MTYPE_MPREFIX_LIST_STR, plist->name);
+	XFREE(MTYPE_MPREFIX_LIST_STR, plist->name);
 
 	XFREE(MTYPE_PREFIX_LIST_TRIE, plist->trie);
 
@@ -396,7 +394,7 @@ static int64_t prefix_new_seq_get(struct prefix_list *plist)
 
 	newseq = ((maxseq / 5) * 5) + 5;
 
-	return newseq;
+	return (newseq > UINT_MAX) ? UINT_MAX : newseq;
 }
 
 /* Return prefix list entry which has same seq number. */
@@ -752,6 +750,7 @@ enum prefix_list_type prefix_list_apply_which_prefix(
 	if (pbest == NULL)
 		return PREFIX_DENY;
 
+	pbest->hitcnt++;
 	return pbest->type;
 }
 
@@ -930,7 +929,10 @@ static int vty_prefix_list_install(struct vty *vty, afi_t afi, const char *name,
 		char buf_tmp[PREFIX2STR_BUFFER];
 		prefix2str(&p, buf, sizeof(buf));
 		prefix2str(&p_tmp, buf_tmp, sizeof(buf_tmp));
-		zlog_warn(
+		vty_out(vty,
+			"%% Prefix-list %s prefix changed from %s to %s to match length\n",
+			name, buf, buf_tmp);
+		zlog_info(
 			"Prefix-list %s prefix changed from %s to %s to match length",
 			name, buf, buf_tmp);
 		p = p_tmp;
@@ -997,21 +999,35 @@ static int vty_prefix_list_uninstall(struct vty *vty, afi_t afi,
 		return CMD_SUCCESS;
 	}
 
-	/* We must have, at a minimum, both the type and prefix here */
-	if ((typestr == NULL) || (prefix == NULL)) {
-		vty_out(vty, "%% Both prefix and type required\n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
-
 	/* Check sequence number. */
 	if (seq)
 		seqnum = (int64_t)atol(seq);
+
+	/* Sequence number specified, but nothing else. */
+	if (seq && typestr == NULL && prefix == NULL && ge == NULL
+	    && le == NULL) {
+		pentry = prefix_seq_check(plist, seqnum);
+
+		if (pentry == NULL) {
+			vty_out(vty,
+				"%% Can't find prefix-list %s with sequence number %" PRIu64 "\n",
+				name, seqnum);
+			return CMD_WARNING_CONFIG_FAILED;
+		}
+
+		prefix_list_entry_delete(plist, pentry, 1);
+		return CMD_SUCCESS;
+	}
 
 	/* ge and le number */
 	if (ge)
 		genum = atoi(ge);
 	if (le)
 		lenum = atoi(le);
+
+	/* We must have, at a minimum, both the type and prefix here */
+	if ((typestr == NULL) || (prefix == NULL))
+		return CMD_WARNING_CONFIG_FAILED;
 
 	/* Check of filter type. */
 	if (strncmp("permit", typestr, 1) == 0)
@@ -1249,13 +1265,13 @@ static int vty_show_prefix_list_prefix(struct vty *vty, afi_t afi,
 			if (pentry->any)
 				vty_out(vty, "any");
 			else {
-				struct prefix *p = &pentry->prefix;
+				struct prefix *pf = &pentry->prefix;
 				char buf[BUFSIZ];
 
 				vty_out(vty, "%s/%d",
-					inet_ntop(p->family, p->u.val, buf,
+					inet_ntop(pf->family, pf->u.val, buf,
 						  BUFSIZ),
-					p->prefixlen);
+					pf->prefixlen);
 
 				if (pentry->ge)
 					vty_out(vty, " ge %d", pentry->ge);
@@ -1372,6 +1388,17 @@ DEFPY (no_ip_prefix_list,
 {
 	return vty_prefix_list_uninstall(vty, AFI_IP, prefix_list, seq_str,
 					 action, dest, ge_str, le_str);
+}
+
+DEFPY(no_ip_prefix_list_seq, no_ip_prefix_list_seq_cmd,
+      "no ip prefix-list WORD seq (1-4294967295)",
+      NO_STR IP_STR PREFIX_LIST_STR
+      "Name of a prefix list\n"
+      "sequence number of an entry\n"
+      "Sequence number\n")
+{
+	return vty_prefix_list_uninstall(vty, AFI_IP, prefix_list, seq_str,
+					 NULL, NULL, NULL, NULL);
 }
 
 DEFPY (no_ip_prefix_list_all,
@@ -1864,6 +1891,8 @@ int prefix_bgp_orf_set(char *name, afi_t afi, struct orf_prefix *orfp,
 	if (!plist)
 		return CMD_WARNING_CONFIG_FAILED;
 
+	apply_mask(&orfp->p);
+
 	if (set) {
 		pentry = prefix_list_entry_make(
 			&orfp->p, (permit ? PREFIX_PERMIT : PREFIX_DENY),
@@ -1900,7 +1929,7 @@ void prefix_bgp_orf_remove_all(afi_t afi, char *name)
 
 /* return prefix count */
 int prefix_bgp_show_prefix_list(struct vty *vty, afi_t afi, char *name,
-				uint8_t use_json)
+				bool use_json)
 {
 	struct prefix_list *plist;
 	struct prefix_list_entry *pentry;
@@ -2058,6 +2087,7 @@ static void prefix_list_init_ipv4(void)
 
 	install_element(CONFIG_NODE, &ip_prefix_list_cmd);
 	install_element(CONFIG_NODE, &no_ip_prefix_list_cmd);
+	install_element(CONFIG_NODE, &no_ip_prefix_list_seq_cmd);
 	install_element(CONFIG_NODE, &no_ip_prefix_list_all_cmd);
 
 	install_element(CONFIG_NODE, &ip_prefix_list_description_cmd);
@@ -2108,7 +2138,7 @@ static void prefix_list_init_ipv6(void)
 	install_element(ENABLE_NODE, &clear_ipv6_prefix_list_cmd);
 }
 
-void prefix_list_init()
+void prefix_list_init(void)
 {
 	cmd_variable_handler_register(plist_var_handlers);
 
@@ -2116,7 +2146,7 @@ void prefix_list_init()
 	prefix_list_init_ipv6();
 }
 
-void prefix_list_reset()
+void prefix_list_reset(void)
 {
 	prefix_list_reset_afi(AFI_IP, 0);
 	prefix_list_reset_afi(AFI_IP6, 0);

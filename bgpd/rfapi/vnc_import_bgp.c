@@ -25,7 +25,7 @@
 
 #include "lib/zebra.h"
 #include "lib/prefix.h"
-#include "lib/table.h"
+#include "lib/agg_table.h"
 #include "lib/vty.h"
 #include "lib/log.h"
 #include "lib/memory.h"
@@ -122,7 +122,7 @@ static int is_host_prefix(struct prefix *p)
 struct prefix_bag {
 	struct prefix hpfx;   /* ce address = unicast nexthop */
 	struct prefix upfx;   /* unicast prefix */
-	struct bgp_info *ubi; /* unicast route */
+	struct bgp_path_info *ubpi; /* unicast route */
 };
 
 static const uint8_t maskbit[] = {0x00, 0x80, 0xc0, 0xe0, 0xf0,
@@ -217,8 +217,8 @@ static void print_rhn_list(const char *tag1, const char *tag2)
 		prefix2str(&pb->upfx, ubuf, sizeof(ubuf));
 
 		vnc_zlog_debug_verbose(
-			"RHN Entry %d (q=%p): kpfx=%s, upfx=%s, hpfx=%s, ubi=%p",
-			++count, p, kbuf, ubuf, hbuf, pb->ubi);
+			"RHN Entry %d (q=%p): kpfx=%s, upfx=%s, hpfx=%s, ubpi=%p",
+			++count, p, kbuf, ubuf, hbuf, pb->ubpi);
 	}
 }
 #endif
@@ -253,10 +253,10 @@ static void vnc_rhnck(char *tag)
 
 		afi = family2afi(pb->upfx.family);
 
-		rfapiUnicastNexthop2Prefix(afi, pb->ubi->attr,
+		rfapiUnicastNexthop2Prefix(afi, pb->ubpi->attr,
 					   &pfx_orig_nexthop);
 
-		/* pb->hpfx, pb->ubi nexthop, pkey should all reflect the same
+		/* pb->hpfx, pb->ubpi nexthop, pkey should all reflect the same
 		 * pfx */
 		assert(!vnc_prefix_cmp(&pb->hpfx, pkey));
 		if (vnc_prefix_cmp(&pb->hpfx, &pfx_orig_nexthop)) {
@@ -267,7 +267,7 @@ static void vnc_rhnck(char *tag)
 			prefix2str(&pb->hpfx, str_nve_pfx, sizeof(str_nve_pfx));
 
 			vnc_zlog_debug_verbose(
-				"%s: %s: FATAL: resolve_nve_nexthop list item bi nexthop %s != nve pfx %s",
+				"%s: %s: FATAL: resolve_nve_nexthop list item bpi nexthop %s != nve pfx %s",
 				__func__, tag, str_onh, str_nve_pfx);
 			assert(0);
 		}
@@ -300,7 +300,7 @@ static void vnc_rhnck(char *tag)
 static int process_unicast_route(struct bgp *bgp,		 /* in */
 				 afi_t afi,			 /* in */
 				 struct prefix *prefix,		 /* in */
-				 struct bgp_info *info,		 /* in */
+				 struct bgp_path_info *info,     /* in */
 				 struct ecommunity **ecom,       /* OUT */
 				 struct prefix *unicast_nexthop) /* OUT */
 {
@@ -356,10 +356,11 @@ static int process_unicast_route(struct bgp *bgp,		 /* in */
 	 * all of the possible returns above.
 	 */
 	memset(&hattr, 0, sizeof(struct attr));
-	bgp_attr_dup(&hattr, attr); /* hattr becomes a ghost attr */
+	/* hattr becomes a ghost attr */
+	hattr = *attr;
 
 	if (rmap) {
-		struct bgp_info info;
+		struct bgp_path_info info;
 		route_map_result_t ret;
 
 		memset(&info, 0, sizeof(info));
@@ -422,8 +423,8 @@ static int process_unicast_route(struct bgp *bgp,		 /* in */
 
 
 static void vnc_import_bgp_add_route_mode_resolve_nve_one_bi(
-	struct bgp *bgp, afi_t afi, struct bgp_info *bi, /* VPN bi */
-	struct prefix_rd *prd,				 /* RD */
+	struct bgp *bgp, afi_t afi, struct bgp_path_info *bpi, /* VPN bpi */
+	struct prefix_rd *prd,				       /* RD */
 	struct prefix *prefix,   /* unicast route prefix */
 	uint32_t *local_pref,    /* NULL = no local_pref */
 	uint32_t *med,		 /* NULL = no med */
@@ -443,20 +444,22 @@ static void vnc_import_bgp_add_route_mode_resolve_nve_one_bi(
 
 	vnc_zlog_debug_verbose("%s: entry", __func__);
 
-	if (bi->type != ZEBRA_ROUTE_BGP && bi->type != ZEBRA_ROUTE_BGP_DIRECT) {
+	if (bpi->type != ZEBRA_ROUTE_BGP
+	    && bpi->type != ZEBRA_ROUTE_BGP_DIRECT) {
 
 		return;
 	}
-	if (bi->sub_type != BGP_ROUTE_NORMAL && bi->sub_type != BGP_ROUTE_STATIC
-	    && bi->sub_type != BGP_ROUTE_RFP) {
+	if (bpi->sub_type != BGP_ROUTE_NORMAL
+	    && bpi->sub_type != BGP_ROUTE_STATIC
+	    && bpi->sub_type != BGP_ROUTE_RFP) {
 
 		return;
 	}
-	if (CHECK_FLAG(bi->flags, BGP_INFO_REMOVED))
+	if (CHECK_FLAG(bpi->flags, BGP_PATH_REMOVED))
 		return;
 
-	vncHDResolveNve.peer = bi->peer;
-	if (!rfapiGetVncTunnelUnAddr(bi->attr, &un)) {
+	vncHDResolveNve.peer = bpi->peer;
+	if (!rfapiGetVncTunnelUnAddr(bpi->attr, &un)) {
 		if (rfapiQprefix2Raddr(&un, &vncHDResolveNve.un_addr))
 			return;
 	} else {
@@ -465,38 +468,32 @@ static void vnc_import_bgp_add_route_mode_resolve_nve_one_bi(
 	}
 
 	/* Use nexthop of VPN route as nexthop of constructed route */
-	rfapiNexthop2Prefix(bi->attr, &nexthop);
+	rfapiNexthop2Prefix(bpi->attr, &nexthop);
 	rfapiQprefix2Raddr(&nexthop, &nexthop_h);
 
-	if (rfapiGetVncLifetime(bi->attr, &lifetime)) {
+	if (rfapiGetVncLifetime(bpi->attr, &lifetime)) {
 		plifetime = NULL;
 	} else {
 		plifetime = &lifetime;
 	}
 
-	if (bi->attr) {
-		encaptlvs = bi->attr->vnc_subtlvs;
-		if (bi->attr->encap_tunneltype != BGP_ENCAP_TYPE_RESERVED
-		    && bi->attr->encap_tunneltype != BGP_ENCAP_TYPE_MPLS) {
-			if (opt != NULL)
-				opt->next = &optary[cur_opt];
-			opt = &optary[cur_opt++];
-			memset(opt, 0, sizeof(struct rfapi_un_option));
-			opt->type = RFAPI_UN_OPTION_TYPE_TUNNELTYPE;
-			opt->v.tunnel.type = bi->attr->encap_tunneltype;
-			/* TBD parse bi->attr->extra->encap_subtlvs */
-		}
-	} else {
-		encaptlvs = NULL;
+	encaptlvs = bpi->attr->vnc_subtlvs;
+	if (bpi->attr->encap_tunneltype != BGP_ENCAP_TYPE_RESERVED
+	    && bpi->attr->encap_tunneltype != BGP_ENCAP_TYPE_MPLS) {
+		opt = &optary[cur_opt++];
+		memset(opt, 0, sizeof(struct rfapi_un_option));
+		opt->type = RFAPI_UN_OPTION_TYPE_TUNNELTYPE;
+		opt->v.tunnel.type = bpi->attr->encap_tunneltype;
+		/* TBD parse bpi->attr->extra->encap_subtlvs */
 	}
 
 	struct ecommunity *new_ecom = ecommunity_dup(ecom);
 
-	if (bi->attr && bi->attr->ecommunity)
-		ecommunity_merge(new_ecom, bi->attr->ecommunity);
+	if (bpi->attr->ecommunity)
+		ecommunity_merge(new_ecom, bpi->attr->ecommunity);
 
-	if (bi->extra)
-		label = decode_label(&bi->extra->label[0]);
+	if (bpi->extra)
+		label = decode_label(&bpi->extra->label[0]);
 
 	add_vnc_route(&vncHDResolveNve, bgp, SAFI_MPLS_VPN,
 		      prefix,	  /* unicast route prefix */
@@ -516,12 +513,12 @@ static void vnc_import_bgp_add_route_mode_resolve_nve_one_rd(
 	struct bgp_table *table_rd, /* per-rd VPN route table */
 	afi_t afi, struct bgp *bgp, struct prefix *prefix, /* unicast prefix */
 	struct ecommunity *ecom,			   /* generated ecoms */
-	uint32_t *local_pref,       /* NULL = no local_pref */
-	uint32_t *med,		    /* NULL = no med */
-	struct prefix *ubi_nexthop) /* unicast nexthop */
+	uint32_t *local_pref,	/* NULL = no local_pref */
+	uint32_t *med,		     /* NULL = no med */
+	struct prefix *ubpi_nexthop) /* unicast nexthop */
 {
 	struct bgp_node *bn;
-	struct bgp_info *bi;
+	struct bgp_path_info *bpi;
 
 	if (!table_rd)
 		return;
@@ -529,24 +526,25 @@ static void vnc_import_bgp_add_route_mode_resolve_nve_one_rd(
 	{
 		char str_nh[PREFIX_STRLEN];
 
-		prefix2str(ubi_nexthop, str_nh, sizeof(str_nh));
+		prefix2str(ubpi_nexthop, str_nh, sizeof(str_nh));
 
-		vnc_zlog_debug_verbose("%s: ubi_nexthop=%s", __func__, str_nh);
+		vnc_zlog_debug_verbose("%s: ubpi_nexthop=%s", __func__, str_nh);
 	}
 
 	/* exact match */
-	bn = bgp_node_lookup(table_rd, ubi_nexthop);
+	bn = bgp_node_lookup(table_rd, ubpi_nexthop);
 	if (!bn) {
 		vnc_zlog_debug_verbose(
-			"%s: no match in RD's table for ubi_nexthop", __func__);
+			"%s: no match in RD's table for ubpi_nexthop",
+			__func__);
 		return;
 	}
 
 	/* Iterate over bgp_info items at this node */
-	for (bi = bn->info; bi; bi = bi->next) {
+	for (bpi = bgp_node_get_bgp_path_info(bn); bpi; bpi = bpi->next) {
 
 		vnc_import_bgp_add_route_mode_resolve_nve_one_bi(
-			bgp, afi, bi, /* VPN bi */
+			bgp, afi, bpi, /* VPN bpi */
 			prd, prefix, local_pref, med, ecom);
 	}
 
@@ -555,7 +553,7 @@ static void vnc_import_bgp_add_route_mode_resolve_nve_one_rd(
 
 static void vnc_import_bgp_add_route_mode_resolve_nve(
 	struct bgp *bgp, struct prefix *prefix, /* unicast prefix */
-	struct bgp_info *info)			/* unicast info */
+	struct bgp_path_info *info)		/* unicast info */
 {
 	afi_t afi = family2afi(prefix->family);
 
@@ -603,8 +601,8 @@ static void vnc_import_bgp_add_route_mode_resolve_nve(
 	 */
 
 	if (!afi) {
-		flog_err(LIB_ERR_DEVELOPMENT, "%s: can't get afi of prefix",
-			  __func__);
+		flog_err(EC_LIB_DEVELOPMENT, "%s: can't get afi of prefix",
+			 __func__);
 		return;
 	}
 
@@ -632,12 +630,8 @@ static void vnc_import_bgp_add_route_mode_resolve_nve(
 	}
 
 	local_pref = calc_local_pref(info->attr, info->peer);
-	if (info->attr
-	    && (info->attr->flag & ATTR_FLAG_BIT(BGP_ATTR_MULTI_EXIT_DISC))) {
-
+	if (info->attr->flag & ATTR_FLAG_BIT(BGP_ATTR_MULTI_EXIT_DISC))
 		med = &info->attr->med;
-	}
-
 
 	/*
 	 * At this point, we have allocated:
@@ -657,10 +651,10 @@ static void vnc_import_bgp_add_route_mode_resolve_nve(
 
 	pb = XCALLOC(MTYPE_RFAPI_PREFIX_BAG, sizeof(struct prefix_bag));
 	pb->hpfx = pfx_unicast_nexthop;
-	pb->ubi = info;
+	pb->ubpi = info;
 	pb->upfx = *prefix;
 
-	bgp_info_lock(info); /* skiplist refers to it */
+	bgp_path_info_lock(info); /* skiplist refers to it */
 	skiplist_insert(bgp->rfapi->resolve_nve_nexthop, &pb->hpfx, pb);
 
 	/*
@@ -673,7 +667,7 @@ static void vnc_import_bgp_add_route_mode_resolve_nve(
 
 		struct bgp_table *table;
 
-		table = (struct bgp_table *)(bnp->info);
+		table = bgp_node_get_bgp_table_info(bnp);
 
 		if (!table)
 			continue;
@@ -693,7 +687,7 @@ static void vnc_import_bgp_add_route_mode_resolve_nve(
 
 static void vnc_import_bgp_add_route_mode_plain(struct bgp *bgp,
 						struct prefix *prefix,
-						struct bgp_info *info)
+						struct bgp_path_info *info)
 {
 	afi_t afi = family2afi(prefix->family);
 	struct peer *peer = info->peer;
@@ -720,8 +714,8 @@ static void vnc_import_bgp_add_route_mode_plain(struct bgp *bgp,
 	}
 
 	if (!afi) {
-		flog_err(LIB_ERR_DEVELOPMENT, "%s: can't get afi of prefix",
-			  __func__);
+		flog_err(EC_LIB_DEVELOPMENT, "%s: can't get afi of prefix",
+			 __func__);
 		return;
 	}
 
@@ -805,10 +799,11 @@ static void vnc_import_bgp_add_route_mode_plain(struct bgp *bgp,
 	 * all of the possible returns above.
 	 */
 	memset(&hattr, 0, sizeof(struct attr));
-	bgp_attr_dup(&hattr, attr); /* hattr becomes a ghost attr */
+	/* hattr becomes a ghost attr */
+	hattr = *attr;
 
 	if (rmap) {
-		struct bgp_info info;
+		struct bgp_path_info info;
 		route_map_result_t ret;
 
 		memset(&info, 0, sizeof(info));
@@ -881,7 +876,7 @@ static void vnc_import_bgp_add_route_mode_plain(struct bgp *bgp,
 
 static void
 vnc_import_bgp_add_route_mode_nvegroup(struct bgp *bgp, struct prefix *prefix,
-				       struct bgp_info *info,
+				       struct bgp_path_info *info,
 				       struct rfapi_nve_group_cfg *rfg)
 {
 	afi_t afi = family2afi(prefix->family);
@@ -908,8 +903,8 @@ vnc_import_bgp_add_route_mode_nvegroup(struct bgp *bgp, struct prefix *prefix,
 	assert(rfg);
 
 	if (!afi) {
-		flog_err(LIB_ERR_DEVELOPMENT, "%s: can't get afi of prefix",
-			  __func__);
+		flog_err(EC_LIB_DEVELOPMENT, "%s: can't get afi of prefix",
+			 __func__);
 		return;
 	}
 
@@ -1007,16 +1002,17 @@ vnc_import_bgp_add_route_mode_nvegroup(struct bgp *bgp, struct prefix *prefix,
 	 * all of the possible returns above.
 	 */
 	memset(&hattr, 0, sizeof(struct attr));
-	bgp_attr_dup(&hattr, attr); /* hattr becomes a ghost attr */
+	/* hattr becomes a ghost attr */
+	hattr = *attr;
 
 	if (rmap) {
-		struct bgp_info info;
+		struct bgp_path_info path;
 		route_map_result_t ret;
 
-		memset(&info, 0, sizeof(info));
-		info.peer = peer;
-		info.attr = &hattr;
-		ret = route_map_apply(rmap, prefix, RMAP_BGP, &info);
+		memset(&path, 0, sizeof(path));
+		path.peer = peer;
+		path.attr = &hattr;
+		ret = route_map_apply(rmap, prefix, RMAP_BGP, &path);
 		if (ret == RMAP_DENYMATCH) {
 			bgp_attr_flush(&hattr);
 			vnc_zlog_debug_verbose(
@@ -1085,7 +1081,7 @@ vnc_import_bgp_add_route_mode_nvegroup(struct bgp *bgp, struct prefix *prefix,
 
 static void vnc_import_bgp_del_route_mode_plain(struct bgp *bgp,
 						struct prefix *prefix,
-						struct bgp_info *info)
+						struct bgp_path_info *info)
 {
 	struct prefix_rd prd;
 	afi_t afi = family2afi(prefix->family);
@@ -1100,7 +1096,7 @@ static void vnc_import_bgp_del_route_mode_plain(struct bgp *bgp,
 	 * Compute VN address
 	 */
 
-	if (info && info->attr) {
+	if (info) {
 		rfapiUnicastNexthop2Prefix(afi, info->attr, &vn_pfx_space);
 	} else {
 		vnc_zlog_debug_verbose("%s: no attr, can't delete route",
@@ -1158,7 +1154,7 @@ static void vnc_import_bgp_del_route_mode_plain(struct bgp *bgp,
 
 static void vnc_import_bgp_del_route_mode_nvegroup(struct bgp *bgp,
 						   struct prefix *prefix,
-						   struct bgp_info *info)
+						   struct bgp_path_info *info)
 {
 	struct prefix_rd prd;
 	afi_t afi = family2afi(prefix->family);
@@ -1238,26 +1234,28 @@ static void vnc_import_bgp_del_route_mode_nvegroup(struct bgp *bgp,
 }
 
 static void vnc_import_bgp_del_route_mode_resolve_nve_one_bi(
-	struct bgp *bgp, afi_t afi, struct bgp_info *bi, /* VPN bi */
-	struct prefix_rd *prd,				 /* RD */
+	struct bgp *bgp, afi_t afi, struct bgp_path_info *bpi, /* VPN bpi */
+	struct prefix_rd *prd,				       /* RD */
 	struct prefix *prefix) /* unicast route prefix */
 {
 	struct prefix un;
 
-	if (bi->type != ZEBRA_ROUTE_BGP && bi->type != ZEBRA_ROUTE_BGP_DIRECT) {
+	if (bpi->type != ZEBRA_ROUTE_BGP
+	    && bpi->type != ZEBRA_ROUTE_BGP_DIRECT) {
 
 		return;
 	}
-	if (bi->sub_type != BGP_ROUTE_NORMAL && bi->sub_type != BGP_ROUTE_STATIC
-	    && bi->sub_type != BGP_ROUTE_RFP) {
+	if (bpi->sub_type != BGP_ROUTE_NORMAL
+	    && bpi->sub_type != BGP_ROUTE_STATIC
+	    && bpi->sub_type != BGP_ROUTE_RFP) {
 
 		return;
 	}
-	if (CHECK_FLAG(bi->flags, BGP_INFO_REMOVED))
+	if (CHECK_FLAG(bpi->flags, BGP_PATH_REMOVED))
 		return;
 
-	vncHDResolveNve.peer = bi->peer;
-	if (!rfapiGetVncTunnelUnAddr(bi->attr, &un)) {
+	vncHDResolveNve.peer = bpi->peer;
+	if (!rfapiGetVncTunnelUnAddr(bpi->attr, &un)) {
 		if (rfapiQprefix2Raddr(&un, &vncHDResolveNve.un_addr))
 			return;
 	} else {
@@ -1275,10 +1273,10 @@ static void vnc_import_bgp_del_route_mode_resolve_nve_one_rd(
 	struct prefix_rd *prd,
 	struct bgp_table *table_rd, /* per-rd VPN route table */
 	afi_t afi, struct bgp *bgp, struct prefix *prefix, /* unicast prefix */
-	struct prefix *ubi_nexthop) /* unicast bi's nexthop */
+	struct prefix *ubpi_nexthop) /* unicast bpi's nexthop */
 {
 	struct bgp_node *bn;
-	struct bgp_info *bi;
+	struct bgp_path_info *bpi;
 
 	if (!table_rd)
 		return;
@@ -1286,35 +1284,36 @@ static void vnc_import_bgp_del_route_mode_resolve_nve_one_rd(
 	{
 		char str_nh[PREFIX_STRLEN];
 
-		prefix2str(ubi_nexthop, str_nh, sizeof(str_nh));
-		vnc_zlog_debug_verbose("%s: ubi_nexthop=%s", __func__, str_nh);
+		prefix2str(ubpi_nexthop, str_nh, sizeof(str_nh));
+		vnc_zlog_debug_verbose("%s: ubpi_nexthop=%s", __func__, str_nh);
 	}
 
 
 	/* exact match */
-	bn = bgp_node_lookup(table_rd, ubi_nexthop);
+	bn = bgp_node_lookup(table_rd, ubpi_nexthop);
 	if (!bn) {
 		vnc_zlog_debug_verbose(
-			"%s: no match in RD's table for ubi_nexthop", __func__);
+			"%s: no match in RD's table for ubpi_nexthop",
+			__func__);
 		return;
 	}
 
 	/* Iterate over bgp_info items at this node */
-	for (bi = bn->info; bi; bi = bi->next) {
+	for (bpi = bgp_node_get_bgp_path_info(bn); bpi; bpi = bpi->next) {
 
 		vnc_import_bgp_del_route_mode_resolve_nve_one_bi(
-			bgp, afi, bi, /* VPN bi */
-			prd,	  /* VPN RD */
-			prefix);      /* unicast route prefix */
+			bgp, afi, bpi, /* VPN bpi */
+			prd,	   /* VPN RD */
+			prefix);       /* unicast route prefix */
 	}
 
 	bgp_unlock_node(bn);
 }
 
-static void vnc_import_bgp_del_route_mode_resolve_nve(struct bgp *bgp,
-						      afi_t afi,
-						      struct prefix *prefix,
-						      struct bgp_info *info)
+static void
+vnc_import_bgp_del_route_mode_resolve_nve(struct bgp *bgp, afi_t afi,
+					  struct prefix *prefix,
+					  struct bgp_path_info *info)
 {
 	struct ecommunity *ecom = NULL;
 	struct prefix pfx_unicast_nexthop = {0}; /* happy valgrind */
@@ -1352,9 +1351,9 @@ static void vnc_import_bgp_del_route_mode_resolve_nve(struct bgp *bgp,
 	rc = skiplist_first_value(sl, &pfx_unicast_nexthop, (void *)&pb,
 				  &cursor);
 	while (!rc) {
-		if (pb->ubi == info) {
+		if (pb->ubpi == info) {
 			skiplist_delete(sl, &pfx_unicast_nexthop, pb);
-			bgp_info_unlock(info);
+			bgp_path_info_unlock(info);
 			break;
 		}
 		rc = skiplist_next_value(sl, &pfx_unicast_nexthop, (void *)&pb,
@@ -1371,7 +1370,7 @@ static void vnc_import_bgp_del_route_mode_resolve_nve(struct bgp *bgp,
 
 		struct bgp_table *table;
 
-		table = (struct bgp_table *)(bnp->info);
+		table = bgp_node_get_bgp_table_info(bnp);
 
 		if (!table)
 			continue;
@@ -1391,14 +1390,14 @@ static void vnc_import_bgp_del_route_mode_resolve_nve(struct bgp *bgp,
  ***********************************************************************/
 
 /*
- * Should be called whan a bi is added to VPN RIB. This function
+ * Should be called whan a bpi is added to VPN RIB. This function
  * will check if it is a host route and return immediately if not.
  */
 void vnc_import_bgp_add_vnc_host_route_mode_resolve_nve(
 	struct bgp *bgp, struct prefix_rd *prd, /* RD */
 	struct bgp_table *table_rd,		/* per-rd VPN route table */
 	struct prefix *prefix,			/* VPN prefix */
-	struct bgp_info *bi)			/* new VPN host route */
+	struct bgp_path_info *bpi)		/* new VPN host route */
 {
 	afi_t afi = family2afi(prefix->family);
 	struct skiplist *sl = NULL;
@@ -1469,11 +1468,11 @@ void vnc_import_bgp_add_vnc_host_route_mode_resolve_nve(
 			prefix2str(&pb->upfx, ubuf, sizeof(ubuf));
 
 			vnc_zlog_debug_any(
-				"%s: examining RHN Entry (q=%p): upfx=%s, hpfx=%s, ubi=%p",
-				__func__, cursor, ubuf, hbuf, pb->ubi);
+				"%s: examining RHN Entry (q=%p): upfx=%s, hpfx=%s, ubpi=%p",
+				__func__, cursor, ubuf, hbuf, pb->ubpi);
 		}
 
-		if (process_unicast_route(bgp, afi, &pb->upfx, pb->ubi, &ecom,
+		if (process_unicast_route(bgp, afi, &pb->upfx, pb->ubpi, &ecom,
 					  &pfx_unicast_nexthop)) {
 
 			vnc_zlog_debug_verbose(
@@ -1481,14 +1480,11 @@ void vnc_import_bgp_add_vnc_host_route_mode_resolve_nve(
 				__func__);
 			continue;
 		}
-		local_pref = calc_local_pref(pb->ubi->attr, pb->ubi->peer);
+		local_pref = calc_local_pref(pb->ubpi->attr, pb->ubpi->peer);
 
-		if (pb->ubi->attr
-		    && (pb->ubi->attr->flag
-			& ATTR_FLAG_BIT(BGP_ATTR_MULTI_EXIT_DISC))) {
-
-			med = &pb->ubi->attr->med;
-		}
+		if (pb->ubpi->attr->flag
+		    & ATTR_FLAG_BIT(BGP_ATTR_MULTI_EXIT_DISC))
+			med = &pb->ubpi->attr->med;
 
 		/*
 		 * Sanity check
@@ -1502,13 +1498,13 @@ void vnc_import_bgp_add_vnc_host_route_mode_resolve_nve(
 			prefix2str(prefix, str_nve_pfx, sizeof(str_nve_pfx));
 
 			vnc_zlog_debug_verbose(
-				"%s: FATAL: resolve_nve_nexthop list item bi nexthop %s != nve pfx %s",
+				"%s: FATAL: resolve_nve_nexthop list item bpi nexthop %s != nve pfx %s",
 				__func__, str_unh, str_nve_pfx);
 			assert(0);
 		}
 
 		vnc_import_bgp_add_route_mode_resolve_nve_one_bi(
-			bgp, afi, bi,   /* VPN bi */
+			bgp, afi, bpi,  /* VPN bpi */
 			prd, &pb->upfx, /* unicast prefix */
 			&local_pref, med, ecom);
 
@@ -1538,7 +1534,7 @@ void vnc_import_bgp_del_vnc_host_route_mode_resolve_nve(
 	struct bgp *bgp, struct prefix_rd *prd, /* RD */
 	struct bgp_table *table_rd,		/* per-rd VPN route table */
 	struct prefix *prefix,			/* VPN prefix */
-	struct bgp_info *bi)			/* old VPN host route */
+	struct bgp_path_info *bpi)		/* old VPN host route */
 {
 	afi_t afi = family2afi(prefix->family);
 	struct skiplist *sl = NULL;
@@ -1605,7 +1601,7 @@ void vnc_import_bgp_del_vnc_host_route_mode_resolve_nve(
 		memset(&pfx_unicast_nexthop, 0,
 		       sizeof(struct prefix)); /* keep valgrind happy */
 
-		if (process_unicast_route(bgp, afi, &pb->upfx, pb->ubi, &ecom,
+		if (process_unicast_route(bgp, afi, &pb->upfx, pb->ubpi, &ecom,
 					  &pfx_unicast_nexthop)) {
 
 			vnc_zlog_debug_verbose(
@@ -1626,13 +1622,13 @@ void vnc_import_bgp_del_vnc_host_route_mode_resolve_nve(
 			prefix2str(prefix, str_nve_pfx, sizeof(str_nve_pfx));
 
 			vnc_zlog_debug_verbose(
-				"%s: FATAL: resolve_nve_nexthop list item bi nexthop %s != nve pfx %s",
+				"%s: FATAL: resolve_nve_nexthop list item bpi nexthop %s != nve pfx %s",
 				__func__, str_unh, str_nve_pfx);
 			assert(0);
 		}
 
 		vnc_import_bgp_del_route_mode_resolve_nve_one_bi(
-			bgp, afi, bi, prd, &pb->upfx);
+			bgp, afi, bpi, prd, &pb->upfx);
 
 		if (ecom)
 			ecommunity_free(&ecom);
@@ -1648,19 +1644,19 @@ void vnc_import_bgp_del_vnc_host_route_mode_resolve_nve(
 
 #define DEBUG_IS_USABLE_INTERIOR 1
 
-static int is_usable_interior_route(struct bgp_info *bi_interior)
+static int is_usable_interior_route(struct bgp_path_info *bpi_interior)
 {
-	if (!VALID_INTERIOR_TYPE(bi_interior->type)) {
+	if (!VALID_INTERIOR_TYPE(bpi_interior->type)) {
 #if DEBUG_IS_USABLE_INTERIOR
 		vnc_zlog_debug_verbose(
 			"%s: NO: type %d is not valid interior type", __func__,
-			bi_interior->type);
+			bpi_interior->type);
 #endif
 		return 0;
 	}
-	if (!CHECK_FLAG(bi_interior->flags, BGP_INFO_VALID)) {
+	if (!CHECK_FLAG(bpi_interior->flags, BGP_PATH_VALID)) {
 #if DEBUG_IS_USABLE_INTERIOR
-		vnc_zlog_debug_verbose("%s: NO: BGP_INFO_VALID not set",
+		vnc_zlog_debug_verbose("%s: NO: BGP_PATH_VALID not set",
 				       __func__);
 #endif
 		return 0;
@@ -1680,7 +1676,7 @@ static int is_usable_interior_route(struct bgp_info *bi_interior)
 static void vnc_import_bgp_exterior_add_route_it(
 	struct bgp *bgp,		    /* exterior instance, we hope */
 	struct prefix *prefix,		    /* unicast prefix */
-	struct bgp_info *info,		    /* unicast info */
+	struct bgp_path_info *info,	 /* unicast info */
 	struct rfapi_import_table *it_only) /* NULL, or limit to this IT */
 {
 	struct rfapi *h;
@@ -1723,11 +1719,6 @@ static void vnc_import_bgp_exterior_add_route_it(
 		return;
 	}
 
-	if (!info->attr) {
-		vnc_zlog_debug_verbose("%s: no info, skipping", __func__);
-		return;
-	}
-
 	/*
 	 * Extract nexthop from exterior route
 	 *
@@ -1737,10 +1728,10 @@ static void vnc_import_bgp_exterior_add_route_it(
 	rfapiUnicastNexthop2Prefix(afi, info->attr, &pfx_orig_nexthop);
 
 	for (it = h->imports; it; it = it->next) {
-		struct route_table *table;
-		struct route_node *rn;
-		struct route_node *par;
-		struct bgp_info *bi_interior;
+		struct agg_table *table;
+		struct agg_node *rn;
+		struct agg_node *par;
+		struct bgp_path_info *bpi_interior;
 		int have_usable_route;
 
 		vnc_zlog_debug_verbose("%s: doing it %p", __func__, it);
@@ -1753,25 +1744,25 @@ static void vnc_import_bgp_exterior_add_route_it(
 
 		table = it->imported_vpn[afi];
 
-		for (rn = route_node_match(table, &pfx_orig_nexthop),
+		for (rn = agg_node_match(table, &pfx_orig_nexthop),
 		    have_usable_route = 0;
 		     (!have_usable_route) && rn;) {
 
 			vnc_zlog_debug_verbose("%s: it %p trying rn %p",
 					       __func__, it, rn);
 
-			for (bi_interior = rn->info; bi_interior;
-			     bi_interior = bi_interior->next) {
+			for (bpi_interior = rn->info; bpi_interior;
+			     bpi_interior = bpi_interior->next) {
 				struct prefix_rd *prd;
 				struct attr new_attr;
 				uint32_t label = 0;
 
-				if (!is_usable_interior_route(bi_interior))
+				if (!is_usable_interior_route(bpi_interior))
 					continue;
 
 				vnc_zlog_debug_verbose(
-					"%s: usable: bi_interior %p", __func__,
-					bi_interior);
+					"%s: usable: bpi_interior %p", __func__,
+					bpi_interior);
 
 				/*
 				 * have a legitimate route to exterior's nexthop
@@ -1781,17 +1772,17 @@ static void vnc_import_bgp_exterior_add_route_it(
 				 */
 				have_usable_route = 1;
 
-				if (bi_interior->extra) {
-					prd = &bi_interior->extra->vnc.import
+				if (bpi_interior->extra) {
+					prd = &bpi_interior->extra->vnc.import
 						       .rd;
 					label = decode_label(
-						&bi_interior->extra->label[0]);
+						&bpi_interior->extra->label[0]);
 				} else
 					prd = NULL;
 
 				/* use local_pref from unicast route */
 				memset(&new_attr, 0, sizeof(struct attr));
-				bgp_attr_dup(&new_attr, bi_interior->attr);
+				new_attr = *bpi_interior->attr;
 				if (info->attr->flag
 				    & ATTR_FLAG_BIT(BGP_ATTR_LOCAL_PREF)) {
 					new_attr.local_pref =
@@ -1802,7 +1793,7 @@ static void vnc_import_bgp_exterior_add_route_it(
 
 				rfapiBgpInfoFilteredImportVPN(
 					it, FIF_ACTION_UPDATE,
-					bi_interior->peer, NULL, /* rfd */
+					bpi_interior->peer, NULL, /* rfd */
 					prefix, NULL, afi, prd, &new_attr,
 					ZEBRA_ROUTE_BGP_DIRECT_EXT,
 					BGP_ROUTE_REDISTRIBUTE, &label);
@@ -1819,27 +1810,26 @@ static void vnc_import_bgp_exterior_add_route_it(
 					RFAPI_MONITOR_EXTERIOR(rn)->source =
 						skiplist_new(
 							0, NULL,
-							(void (*)(void *))
-								prefix_free);
-					route_lock_node(rn); /* for skiplist */
+							prefix_free_lists);
+					agg_lock_node(rn); /* for skiplist */
 				}
-				route_lock_node(rn); /* for skiplist entry */
+				agg_lock_node(rn); /* for skiplist entry */
 				prefix_copy(pfx_mon, prefix);
 				if (!skiplist_insert(
 					    RFAPI_MONITOR_EXTERIOR(rn)->source,
 					    info, pfx_mon)) {
 
-					bgp_info_lock(info);
+					bgp_path_info_lock(info);
 				}
 			}
-			par = rn->parent;
+			par = agg_node_parent(rn);
 			if (par)
-				route_lock_node(par);
-			route_unlock_node(rn);
+				agg_lock_node(par);
+			agg_unlock_node(rn);
 			rn = par;
 		}
 		if (rn)
-			route_unlock_node(rn);
+			agg_unlock_node(rn);
 
 		if (!have_usable_route) {
 			struct prefix *pfx_mon = prefix_new();
@@ -1847,16 +1837,16 @@ static void vnc_import_bgp_exterior_add_route_it(
 			if (!skiplist_insert(it->monitor_exterior_orphans, info,
 					     pfx_mon)) {
 
-				bgp_info_lock(info);
+				bgp_path_info_lock(info);
 			}
 		}
 	}
 }
 
 void vnc_import_bgp_exterior_add_route(
-	struct bgp *bgp,       /* exterior instance, we hope */
-	struct prefix *prefix, /* unicast prefix */
-	struct bgp_info *info) /* unicast info */
+	struct bgp *bgp,	    /* exterior instance, we hope */
+	struct prefix *prefix,      /* unicast prefix */
+	struct bgp_path_info *info) /* unicast info */
 {
 	vnc_import_bgp_exterior_add_route_it(bgp, prefix, info, NULL);
 }
@@ -1872,7 +1862,7 @@ void vnc_import_bgp_exterior_add_route(
  */
 void vnc_import_bgp_exterior_del_route(
 	struct bgp *bgp, struct prefix *prefix, /* unicast prefix */
-	struct bgp_info *info)			/* unicast info */
+	struct bgp_path_info *info)		/* unicast info */
 {
 	struct rfapi *h;
 	struct rfapi_cfg *hc;
@@ -1914,11 +1904,6 @@ void vnc_import_bgp_exterior_del_route(
 		return;
 	}
 
-	if (!info->attr) {
-		vnc_zlog_debug_verbose("%s: no info, skipping", __func__);
-		return;
-	}
-
 	/*
 	 * Extract nexthop from exterior route
 	 *
@@ -1928,24 +1913,24 @@ void vnc_import_bgp_exterior_del_route(
 	rfapiUnicastNexthop2Prefix(afi, info->attr, &pfx_orig_nexthop);
 
 	for (it = h->imports; it; it = it->next) {
-		struct route_table *table;
-		struct route_node *rn;
-		struct route_node *par;
-		struct bgp_info *bi_interior;
+		struct agg_table *table;
+		struct agg_node *rn;
+		struct agg_node *par;
+		struct bgp_path_info *bpi_interior;
 		int have_usable_route;
 
 		table = it->imported_vpn[afi];
 
-		for (rn = route_node_match(table, &pfx_orig_nexthop),
+		for (rn = agg_node_match(table, &pfx_orig_nexthop),
 		    have_usable_route = 0;
 		     (!have_usable_route) && rn;) {
 
-			for (bi_interior = rn->info; bi_interior;
-			     bi_interior = bi_interior->next) {
+			for (bpi_interior = rn->info; bpi_interior;
+			     bpi_interior = bpi_interior->next) {
 				struct prefix_rd *prd;
 				uint32_t label = 0;
 
-				if (!is_usable_interior_route(bi_interior))
+				if (!is_usable_interior_route(bpi_interior))
 					continue;
 
 				/*
@@ -1956,19 +1941,19 @@ void vnc_import_bgp_exterior_del_route(
 				 */
 				have_usable_route = 1;
 
-				if (bi_interior->extra) {
-					prd = &bi_interior->extra->vnc.import
+				if (bpi_interior->extra) {
+					prd = &bpi_interior->extra->vnc.import
 						       .rd;
 					label = decode_label(
-						&bi_interior->extra->label[0]);
+						&bpi_interior->extra->label[0]);
 				} else
 					prd = NULL;
 
 				rfapiBgpInfoFilteredImportVPN(
-					it, FIF_ACTION_KILL, bi_interior->peer,
+					it, FIF_ACTION_KILL, bpi_interior->peer,
 					NULL, /* rfd */
 					prefix, NULL, afi, prd,
-					bi_interior->attr,
+					bpi_interior->attr,
 					ZEBRA_ROUTE_BGP_DIRECT_EXT,
 					BGP_ROUTE_REDISTRIBUTE, &label);
 
@@ -1986,10 +1971,11 @@ void vnc_import_bgp_exterior_del_route(
 								    ->source,
 							    info, NULL)) {
 
-							bgp_info_unlock(info);
-							route_unlock_node(
+							bgp_path_info_unlock(
+								info);
+							agg_unlock_node(
 								rn); /* sl entry
-									*/
+								      */
 						}
 						if (skiplist_empty(
 							    RFAPI_MONITOR_EXTERIOR(
@@ -2002,7 +1988,7 @@ void vnc_import_bgp_exterior_del_route(
 							RFAPI_MONITOR_EXTERIOR(
 								rn)
 								->source = NULL;
-							route_unlock_node(
+							agg_unlock_node(
 								rn); /* skiplist
 									itself
 									*/
@@ -2010,20 +1996,20 @@ void vnc_import_bgp_exterior_del_route(
 					}
 				}
 			}
-			par = rn->parent;
+			par = agg_node_parent(rn);
 			if (par)
-				route_lock_node(par);
-			route_unlock_node(rn);
+				agg_lock_node(par);
+			agg_unlock_node(rn);
 			rn = par;
 		}
 		if (rn)
-			route_unlock_node(rn);
+			agg_unlock_node(rn);
 
 		if (!have_usable_route) {
 			if (!skiplist_delete(it->monitor_exterior_orphans, info,
 					     NULL)) {
 
-				bgp_info_unlock(info);
+				bgp_path_info_unlock(info);
 			}
 		}
 	}
@@ -2038,12 +2024,12 @@ void vnc_import_bgp_exterior_del_route(
  */
 void vnc_import_bgp_exterior_add_route_interior(
 	struct bgp *bgp, struct rfapi_import_table *it,
-	struct route_node *rn_interior, /* VPN IT node */
-	struct bgp_info *bi_interior)   /* VPN IT route */
+	struct agg_node *rn_interior,       /* VPN IT node */
+	struct bgp_path_info *bpi_interior) /* VPN IT route */
 {
 	afi_t afi = family2afi(rn_interior->p.family);
-	struct route_node *par;
-	struct bgp_info *bi_exterior;
+	struct agg_node *par;
+	struct bgp_path_info *bpi_exterior;
 	struct prefix *pfx_exterior; /* exterior pfx */
 	void *cursor;
 	int rc;
@@ -2051,7 +2037,7 @@ void vnc_import_bgp_exterior_add_route_interior(
 
 	vnc_zlog_debug_verbose("%s: entry", __func__);
 
-	if (!is_usable_interior_route(bi_interior)) {
+	if (!is_usable_interior_route(bpi_interior)) {
 		vnc_zlog_debug_verbose(
 			"%s: not usable interior route, skipping", __func__);
 		return;
@@ -2075,8 +2061,8 @@ void vnc_import_bgp_exterior_add_route_interior(
 		char str_pfx[PREFIX_STRLEN];
 
 		prefix2str(&rn_interior->p, str_pfx, sizeof(str_pfx));
-		vnc_zlog_debug_verbose("%s: interior prefix=%s, bi type=%d",
-				       __func__, str_pfx, bi_interior->type);
+		vnc_zlog_debug_verbose("%s: interior prefix=%s, bpi type=%d",
+				       __func__, str_pfx, bpi_interior->type);
 	}
 
 	if (RFAPI_HAS_MONITOR_EXTERIOR(rn_interior)) {
@@ -2095,12 +2081,12 @@ void vnc_import_bgp_exterior_add_route_interior(
 		cursor = NULL;
 		for (rc = skiplist_next(
 			     RFAPI_MONITOR_EXTERIOR(rn_interior)->source,
-			     (void **)&bi_exterior, (void **)&pfx_exterior,
+			     (void **)&bpi_exterior, (void **)&pfx_exterior,
 			     &cursor);
 		     !rc; rc = skiplist_next(
 				  RFAPI_MONITOR_EXTERIOR(rn_interior)->source,
-				  (void **)&bi_exterior, (void **)&pfx_exterior,
-				  &cursor)) {
+				  (void **)&bpi_exterior,
+				  (void **)&pfx_exterior, &cursor)) {
 
 			struct prefix_rd *prd;
 			struct attr new_attr;
@@ -2109,30 +2095,30 @@ void vnc_import_bgp_exterior_add_route_interior(
 
 			++count; /* debugging */
 
-			assert(bi_exterior);
+			assert(bpi_exterior);
 			assert(pfx_exterior);
 
-			if (bi_interior->extra) {
-				prd = &bi_interior->extra->vnc.import.rd;
+			if (bpi_interior->extra) {
+				prd = &bpi_interior->extra->vnc.import.rd;
 				label = decode_label(
-					&bi_interior->extra->label[0]);
+					&bpi_interior->extra->label[0]);
 			} else
 				prd = NULL;
 
 			/* use local_pref from unicast route */
 			memset(&new_attr, 0, sizeof(struct attr));
-			bgp_attr_dup(&new_attr, bi_interior->attr);
-			if (bi_exterior
-			    && (bi_exterior->attr->flag
+			new_attr = *bpi_interior->attr;
+			if (bpi_exterior
+			    && (bpi_exterior->attr->flag
 				& ATTR_FLAG_BIT(BGP_ATTR_LOCAL_PREF))) {
 				new_attr.local_pref =
-					bi_exterior->attr->local_pref;
+					bpi_exterior->attr->local_pref;
 				new_attr.flag |=
 					ATTR_FLAG_BIT(BGP_ATTR_LOCAL_PREF);
 			}
 
 			rfapiBgpInfoFilteredImportVPN(
-				it, FIF_ACTION_UPDATE, bi_interior->peer,
+				it, FIF_ACTION_UPDATE, bpi_interior->peer,
 				NULL, /* rfd */
 				pfx_exterior, NULL, afi, prd, &new_attr,
 				ZEBRA_ROUTE_BGP_DIRECT_EXT,
@@ -2161,7 +2147,8 @@ void vnc_import_bgp_exterior_add_route_interior(
 	 * Look up the tree for possible pulldown candidates.
 	 * Find nearest parent with an exterior route monitor
 	 */
-	for (par = rn_interior->parent; par; par = par->parent) {
+	for (par = agg_node_parent(rn_interior); par;
+	     par = agg_node_parent(par)) {
 		if (RFAPI_HAS_MONITOR_EXTERIOR(par))
 			break;
 	}
@@ -2175,11 +2162,11 @@ void vnc_import_bgp_exterior_add_route_interior(
 		/* check monitors at par for possible pulldown */
 		cursor = NULL;
 		for (rc = skiplist_next(RFAPI_MONITOR_EXTERIOR(par)->source,
-					(void **)&bi_exterior,
+					(void **)&bpi_exterior,
 					(void **)&pfx_exterior, &cursor);
 		     !rc;
 		     rc = skiplist_next(RFAPI_MONITOR_EXTERIOR(par)->source,
-					(void **)&bi_exterior,
+					(void **)&bpi_exterior,
 					(void **)&pfx_exterior, &cursor)) {
 
 			struct prefix pfx_nexthop;
@@ -2188,12 +2175,12 @@ void vnc_import_bgp_exterior_add_route_interior(
 			       sizeof(struct prefix)); /* keep valgrind happy */
 
 			/* check original nexthop for prefix match */
-			rfapiUnicastNexthop2Prefix(afi, bi_exterior->attr,
+			rfapiUnicastNexthop2Prefix(afi, bpi_exterior->attr,
 						   &pfx_nexthop);
 
 			if (prefix_match(&rn_interior->p, &pfx_nexthop)) {
 
-				struct bgp_info *bi;
+				struct bgp_path_info *bpi;
 				struct prefix_rd *prd;
 				struct attr new_attr;
 				uint32_t label = 0;
@@ -2209,34 +2196,34 @@ void vnc_import_bgp_exterior_add_route_interior(
 					     ->source) {
 					RFAPI_MONITOR_EXTERIOR(rn_interior)
 						->source = skiplist_new(
-						0, NULL,
-						(void (*)(void *))prefix_free);
-					route_lock_node(rn_interior);
+						0, NULL, prefix_free_lists);
+					agg_lock_node(rn_interior);
 				}
 				skiplist_insert(
 					RFAPI_MONITOR_EXTERIOR(rn_interior)
 						->source,
-					bi_exterior, pfx_mon);
-				route_lock_node(rn_interior);
+					bpi_exterior, pfx_mon);
+				agg_lock_node(rn_interior);
 
 				/*
 				 * Delete constructed exterior routes based on
 				 * parent routes.
 				 */
-				for (bi = par->info; bi; bi = bi->next) {
+				for (bpi = par->info; bpi; bpi = bpi->next) {
 
-					if (bi->extra) {
-						prd = &bi->extra->vnc.import.rd;
+					if (bpi->extra) {
+						prd = &bpi->extra->vnc.import
+							       .rd;
 						label = decode_label(
-							&bi->extra->label[0]);
+							&bpi->extra->label[0]);
 					} else
 						prd = NULL;
 
 					rfapiBgpInfoFilteredImportVPN(
-						it, FIF_ACTION_KILL, bi->peer,
+						it, FIF_ACTION_KILL, bpi->peer,
 						NULL, /* rfd */
 						pfx_exterior, NULL, afi, prd,
-						bi->attr,
+						bpi->attr,
 						ZEBRA_ROUTE_BGP_DIRECT_EXT,
 						BGP_ROUTE_REDISTRIBUTE, &label);
 				}
@@ -2246,29 +2233,29 @@ void vnc_import_bgp_exterior_add_route_interior(
 				 * Add constructed exterior routes based on
 				 * the new interior route at longer prefix.
 				 */
-				if (bi_interior->extra) {
-					prd = &bi_interior->extra->vnc.import
+				if (bpi_interior->extra) {
+					prd = &bpi_interior->extra->vnc.import
 						       .rd;
 					label = decode_label(
-						&bi_interior->extra->label[0]);
+						&bpi_interior->extra->label[0]);
 				} else
 					prd = NULL;
 
 				/* use local_pref from unicast route */
 				memset(&new_attr, 0, sizeof(struct attr));
-				bgp_attr_dup(&new_attr, bi_interior->attr);
-				if (bi_exterior
-				    && (bi_exterior->attr->flag
+				new_attr = *bpi_interior->attr;
+				if (bpi_exterior
+				    && (bpi_exterior->attr->flag
 					& ATTR_FLAG_BIT(BGP_ATTR_LOCAL_PREF))) {
 					new_attr.local_pref =
-						bi_exterior->attr->local_pref;
+						bpi_exterior->attr->local_pref;
 					new_attr.flag |= ATTR_FLAG_BIT(
 						BGP_ATTR_LOCAL_PREF);
 				}
 
 				rfapiBgpInfoFilteredImportVPN(
 					it, FIF_ACTION_UPDATE,
-					bi_interior->peer, NULL, /* rfd */
+					bpi_interior->peer, NULL, /* rfd */
 					pfx_exterior, NULL, afi, prd, &new_attr,
 					ZEBRA_ROUTE_BGP_DIRECT_EXT,
 					BGP_ROUTE_REDISTRIBUTE, &label);
@@ -2283,20 +2270,20 @@ void vnc_import_bgp_exterior_add_route_interior(
 		cursor = NULL;
 		for (rc = skiplist_next(
 			     RFAPI_MONITOR_EXTERIOR(rn_interior)->source,
-			     (void **)&bi_exterior, NULL, &cursor);
+			     (void **)&bpi_exterior, NULL, &cursor);
 		     !rc; rc = skiplist_next(
 				  RFAPI_MONITOR_EXTERIOR(rn_interior)->source,
-				  (void **)&bi_exterior, NULL, &cursor)) {
+				  (void **)&bpi_exterior, NULL, &cursor)) {
 
 
 			skiplist_delete(RFAPI_MONITOR_EXTERIOR(par)->source,
-					bi_exterior, NULL);
-			route_unlock_node(par); /* sl entry */
+					bpi_exterior, NULL);
+			agg_unlock_node(par); /* sl entry */
 		}
 		if (skiplist_empty(RFAPI_MONITOR_EXTERIOR(par)->source)) {
 			skiplist_free(RFAPI_MONITOR_EXTERIOR(par)->source);
 			RFAPI_MONITOR_EXTERIOR(par)->source = NULL;
-			route_unlock_node(par); /* sl itself */
+			agg_unlock_node(par); /* sl itself */
 		}
 	}
 
@@ -2308,10 +2295,10 @@ void vnc_import_bgp_exterior_add_route_interior(
 	cursor = NULL;
 	list_adopted = NULL;
 	for (rc = skiplist_next(it->monitor_exterior_orphans,
-				(void **)&bi_exterior, (void **)&pfx_exterior,
+				(void **)&bpi_exterior, (void **)&pfx_exterior,
 				&cursor);
 	     !rc; rc = skiplist_next(it->monitor_exterior_orphans,
-				     (void **)&bi_exterior,
+				     (void **)&bpi_exterior,
 				     (void **)&pfx_exterior, &cursor)) {
 
 		struct prefix pfx_nexthop;
@@ -2331,7 +2318,7 @@ void vnc_import_bgp_exterior_add_route_interior(
 		}
 
 		/* check original nexthop for prefix match */
-		rfapiUnicastNexthop2Prefix(afi, bi_exterior->attr,
+		rfapiUnicastNexthop2Prefix(afi, bpi_exterior->attr,
 					   &pfx_nexthop);
 
 		if (prefix_match(&rn_interior->p, &pfx_nexthop)) {
@@ -2351,44 +2338,43 @@ void vnc_import_bgp_exterior_add_route_interior(
 			if (!RFAPI_MONITOR_EXTERIOR(rn_interior)->source) {
 				RFAPI_MONITOR_EXTERIOR(rn_interior)->source =
 					skiplist_new(
-						0, NULL,
-						(void (*)(void *))prefix_free);
-				route_lock_node(rn_interior); /* sl */
+						0, NULL, prefix_free_lists);
+				agg_lock_node(rn_interior); /* sl */
 			}
 			skiplist_insert(
 				RFAPI_MONITOR_EXTERIOR(rn_interior)->source,
-				bi_exterior, pfx_mon);
-			route_lock_node(rn_interior); /* sl entry */
+				bpi_exterior, pfx_mon);
+			agg_lock_node(rn_interior); /* sl entry */
 			if (!list_adopted) {
 				list_adopted = list_new();
 			}
-			listnode_add(list_adopted, bi_exterior);
+			listnode_add(list_adopted, bpi_exterior);
 
 			/*
 			 * Add constructed exterior routes based on the
 			 * new interior route at the longer prefix.
 			 */
-			if (bi_interior->extra) {
-				prd = &bi_interior->extra->vnc.import.rd;
+			if (bpi_interior->extra) {
+				prd = &bpi_interior->extra->vnc.import.rd;
 				label = decode_label(
-					&bi_interior->extra->label[0]);
+					&bpi_interior->extra->label[0]);
 			} else
 				prd = NULL;
 
 			/* use local_pref from unicast route */
 			memset(&new_attr, 0, sizeof(struct attr));
-			bgp_attr_dup(&new_attr, bi_interior->attr);
-			if (bi_exterior
-			    && (bi_exterior->attr->flag
+			new_attr = *bpi_interior->attr;
+			if (bpi_exterior
+			    && (bpi_exterior->attr->flag
 				& ATTR_FLAG_BIT(BGP_ATTR_LOCAL_PREF))) {
 				new_attr.local_pref =
-					bi_exterior->attr->local_pref;
+					bpi_exterior->attr->local_pref;
 				new_attr.flag |=
 					ATTR_FLAG_BIT(BGP_ATTR_LOCAL_PREF);
 			}
 
 			rfapiBgpInfoFilteredImportVPN(
-				it, FIF_ACTION_UPDATE, bi_interior->peer,
+				it, FIF_ACTION_UPDATE, bpi_interior->peer,
 				NULL, /* rfd */
 				pfx_exterior, NULL, afi, prd, &new_attr,
 				ZEBRA_ROUTE_BGP_DIRECT_EXT,
@@ -2397,20 +2383,21 @@ void vnc_import_bgp_exterior_add_route_interior(
 	}
 	if (list_adopted) {
 		struct listnode *node;
-		struct route_node *bi_exterior;
+		struct agg_node *an_bpi_exterior;
 
-		for (ALL_LIST_ELEMENTS_RO(list_adopted, node, bi_exterior)) {
+		for (ALL_LIST_ELEMENTS_RO(list_adopted, node,
+					  an_bpi_exterior)) {
 			skiplist_delete(it->monitor_exterior_orphans,
-					bi_exterior, NULL);
+					an_bpi_exterior, NULL);
 		}
-		list_delete_and_null(&list_adopted);
+		list_delete(&list_adopted);
 	}
 }
 
 /*
  * This function should be called after an interior VPN route
  * has been deleted from an import_table.
- * bi_interior must still be valid, but it must already be detached
+ * bpi_interior must still be valid, but it must already be detached
  * from its route node and the route node's valid_interior_count
  * must already be decremented.
  *
@@ -2419,20 +2406,20 @@ void vnc_import_bgp_exterior_add_route_interior(
  */
 void vnc_import_bgp_exterior_del_route_interior(
 	struct bgp *bgp, struct rfapi_import_table *it,
-	struct route_node *rn_interior, /* VPN IT node */
-	struct bgp_info *bi_interior)   /* VPN IT route */
+	struct agg_node *rn_interior,       /* VPN IT node */
+	struct bgp_path_info *bpi_interior) /* VPN IT route */
 {
 	afi_t afi = family2afi(rn_interior->p.family);
-	struct route_node *par;
-	struct bgp_info *bi_exterior;
+	struct agg_node *par;
+	struct bgp_path_info *bpi_exterior;
 	struct prefix *pfx_exterior; /* exterior pfx */
 	void *cursor;
 	int rc;
 
-	if (!VALID_INTERIOR_TYPE(bi_interior->type)) {
+	if (!VALID_INTERIOR_TYPE(bpi_interior->type)) {
 		vnc_zlog_debug_verbose(
 			"%s: type %d not valid interior type, skipping",
-			__func__, bi_interior->type);
+			__func__, bpi_interior->type);
 		return;
 	}
 
@@ -2461,8 +2448,8 @@ void vnc_import_bgp_exterior_del_route_interior(
 
 		prefix2str(&rn_interior->p, str_pfx, sizeof(str_pfx));
 
-		vnc_zlog_debug_verbose("%s: interior prefix=%s, bi type=%d",
-				       __func__, str_pfx, bi_interior->type);
+		vnc_zlog_debug_verbose("%s: interior prefix=%s, bpi type=%d",
+				       __func__, str_pfx, bpi_interior->type);
 	}
 
 	/*
@@ -2470,25 +2457,25 @@ void vnc_import_bgp_exterior_del_route_interior(
 	 */
 	cursor = NULL;
 	for (rc = skiplist_next(RFAPI_MONITOR_EXTERIOR(rn_interior)->source,
-				(void **)&bi_exterior, (void **)&pfx_exterior,
+				(void **)&bpi_exterior, (void **)&pfx_exterior,
 				&cursor);
 	     !rc;
 	     rc = skiplist_next(RFAPI_MONITOR_EXTERIOR(rn_interior)->source,
-				(void **)&bi_exterior, (void **)&pfx_exterior,
+				(void **)&bpi_exterior, (void **)&pfx_exterior,
 				&cursor)) {
 
 		struct prefix_rd *prd;
 		uint32_t label = 0;
 
-		if (bi_interior->extra) {
-			prd = &bi_interior->extra->vnc.import.rd;
-			label = decode_label(&bi_interior->extra->label[0]);
+		if (bpi_interior->extra) {
+			prd = &bpi_interior->extra->vnc.import.rd;
+			label = decode_label(&bpi_interior->extra->label[0]);
 		} else
 			prd = NULL;
 
 		rfapiBgpInfoFilteredImportVPN(
-			it, FIF_ACTION_KILL, bi_interior->peer, NULL, /* rfd */
-			pfx_exterior, NULL, afi, prd, bi_interior->attr,
+			it, FIF_ACTION_KILL, bpi_interior->peer, NULL, /* rfd */
+			pfx_exterior, NULL, afi, prd, bpi_interior->attr,
 			ZEBRA_ROUTE_BGP_DIRECT_EXT, BGP_ROUTE_REDISTRIBUTE,
 			&label);
 	}
@@ -2509,7 +2496,8 @@ void vnc_import_bgp_exterior_del_route_interior(
 	 * If none is found, par will end up NULL, and we will move
 	 * the monitors to the orphan list for this import table
 	 */
-	for (par = rn_interior->parent; par; par = par->parent) {
+	for (par = agg_node_parent(rn_interior); par;
+	     par = agg_node_parent(par)) {
 		if (RFAPI_MONITOR_EXTERIOR(par)->valid_interior_count)
 			break;
 	}
@@ -2522,7 +2510,8 @@ void vnc_import_bgp_exterior_del_route_interior(
 	 * We will use and delete every element of the source skiplist
 	 */
 	while (!skiplist_first(RFAPI_MONITOR_EXTERIOR(rn_interior)->source,
-			       (void **)&bi_exterior, (void **)&pfx_exterior)) {
+			       (void **)&bpi_exterior,
+			       (void **)&pfx_exterior)) {
 
 		struct prefix *pfx_mon = prefix_new();
 
@@ -2530,7 +2519,7 @@ void vnc_import_bgp_exterior_del_route_interior(
 
 		if (par) {
 
-			struct bgp_info *bi;
+			struct bgp_path_info *bpi;
 
 			/*
 			 * Add monitor to parent node
@@ -2538,45 +2527,44 @@ void vnc_import_bgp_exterior_del_route_interior(
 			if (!RFAPI_MONITOR_EXTERIOR(par)->source) {
 				RFAPI_MONITOR_EXTERIOR(par)->source =
 					skiplist_new(
-						0, NULL,
-						(void (*)(void *))prefix_free);
-				route_lock_node(par); /* sl */
+						0, NULL, prefix_free_lists);
+				agg_lock_node(par); /* sl */
 			}
 			skiplist_insert(RFAPI_MONITOR_EXTERIOR(par)->source,
-					bi_exterior, pfx_mon);
-			route_lock_node(par); /* sl entry */
+					bpi_exterior, pfx_mon);
+			agg_lock_node(par); /* sl entry */
 
 			/* Add constructed exterior routes based on parent */
-			for (bi = par->info; bi; bi = bi->next) {
+			for (bpi = par->info; bpi; bpi = bpi->next) {
 
 				struct prefix_rd *prd;
 				struct attr new_attr;
 				uint32_t label = 0;
 
-				if (bi->type == ZEBRA_ROUTE_BGP_DIRECT_EXT)
+				if (bpi->type == ZEBRA_ROUTE_BGP_DIRECT_EXT)
 					continue;
 
-				if (bi->extra) {
-					prd = &bi->extra->vnc.import.rd;
+				if (bpi->extra) {
+					prd = &bpi->extra->vnc.import.rd;
 					label = decode_label(
-						&bi->extra->label[0]);
+						&bpi->extra->label[0]);
 				} else
 					prd = NULL;
 
 				/* use local_pref from unicast route */
 				memset(&new_attr, 0, sizeof(struct attr));
-				bgp_attr_dup(&new_attr, bi->attr);
-				if (bi_exterior
-				    && (bi_exterior->attr->flag
+				new_attr = *bpi->attr;
+				if (bpi_exterior
+				    && (bpi_exterior->attr->flag
 					& ATTR_FLAG_BIT(BGP_ATTR_LOCAL_PREF))) {
 					new_attr.local_pref =
-						bi_exterior->attr->local_pref;
+						bpi_exterior->attr->local_pref;
 					new_attr.flag |= ATTR_FLAG_BIT(
 						BGP_ATTR_LOCAL_PREF);
 				}
 
 				rfapiBgpInfoFilteredImportVPN(
-					it, FIF_ACTION_UPDATE, bi->peer,
+					it, FIF_ACTION_UPDATE, bpi->peer,
 					NULL, /* rfd */
 					pfx_exterior, NULL, afi, prd, &new_attr,
 					ZEBRA_ROUTE_BGP_DIRECT_EXT,
@@ -2591,17 +2579,17 @@ void vnc_import_bgp_exterior_del_route_interior(
 			 * in orphan list to await future route.
 			 */
 			skiplist_insert(it->monitor_exterior_orphans,
-					bi_exterior, pfx_mon);
+					bpi_exterior, pfx_mon);
 		}
 
 		skiplist_delete_first(
 			RFAPI_MONITOR_EXTERIOR(rn_interior)->source);
-		route_unlock_node(rn_interior); /* sl entry */
+		agg_unlock_node(rn_interior); /* sl entry */
 	}
 	if (skiplist_empty(RFAPI_MONITOR_EXTERIOR(rn_interior)->source)) {
 		skiplist_free(RFAPI_MONITOR_EXTERIOR(rn_interior)->source);
 		RFAPI_MONITOR_EXTERIOR(rn_interior)->source = NULL;
-		route_unlock_node(rn_interior); /* sl itself */
+		agg_unlock_node(rn_interior); /* sl itself */
 	}
 }
 
@@ -2610,7 +2598,7 @@ void vnc_import_bgp_exterior_del_route_interior(
  ***********************************************************************/
 
 void vnc_import_bgp_add_route(struct bgp *bgp, struct prefix *prefix,
-			      struct bgp_info *info)
+			      struct bgp_path_info *info)
 {
 	afi_t afi = family2afi(prefix->family);
 
@@ -2632,8 +2620,8 @@ void vnc_import_bgp_add_route(struct bgp *bgp, struct prefix *prefix,
 	VNC_RHNCK(enter);
 
 	if (!afi) {
-		flog_err(LIB_ERR_DEVELOPMENT, "%s: can't get afi of prefix",
-			  __func__);
+		flog_err(EC_LIB_DEVELOPMENT, "%s: can't get afi of prefix",
+			 __func__);
 		return;
 	}
 
@@ -2679,7 +2667,7 @@ void vnc_import_bgp_add_route(struct bgp *bgp, struct prefix *prefix,
  * "Withdrawing a Route" import process
  */
 void vnc_import_bgp_del_route(struct bgp *bgp, struct prefix *prefix,
-			      struct bgp_info *info) /* unicast info */
+			      struct bgp_path_info *info) /* unicast info */
 {
 	afi_t afi = family2afi(prefix->family);
 
@@ -2766,14 +2754,15 @@ void vnc_import_bgp_redist_enable(struct bgp *bgp, afi_t afi)
 	for (rn = bgp_table_top(bgp->rib[afi][SAFI_UNICAST]); rn;
 	     rn = bgp_route_next(rn)) {
 
-		struct bgp_info *bi;
+		struct bgp_path_info *bpi;
 
-		for (bi = rn->info; bi; bi = bi->next) {
+		for (bpi = bgp_node_get_bgp_path_info(rn); bpi;
+		     bpi = bpi->next) {
 
-			if (CHECK_FLAG(bi->flags, BGP_INFO_REMOVED))
+			if (CHECK_FLAG(bpi->flags, BGP_PATH_REMOVED))
 				continue;
 
-			vnc_import_bgp_add_route(bgp, &rn->p, bi);
+			vnc_import_bgp_add_route(bgp, &rn->p, bpi);
 		}
 	}
 	vnc_zlog_debug_verbose(
@@ -2806,15 +2795,16 @@ void vnc_import_bgp_exterior_redist_enable(struct bgp *bgp, afi_t afi)
 	for (rn = bgp_table_top(bgp_exterior->rib[afi][SAFI_UNICAST]); rn;
 	     rn = bgp_route_next(rn)) {
 
-		struct bgp_info *bi;
+		struct bgp_path_info *bpi;
 
-		for (bi = rn->info; bi; bi = bi->next) {
+		for (bpi = bgp_node_get_bgp_path_info(rn); bpi;
+		     bpi = bpi->next) {
 
-			if (CHECK_FLAG(bi->flags, BGP_INFO_REMOVED))
+			if (CHECK_FLAG(bpi->flags, BGP_PATH_REMOVED))
 				continue;
 
 			vnc_import_bgp_exterior_add_route(bgp_exterior, &rn->p,
-							  bi);
+							  bpi);
 		}
 	}
 	vnc_zlog_debug_verbose(
@@ -2851,15 +2841,16 @@ void vnc_import_bgp_exterior_redist_enable_it(
 	for (rn = bgp_table_top(bgp_exterior->rib[afi][SAFI_UNICAST]); rn;
 	     rn = bgp_route_next(rn)) {
 
-		struct bgp_info *bi;
+		struct bgp_path_info *bpi;
 
-		for (bi = rn->info; bi; bi = bi->next) {
+		for (bpi = bgp_node_get_bgp_path_info(rn); bpi;
+		     bpi = bpi->next) {
 
-			if (CHECK_FLAG(bi->flags, BGP_INFO_REMOVED))
+			if (CHECK_FLAG(bpi->flags, BGP_PATH_REMOVED))
 				continue;
 
 			vnc_import_bgp_exterior_add_route_it(
-				bgp_exterior, &rn->p, bi, it_only);
+				bgp_exterior, &rn->p, bpi, it_only);
 		}
 	}
 }
@@ -2890,34 +2881,38 @@ void vnc_import_bgp_redist_disable(struct bgp *bgp, afi_t afi)
 	for (rn1 = bgp_table_top(bgp->rib[afi][SAFI_MPLS_VPN]); rn1;
 	     rn1 = bgp_route_next(rn1)) {
 
-		if (rn1->info) {
-			for (rn2 = bgp_table_top(rn1->info); rn2;
-			     rn2 = bgp_route_next(rn2)) {
+		if (bgp_node_has_bgp_path_info_data(rn1)) {
 
-				struct bgp_info *bi;
-				struct bgp_info *nextbi;
+			for (rn2 = bgp_table_top(
+				     bgp_node_get_bgp_table_info(rn1));
+			     rn2; rn2 = bgp_route_next(rn2)) {
 
-				for (bi = rn2->info; bi; bi = nextbi) {
+				struct bgp_path_info *bpi;
+				struct bgp_path_info *nextbpi;
 
-					nextbi = bi->next;
+				for (bpi = bgp_node_get_bgp_path_info(rn2); bpi;
+				     bpi = nextbpi) {
 
-					if (bi->type
+					nextbpi = bpi->next;
+
+					if (bpi->type
 					    == ZEBRA_ROUTE_BGP_DIRECT) {
 
 						struct rfapi_descriptor *rfd;
-						vncHDBgpDirect.peer = bi->peer;
+						vncHDBgpDirect.peer = bpi->peer;
 
-						assert(bi->extra);
+						assert(bpi->extra);
 
-						rfd = bi->extra->vnc.export
+						rfd = bpi->extra->vnc.export
 							      .rfapi_handle;
 
 						vnc_zlog_debug_verbose(
-							"%s: deleting bi=%p, bi->peer=%p, bi->type=%d, bi->sub_type=%d, bi->extra->vnc.export.rfapi_handle=%p [passing rfd=%p]",
-							__func__, bi, bi->peer,
-							bi->type, bi->sub_type,
-							(bi->extra
-								 ? bi->extra
+							"%s: deleting bpi=%p, bpi->peer=%p, bpi->type=%d, bpi->sub_type=%d, bpi->extra->vnc.export.rfapi_handle=%p [passing rfd=%p]",
+							__func__, bpi,
+							bpi->peer, bpi->type,
+							bpi->sub_type,
+							(bpi->extra
+								 ? bpi->extra
 									   ->vnc
 									   .export
 									   .rfapi_handle
@@ -2926,12 +2921,13 @@ void vnc_import_bgp_redist_disable(struct bgp *bgp, afi_t afi)
 
 
 						del_vnc_route(
-							rfd, bi->peer, bgp,
+							rfd, bpi->peer, bgp,
 							SAFI_MPLS_VPN, &rn2->p,
 							(struct prefix_rd *)&rn1
 								->p,
-							bi->type, bi->sub_type,
-							NULL, 1); /* kill */
+							bpi->type,
+							bpi->sub_type, NULL,
+							1); /* kill */
 
 						vncHDBgpDirect.peer = NULL;
 					}
@@ -2942,12 +2938,12 @@ void vnc_import_bgp_redist_disable(struct bgp *bgp, afi_t afi)
 	/* Clear RHN list */
 	if (bgp->rfapi->resolve_nve_nexthop) {
 		struct prefix_bag *pb;
-		struct bgp_info *info;
+		struct bgp_path_info *info;
 		while (!skiplist_first(bgp->rfapi->resolve_nve_nexthop, NULL,
 				       (void *)&pb)) {
-			info = pb->ubi;
+			info = pb->ubpi;
 			skiplist_delete_first(bgp->rfapi->resolve_nve_nexthop);
-			bgp_info_unlock(info);
+			bgp_path_info_unlock(info);
 		}
 	}
 
@@ -2983,15 +2979,16 @@ void vnc_import_bgp_exterior_redist_disable(struct bgp *bgp, afi_t afi)
 		for (rn = bgp_table_top(bgp_exterior->rib[afi][SAFI_UNICAST]);
 		     rn; rn = bgp_route_next(rn)) {
 
-			struct bgp_info *bi;
+			struct bgp_path_info *bpi;
 
-			for (bi = rn->info; bi; bi = bi->next) {
+			for (bpi = bgp_node_get_bgp_path_info(rn); bpi;
+			     bpi = bpi->next) {
 
-				if (CHECK_FLAG(bi->flags, BGP_INFO_REMOVED))
+				if (CHECK_FLAG(bpi->flags, BGP_PATH_REMOVED))
 					continue;
 
 				vnc_import_bgp_exterior_del_route(bgp_exterior,
-								  &rn->p, bi);
+								  &rn->p, bpi);
 			}
 		}
 #if DEBUG_RHN_LIST

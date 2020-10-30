@@ -37,12 +37,12 @@ void pim_static_route_free(struct static_route *s_route)
 	XFREE(MTYPE_PIM_STATIC_ROUTE, s_route);
 }
 
-static struct static_route *static_route_alloc()
+static struct static_route *static_route_alloc(void)
 {
 	return XCALLOC(MTYPE_PIM_STATIC_ROUTE, sizeof(struct static_route));
 }
 
-static struct static_route *static_route_new(unsigned int iif, unsigned int oif,
+static struct static_route *static_route_new(ifindex_t iif, ifindex_t oif,
 					     struct in_addr group,
 					     struct in_addr source)
 {
@@ -76,7 +76,7 @@ int pim_static_add(struct pim_instance *pim, struct interface *iif,
 	ifindex_t iif_index = pim_iif ? pim_iif->mroute_vif_index : 0;
 	ifindex_t oif_index = pim_oif ? pim_oif->mroute_vif_index : 0;
 
-	if (!iif_index || !oif_index) {
+	if (!iif_index || !oif_index || iif_index == -1 || oif_index == -1) {
 		zlog_warn(
 			"%s %s: Unable to add static route: Invalid interface index(iif=%d,oif=%d)",
 			__FILE__, __PRETTY_FUNCTION__, iif_index, oif_index);
@@ -124,9 +124,6 @@ int pim_static_add(struct pim_instance *pim, struct interface *iif,
 			 * back if it fails.
 			 */
 			original_s_route = static_route_alloc();
-			if (!original_s_route) {
-				return -5;
-			}
 			memcpy(original_s_route, s_route,
 			       sizeof(struct static_route));
 
@@ -141,7 +138,9 @@ int pim_static_add(struct pim_instance *pim, struct interface *iif,
 			} else {
 				/* input interface changed */
 				s_route->iif = iif_index;
-				s_route->c_oil.oil.mfcc_parent = iif_index;
+				pim_static_mroute_iif_update(&s_route->c_oil,
+							   iif_index,
+							   __PRETTY_FUNCTION__);
 
 #ifdef PIM_ENFORCE_LOOPFREE_MFC
 				/* check to make sure the new input was not an
@@ -180,7 +179,7 @@ int pim_static_add(struct pim_instance *pim, struct interface *iif,
 
 	s_route->c_oil.pim = pim;
 
-	if (pim_mroute_add(&s_route->c_oil, __PRETTY_FUNCTION__)) {
+	if (pim_static_mroute_add(&s_route->c_oil, __PRETTY_FUNCTION__)) {
 		char gifaddr_str[INET_ADDRSTRLEN];
 		char sifaddr_str[INET_ADDRSTRLEN];
 		pim_inet4_dump("<ifaddr?>", group, gifaddr_str,
@@ -265,7 +264,7 @@ int pim_static_del(struct pim_instance *pim, struct interface *iif,
 			if (s_route->c_oil.oil_ref_count <= 0
 				    ? pim_mroute_del(&s_route->c_oil,
 						     __PRETTY_FUNCTION__)
-				    : pim_mroute_add(&s_route->c_oil,
+				    : pim_static_mroute_add(&s_route->c_oil,
 						     __PRETTY_FUNCTION__)) {
 				char gifaddr_str[INET_ADDRSTRLEN];
 				char sifaddr_str[INET_ADDRSTRLEN];

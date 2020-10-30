@@ -359,6 +359,7 @@ our $InitAttribute = qr{$InitAttributeData|$InitAttributeConst|$InitAttributeIni
 # We need \b after 'init' otherwise 'initconst' will cause a false positive in a check
 our $Attribute	= qr{
 			const|
+			_Atomic|
 			__percpu|
 			__nocast|
 			__safe|
@@ -3350,7 +3351,7 @@ sub process {
 
 # if/while/etc brace do not go on next line, unless defining a do while loop,
 # or if that brace on the next line is for something else
-		if ($line =~ /(.*)\b((?:if|while|for|switch|(?:[a-z_]+|)for_each[a-z_]+)\s*\(|do\b|else\b)/ && $line !~ /^.\s*\#/) {
+		if ($line =~ /(.*)\b((?:if|while|for|switch|(?:[a-z_]+|)frr_(each|with)[a-z_]+)\s*\(|do\b|else\b)/ && $line !~ /^.\s*\#/) {
 			my $pre_ctx = "$1$2";
 
 			my ($level, @ctx) = ctx_statement_level($linenr, $realcnt, 0);
@@ -3396,7 +3397,7 @@ sub process {
 		}
 
 # Check relative indent for conditionals and blocks.
-		if ($line =~ /\b(?:(?:if|while|for|(?:[a-z_]+|)for_each[a-z_]+)\s*\(|(?:do|else)\b)/ && $line !~ /^.\s*#/ && $line !~ /\}\s*while\s*/) {
+		if ($line =~ /\b(?:(?:if|while|for|(?:[a-z_]+|)frr_(each|with)[a-z_]+)\s*\(|(?:do|else)\b)/ && $line !~ /^.\s*#/ && $line !~ /\}\s*while\s*/) {
 			($stat, $cond, $line_nr_next, $remain_next, $off_next) =
 				ctx_statement_block($linenr, $realcnt, 0)
 					if (!defined $stat);
@@ -4518,17 +4519,6 @@ sub process {
 			}
 		}
 
-#goto labels aren't indented, allow a single space however
-		if ($line=~/^.\s+[A-Za-z\d_]+:(?![0-9]+)/ and
-		   !($line=~/^. [A-Za-z\d_]+:/) and !($line=~/^.\s+default:/)) {
-			if (WARN("INDENTED_LABEL",
-				 "labels should not be indented\n" . $herecurr) &&
-			    $fix) {
-				$fixed[$fixlinenr] =~
-				    s/^(.)\s+/$1/;
-			}
-		}
-
 # return is not a function
 		if (defined($stat) && $stat =~ /^.\s*return(\s*)\(/s) {
 			my $spacing = $1;
@@ -5184,6 +5174,31 @@ sub process {
 
 				WARN("BRACES",
 				     "braces {} are not necessary for single statement blocks\n" . $herectx);
+			}
+		}
+
+		if (!defined $suppress_ifbraces{$linenr - 1} &&
+					$line =~ /\b(frr_with_)/) {
+			my ($level, $endln, @chunks) =
+				ctx_statement_full($linenr, $realcnt, $-[0]);
+
+			# Check the condition.
+			my ($cond, $block) = @{$chunks[0]};
+			#print "CHECKING<$linenr> cond<$cond> block<$block>\n";
+			if (defined $cond) {
+				substr($block, 0, length($cond), '');
+			}
+
+			if ($level == 0 && $block !~ /^\s*\{/) {
+				my $herectx = $here . "\n";
+				my $cnt = statement_rawlines($block);
+
+				for (my $n = 0; $n < $cnt; $n++) {
+					$herectx .= raw_line($linenr, $n) . "\n";
+				}
+
+				WARN("BRACES",
+				     "braces {} are mandatory for frr_with_* blocks\n" . $herectx);
 			}
 		}
 
@@ -5896,27 +5911,6 @@ sub process {
 			     "unchecked sscanf return value\n" . "$here\n$stat_real\n");
 		}
 
-# check for simple sscanf that should be kstrto<foo>
-		if ($^V && $^V ge 5.10.0 &&
-		    defined $stat &&
-		    $line =~ /\bsscanf\b/) {
-			my $lc = $stat =~ tr@\n@@;
-			$lc = $lc + $linenr;
-			my $stat_real = raw_line($linenr, 0);
-		        for (my $count = $linenr + 1; $count <= $lc; $count++) {
-				$stat_real = $stat_real . "\n" . raw_line($count, 0);
-			}
-			if ($stat_real =~ /\bsscanf\b\s*\(\s*$FuncArg\s*,\s*("[^"]+")/) {
-				my $format = $6;
-				my $count = $format =~ tr@%@%@;
-				if ($count == 1 &&
-				    $format =~ /^"\%(?i:ll[udxi]|[udxi]ll|ll|[hl]h?[udxi]|[udxi][hl]h?|[hl]h?|[udxi])"$/) {
-					WARN("SSCANF_TO_KSTRTO",
-					     "Prefer kstrto<type> to single variable sscanf\n" . "$here\n$stat_real\n");
-				}
-			}
-		}
-
 # check for new externs in .h files.
 		if ($realfile =~ /\.h$/ &&
 		    $line =~ /^\+\s*(extern\s+)$Type\s*$Ident\s*\(/s) {
@@ -6187,12 +6181,6 @@ sub process {
 			     "consider using a completion\n" . $herecurr);
 		}
 
-# recommend kstrto* over simple_strto* and strict_strto*
-		if ($line =~ /\b((simple|strict)_(strto(l|ll|ul|ull)))\s*\(/) {
-			WARN("CONSIDER_KSTRTO",
-			     "$1 is obsolete, use k$3 instead\n" . $herecurr);
-		}
-
 # check for __initcall(), use device_initcall() explicitly or more appropriate function please
 		if ($line =~ /^.\s*__initcall\s*\(/) {
 			WARN("USE_DEVICE_INITCALL",
@@ -6376,6 +6364,42 @@ sub process {
 		    $line =~ /[^a-z_]u_long[^a-z_]/) {
 			ERROR("NONSTANDARD_INTEGRAL_TYPES",
 			      "Please, no nonstandard integer types in new code.\n" . $herecurr)
+		}
+
+# check for usage of non-32 bit atomics
+		if ($line =~ /_Atomic [u]?int(?!32)[0-9]+_t/) {
+			WARN("NON_32BIT_ATOMIC",
+			     "Please, only use 32 bit atomics.\n" . $herecurr);
+		}
+
+# check for use of strcpy()
+		if ($line =~ /\bstrcpy\s*\(.*\)/) {
+			ERROR("STRCPY",
+			      "strcpy() is error-prone; please use strlcpy()"  . $herecurr);
+		}
+
+# check for use of strncpy()
+		if ($line =~ /\bstrncpy\s*\(.*\)/) {
+			WARN("STRNCPY",
+			     "strncpy() is error-prone; please use strlcpy() if possible, or memcpy()"  . $herecurr);
+		}
+
+# check for use of strcat()
+		if ($line =~ /\bstrcat\s*\(.*\)/) {
+			ERROR("STRCAT",
+			      "strcat() is error-prone; please use strlcat() if possible"  . $herecurr);
+		}
+
+# check for use of strncat()
+		if ($line =~ /\bstrncat\s*\(.*\)/) {
+			WARN("STRNCAT",
+			     "strncat() is error-prone; please use strlcat() if possible"  . $herecurr);
+		}
+
+# check for use of bzero()
+		if ($line =~ /\bbzero\s*\(.*\)/) {
+			ERROR("BZERO",
+			      "bzero() is deprecated; use memset()"  . $herecurr);
 		}
 	}
 

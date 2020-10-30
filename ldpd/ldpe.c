@@ -54,9 +54,6 @@ static struct imsgev	*iev_lde;
 static struct thread	*pfkey_ev;
 #endif
 
-/* Master of threads. */
-struct thread_master *master;
-
 /* ldpe privileges */
 static zebra_capabilities_t _caps_p [] =
 {
@@ -96,6 +93,8 @@ static struct quagga_signal_t ldpe_signals[] =
 		.handler = &sigint,
 	},
 };
+
+char *pkt_ptr; /* packet buffer */
 
 /* label distribution protocol engine */
 void
@@ -139,6 +138,16 @@ ldpe(void)
 void
 ldpe_init(struct ldpd_init *init)
 {
+#ifdef __OpenBSD__
+	/* This socket must be open before dropping privileges. */
+	global.pfkeysock = pfkey_init();
+	if (sysdep.no_pfkey == 0) {
+		pfkey_ev = NULL;
+		thread_add_read(master, ldpe_dispatch_pfkey, NULL, global.pfkeysock,
+				&pfkey_ev);
+	}
+#endif
+
 	/* drop privileges */
 	ldpe_privs.user = init->user;
 	ldpe_privs.group = init->group;
@@ -159,14 +168,6 @@ ldpe_init(struct ldpd_init *init)
 		fatal("inet_pton");
 	if (inet_pton(AF_INET6, AllRouters_v6, &global.mcast_addr_v6) != 1)
 		fatal("inet_pton");
-#ifdef __OpenBSD__
-	global.pfkeysock = pfkey_init();
-	if (sysdep.no_pfkey == 0) {
-		pfkey_ev = NULL;
-		thread_add_read(master, ldpe_dispatch_pfkey, NULL, global.pfkeysock,
-				&pfkey_ev);
-	}
-#endif
 
 	/* mark sockets as closed */
 	global.ipv4.ldp_disc_socket = -1;

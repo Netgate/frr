@@ -47,6 +47,9 @@ may also be specified (:ref:`common-invocation-options`).
 
       #define BFDD_CONTROL_SOCKET "|INSTALL_PREFIX_STATE|/bfdd.sock"
 
+   This option overrides the location addition that the -N option provides
+   to the bfdd.sock
+
 
 .. _bfd-commands:
 
@@ -72,26 +75,29 @@ BFDd Commands
    peer listener to and the address we should use to send the packets.
    This option is mandatory for IPv6.
 
-   `interface` selects which interface we should use. This option
-   conflicts with `vrf`.
+   `interface` selects which interface we should use.
 
    `vrf` selects which domain we want to use.
 
-.. index:: no peer <A.B.C.D|X:X::X:X>$peer [{multihop|local-address <A.B.C.D|X:X::X:X>$local|interface IFNAME$ifname|vrf NAME$vrfname}]
-.. clicmd:: no peer <A.B.C.D|X:X::X:X>$peer [{multihop|local-address <A.B.C.D|X:X::X:X>$local|interface IFNAME$ifname|vrf NAME$vrfname}]
+.. index:: no peer <A.B.C.D|X:X::X:X>$peer [{multihop|local-address <A.B.C.D|X:X::X:X>$local|interface IFNAME$ifname|vrf NAME$vrf_name}]
+.. clicmd:: no peer <A.B.C.D|X:X::X:X>$peer [{multihop|local-address <A.B.C.D|X:X::X:X>$local|interface IFNAME$ifname|vrf NAME$vrf_name}]
 
     Stops and removes the selected peer.
 
-.. index:: show bfd peers [json]
-.. clicmd:: show bfd peers [json]
+.. index:: show bfd [vrf NAME] peers [json]
+.. clicmd:: show bfd [vrf NAME] peers [json]
 
     Show all configured BFD peers information and current status.
 
-.. index:: show bfd peer <WORD$label|<A.B.C.D|X:X::X:X>$peer [{multihop|local-address <A.B.C.D|X:X::X:X>$local|interface IFNAME$ifname|vrf NAME$vrfname}]> [json]
-.. clicmd:: show bfd peer <WORD$label|<A.B.C.D|X:X::X:X>$peer [{multihop|local-address <A.B.C.D|X:X::X:X>$local|interface IFNAME$ifname|vrf NAME$vrfname}]> [json]
+.. index:: show bfd [vrf NAME$vrf_name] peer <WORD$label|<A.B.C.D|X:X::X:X>$peer [{multihop|local-address <A.B.C.D|X:X::X:X>$local|interface IFNAME$ifname}]> [json]
+.. clicmd:: show bfd [vrf NAME$vrf_name] peer <WORD$label|<A.B.C.D|X:X::X:X>$peer [{multihop|local-address <A.B.C.D|X:X::X:X>$local|interface IFNAME$ifname}]> [json]
 
     Show status for a specific BFD peer.
 
+.. index:: show bfd [vrf NAME] peers brief [json]
+.. clicmd:: show bfd [vrf NAME] peers brief [json]
+
+    Show all configured BFD peers information and current status in brief.
 
 .. _bfd-peer-config:
 
@@ -175,6 +181,21 @@ The following commands are available inside the BGP configuration node.
 
    Removes any notification registration for this neighbor.
 
+.. index:: neighbor <A.B.C.D|X:X::X:X|WORD> bfd check-control-plane-failure
+.. clicmd:: neighbor <A.B.C.D|X:X::X:X|WORD> bfd check-control-plane-failure
+
+   Allow to write CBIT independence in BFD outgoing packets. Also allow to
+   read both C-BIT value of BFD and lookup BGP peer status. This command is
+   useful when a BFD down event is caught, while the BGP peer requested that
+   local BGP keeps the remote BGP entries as staled if such issue is detected.
+   This is the case when graceful restart is enabled, and it is wished to
+   ignore the BD event while waiting for the remote router to restart.
+
+.. index:: no neighbor <A.B.C.D|X:X::X:X|WORD> bfd check-control-plane-failure
+.. clicmd:: no neighbor <A.B.C.D|X:X::X:X|WORD> bfd check-control-plane-failure
+
+   Disallow to write CBIT independence in BFD outgoing packets. Also disallow
+   to ignore BFD down notification. This is the default behaviour.
 
 .. _bfd-ospf-peer-config:
 
@@ -296,6 +317,11 @@ Here are the available peer configurations:
      shutdown
     !
 
+    ! configure a peer on an interface from a separate vrf
+    peer 192.168.0.5 interface eth1 vrf vrf2
+     no shutdown
+    !
+
     ! remove a peer
     no peer 192.168.0.3 vrf foo
 
@@ -318,11 +344,14 @@ You can inspect the current BFD peer status with the following commands:
                    Uptime: 1 minute(s), 51 second(s)
                    Diagnostics: ok
                    Remote diagnostics: ok
+                   Peer Type: dynamic
                    Local timers:
+                           Detect-multiplier: 3
                            Receive interval: 300ms
                            Transmission interval: 300ms
                            Echo transmission interval: disabled
                    Remote timers:
+                           Detect-multiplier: 3
                            Receive interval: 300ms
                            Transmission interval: 300ms
                            Echo transmission interval: 50ms
@@ -335,11 +364,14 @@ You can inspect the current BFD peer status with the following commands:
                    Uptime: 1 minute(s), 53 second(s)
                    Diagnostics: ok
                    Remote diagnostics: ok
+                   Peer Type: configured
                    Local timers:
+                           Detect-multiplier: 3
                            Receive interval: 300ms
                            Transmission interval: 300ms
                            Echo transmission interval: disabled
                    Remote timers:
+                           Detect-multiplier: 3
                            Receive interval: 300ms
                            Transmission interval: 300ms
                            Echo transmission interval: 50ms
@@ -354,17 +386,31 @@ You can inspect the current BFD peer status with the following commands:
                    Uptime: 3 minute(s), 4 second(s)
                    Diagnostics: ok
                    Remote diagnostics: ok
+                   Peer Type: dynamic
                    Local timers:
+                           Detect-multiplier: 3
                            Receive interval: 300ms
                            Transmission interval: 300ms
                            Echo transmission interval: disabled
                    Remote timers:
+                           Detect-multiplier: 3
                            Receive interval: 300ms
                            Transmission interval: 300ms
                            Echo transmission interval: 50ms
 
    frr# show bfd peer 192.168.0.1 json
-   {"multihop":false,"peer":"192.168.0.1","id":1,"remote-id":1,"status":"up","uptime":161,"diagnostic":"ok","remote-diagnostic":"ok","receive-interval":300,"transmit-interval":300,"echo-interval":50,"remote-receive-interval":300,"remote-transmit-interval":300,"remote-echo-interval":50}
+   {"multihop":false,"peer":"192.168.0.1","id":1,"remote-id":1,"status":"up","uptime":161,"diagnostic":"ok","remote-diagnostic":"ok","receive-interval":300,"transmit-interval":300,"echo-interval":50,"detect-multiplier":3,"remote-receive-interval":300,"remote-transmit-interval":300,"remote-echo-interval":50,"remote-detect-multiplier":3,"peer-type":"dynamic"}
+
+
+You can inspect the current BFD peer status in brief with the following commands:
+
+::
+
+   frr# show bfd peers brief 
+   Session count: 1
+   SessionId  LocalAddress         PeerAddress      Status
+   =========  ============         ===========      ======
+   1          192.168.0.1          192.168.0.2      up
 
 
 You can also inspect peer session counters with the following commands:
@@ -403,3 +449,30 @@ You can also inspect peer session counters with the following commands:
 
    frr# show bfd peer 192.168.0.1 counters json
    {"multihop":false,"peer":"192.168.0.1","control-packet-input":348,"control-packet-output":685,"echo-packet-input":6815,"echo-packet-output":6816,"session-up":1,"session-down":0,"zebra-notifications":4}
+
+You can also clear packet counters per session with the following commands, only the packet counters will be reset:
+
+::
+
+   frr# clear bfd peers counters
+
+   frr# show bfd peers counters
+   BFD Peers:
+        peer 192.168.2.1 interface r2-eth2
+                Control packet input: 0 packets
+                Control packet output: 0 packets
+                Echo packet input: 0 packets
+                Echo packet output: 0 packets
+                Session up events: 1
+                Session down events: 0
+                Zebra notifications: 2
+
+        peer 192.168.0.1
+                Control packet input: 0 packets
+                Control packet output: 0 packets
+                Echo packet input: 0 packets
+                Echo packet output: 0 packets
+                Session up events: 1
+                Session down events: 0
+                Zebra notifications: 4
+

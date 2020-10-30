@@ -88,7 +88,7 @@ static struct skiplist *skiplist_last_created; /* debugging hack */
 #endif
 
 
-static int randomLevel()
+static int randomLevel(void)
 {
 	register int level = 0;
 	register int b;
@@ -183,8 +183,8 @@ int skiplist_insert(register struct skiplist *l, register void *key,
 
 	/* DEBUG */
 	if (!key) {
-		flog_err(LIB_ERR_DEVELOPMENT, "%s: key is 0, value is %p",
-			  __func__, value);
+		flog_err(EC_LIB_DEVELOPMENT, "%s: key is 0, value is %p",
+			 __func__, value);
 	}
 
 	p = l->header;
@@ -202,6 +202,7 @@ int skiplist_insert(register struct skiplist *l, register void *key,
 	}
 
 	k = randomLevel();
+	assert(k >= 0);
 	if (k > l->level) {
 		k = ++l->level;
 		update[k] = l->header;
@@ -607,7 +608,7 @@ void skiplist_test(struct vty *vty)
 	struct skiplist *l;
 	register int i, k;
 	void *keys[sampleSize];
-	void *v;
+	void *v = NULL;
 
 	zlog_debug("%s: entry", __func__);
 

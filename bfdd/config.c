@@ -30,6 +30,8 @@
 
 #include "bfd.h"
 
+DEFINE_MTYPE_STATIC(BFDD, BFDD_LABEL, "long-lived label memory")
+
 /*
  * Definitions
  */
@@ -68,7 +70,7 @@ static int config_add(struct bfd_peer_cfg *bpc,
 static int config_del(struct bfd_peer_cfg *bpc,
 		      void *arg __attribute__((unused)))
 {
-	return ptm_bfd_ses_del(bpc) != 0;
+	return ptm_bfd_sess_del(bpc) != 0;
 }
 
 static int parse_config_json(struct json_object *jo, bpc_handle h, void *arg)
@@ -218,10 +220,6 @@ static int parse_peer_config(struct json_object *jo, struct bfd_peer_cfg *bpc)
 			} else {
 				log_debug("\tlocal-interface: %s", sval);
 			}
-		} else if (strcmp(key, "vxlan") == 0) {
-			bpc->bpc_vxlan = json_object_get_int64(jo_val);
-			bpc->bpc_has_vxlan = true;
-			log_debug("\tvxlan: %ld", bpc->bpc_vxlan);
 		} else if (strcmp(key, "vrf-name") == 0) {
 			bpc->bpc_has_vrfname = true;
 			sval = json_object_get_string(jo_val);
@@ -313,24 +311,7 @@ static int parse_peer_label_config(struct json_object *jo,
 	log_debug("\tpeer-label: %s", sval);
 
 	/* Translate the label into BFD address keys. */
-	bpc->bpc_ipv4 = !BFD_CHECK_FLAG(pl->pl_bs->flags, BFD_SESS_FLAG_IPV6);
-	bpc->bpc_mhop = BFD_CHECK_FLAG(pl->pl_bs->flags, BFD_SESS_FLAG_MH);
-	if (bpc->bpc_mhop) {
-		bpc->bpc_peer = pl->pl_bs->mhop.peer;
-		bpc->bpc_local = pl->pl_bs->mhop.local;
-		if (pl->pl_bs->mhop.vrf_name[0]) {
-			bpc->bpc_has_vrfname = true;
-			strlcpy(bpc->bpc_vrfname, pl->pl_bs->mhop.vrf_name,
-				sizeof(bpc->bpc_vrfname));
-		}
-	} else {
-		bpc->bpc_peer = pl->pl_bs->shop.peer;
-		if (pl->pl_bs->shop.port_name[0]) {
-			bpc->bpc_has_localif = true;
-			strlcpy(bpc->bpc_localif, pl->pl_bs->shop.port_name,
-				sizeof(bpc->bpc_localif));
-		}
-	}
+	bs_to_bpc(pl->pl_bs, bpc);
 
 	return 0;
 }
@@ -475,7 +456,8 @@ char *config_notify_config(const char *op, struct bfd_session *bs)
 	json_object_int_add(resp, "detect-multiplier", bs->detect_mult);
 	json_object_int_add(resp, "receive-interval",
 			    bs->timers.required_min_rx / 1000);
-	json_object_int_add(resp, "transmit-interval", bs->up_min_tx / 1000);
+	json_object_int_add(resp, "transmit-interval",
+			    bs->timers.desired_min_tx / 1000);
 	json_object_int_add(resp, "echo-interval",
 			    bs->timers.required_min_echo / 1000);
 
@@ -522,6 +504,8 @@ int config_notify_request(struct bfd_control_socket *bcs, const char *jsonstr,
 
 static int json_object_add_peer(struct json_object *jo, struct bfd_session *bs)
 {
+	char addr_buf[INET6_ADDRSTRLEN];
+
 	/* Add peer 'key' information. */
 	if (BFD_CHECK_FLAG(bs->flags, BFD_SESS_FLAG_IPV6))
 		json_object_boolean_true_add(jo, "ipv6");
@@ -531,22 +515,26 @@ static int json_object_add_peer(struct json_object *jo, struct bfd_session *bs)
 	if (BFD_CHECK_FLAG(bs->flags, BFD_SESS_FLAG_MH)) {
 		json_object_boolean_true_add(jo, "multihop");
 		json_object_string_add(jo, "peer-address",
-				       satostr(&bs->mhop.peer));
+				       inet_ntop(bs->key.family, &bs->key.peer,
+						 addr_buf, sizeof(addr_buf)));
 		json_object_string_add(jo, "local-address",
-				       satostr(&bs->mhop.local));
-		if (strlen(bs->mhop.vrf_name) > 0)
-			json_object_string_add(jo, "vrf-name",
-					       bs->mhop.vrf_name);
+				       inet_ntop(bs->key.family, &bs->key.local,
+						 addr_buf, sizeof(addr_buf)));
+		if (bs->key.vrfname[0])
+			json_object_string_add(jo, "vrf-name", bs->key.vrfname);
 	} else {
 		json_object_boolean_false_add(jo, "multihop");
 		json_object_string_add(jo, "peer-address",
-				       satostr(&bs->shop.peer));
-		if (bs->local_address.sa_sin.sin_family != AF_UNSPEC)
-			json_object_string_add(jo, "local-address",
-					       satostr(&bs->local_address));
-		if (strlen(bs->shop.port_name) > 0)
+				       inet_ntop(bs->key.family, &bs->key.peer,
+						 addr_buf, sizeof(addr_buf)));
+		if (memcmp(&bs->key.local, &zero_addr, sizeof(bs->key.local)))
+			json_object_string_add(
+				jo, "local-address",
+				inet_ntop(bs->key.family, &bs->key.local,
+					  addr_buf, sizeof(addr_buf)));
+		if (bs->key.ifname[0])
 			json_object_string_add(jo, "local-interface",
-					       bs->shop.port_name);
+					       bs->key.ifname);
 	}
 
 	if (bs->pl)
@@ -578,8 +566,6 @@ struct peer_label *pl_new(const char *label, struct bfd_session *bs)
 	struct peer_label *pl;
 
 	pl = XCALLOC(MTYPE_BFDD_LABEL, sizeof(*pl));
-	if (pl == NULL)
-		return NULL;
 
 	if (strlcpy(pl->pl_label, label, sizeof(pl->pl_label))
 	    > sizeof(pl->pl_label))

@@ -1074,7 +1074,7 @@ static int validate(struct aspath *as, const struct test_spec *sp)
 	return fails;
 }
 
-static void empty_get_test()
+static void empty_get_test(void)
 {
 	struct aspath *as = aspath_empty_get();
 	struct test_spec sp = {"", "", 0, 0, 0, 0, 0, 0};
@@ -1219,7 +1219,7 @@ static void aggregate_test(struct tests *t)
 }
 
 /* cmp_left tests  */
-static void cmp_test()
+static void cmp_test(void)
 {
 	unsigned int i;
 #define CMP_TESTS_MAX (sizeof(left_compare) / sizeof(struct compare_tests))
@@ -1272,9 +1272,6 @@ static int handle_attr_test(struct aspath_tests *t)
 	int initfail = failed;
 	struct aspath *asp;
 	size_t datalen;
-
-	bgp_pthreads_init();
-	frr_pthread_get(PTHREAD_KEEPALIVES)->running = true;
 
 	asp = make_aspath(t->segment->asdata, t->segment->len, 0);
 
@@ -1342,7 +1339,7 @@ int main(void)
 {
 	int i = 0;
 	qobj_init();
-	bgp_master_init(thread_master_create(NULL));
+	bgp_master_init(thread_master_create(NULL), BGP_SOCKET_SNDBUF_SIZE);
 	master = bm->master;
 	bgp_option_set(BGP_OPT_NO_LISTEN);
 	bgp_attr_init();
@@ -1381,6 +1378,10 @@ int main(void)
 	empty_get_test();
 
 	i = 0;
+
+	frr_pthread_init();
+	bgp_pthreads_init();
+	bgp_pth_ka->running = true;
 
 	while (aspath_tests[i].desc) {
 		printf("aspath_attr test %d\n", i);

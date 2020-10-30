@@ -38,17 +38,17 @@ static struct hash *lcomhash;
 /* Allocate a new lcommunities.  */
 static struct lcommunity *lcommunity_new(void)
 {
-	return (struct lcommunity *)XCALLOC(MTYPE_LCOMMUNITY,
-					    sizeof(struct lcommunity));
+	return XCALLOC(MTYPE_LCOMMUNITY, sizeof(struct lcommunity));
 }
 
 /* Allocate lcommunities.  */
 void lcommunity_free(struct lcommunity **lcom)
 {
-	if ((*lcom)->val)
-		XFREE(MTYPE_LCOMMUNITY_VAL, (*lcom)->val);
-	if ((*lcom)->str)
-		XFREE(MTYPE_LCOMMUNITY_STR, (*lcom)->str);
+	if (!(*lcom))
+		return;
+
+	XFREE(MTYPE_LCOMMUNITY_VAL, (*lcom)->val);
+	XFREE(MTYPE_LCOMMUNITY_STR, (*lcom)->str);
 	XFREE(MTYPE_LCOMMUNITY, *lcom);
 }
 
@@ -180,15 +180,14 @@ static void set_lcommunity_string(struct lcommunity *lcom, bool make_json)
 {
 	int i;
 	int len;
-	bool first = 1;
 	char *str_buf;
-	char *str_pnt;
 	uint8_t *pnt;
 	uint32_t global, local1, local2;
 	json_object *json_lcommunity_list = NULL;
 	json_object *json_string = NULL;
 
-#define LCOMMUNITY_STR_DEFAULT_LEN 32
+	/* 3 32-bit integers, 2 colons, and a space */
+#define LCOMMUNITY_STRLEN (10 * 3 + 2 + 1)
 
 	if (!lcom)
 		return;
@@ -199,8 +198,7 @@ static void set_lcommunity_string(struct lcommunity *lcom, bool make_json)
 	}
 
 	if (lcom->size == 0) {
-		str_buf = XMALLOC(MTYPE_LCOMMUNITY_STR, 1);
-		str_buf[0] = '\0';
+		str_buf = XCALLOC(MTYPE_LCOMMUNITY_STR, 1);
 
 		if (make_json) {
 			json_object_string_add(lcom->json, "string", "");
@@ -212,15 +210,13 @@ static void set_lcommunity_string(struct lcommunity *lcom, bool make_json)
 		return;
 	}
 
-	str_buf = str_pnt =
-		XMALLOC(MTYPE_LCOMMUNITY_STR,
-			(LCOMMUNITY_STR_DEFAULT_LEN * lcom->size) + 1);
+	/* 1 space + lcom->size lcom strings + null terminator */
+	size_t str_buf_sz = (LCOMMUNITY_STRLEN * lcom->size) + 2;
+	str_buf = XCALLOC(MTYPE_LCOMMUNITY_STR, str_buf_sz);
 
 	for (i = 0; i < lcom->size; i++) {
-		if (first)
-			first = 0;
-		else
-			*str_pnt++ = ' ';
+		if (i > 0)
+			strlcat(str_buf, " ", str_buf_sz);
 
 		pnt = lcom->val + (i * LCOMMUNITY_SIZE);
 		pnt = ptr_get_be32(pnt, &global);
@@ -228,18 +224,20 @@ static void set_lcommunity_string(struct lcommunity *lcom, bool make_json)
 		pnt = ptr_get_be32(pnt, &local2);
 		(void)pnt;
 
-		len = sprintf(str_pnt, "%u:%u:%u", global, local1, local2);
+		char lcsb[LCOMMUNITY_STRLEN + 1];
+
+		snprintf(lcsb, sizeof(lcsb), "%u:%u:%u", global, local1,
+			 local2);
+
+		len = strlcat(str_buf, lcsb, str_buf_sz);
+		assert((unsigned int)len < str_buf_sz);
+
 		if (make_json) {
-			json_string = json_object_new_string(str_pnt);
+			json_string = json_object_new_string(lcsb);
 			json_object_array_add(json_lcommunity_list,
 					      json_string);
 		}
-
-		str_pnt += len;
 	}
-
-	str_buf =
-		XREALLOC(MTYPE_LCOMMUNITY_STR, str_buf, str_pnt - str_buf + 1);
 
 	if (make_json) {
 		json_object_string_add(lcom->json, "string", str_buf);
@@ -304,7 +302,7 @@ char *lcommunity_str(struct lcommunity *lcom, bool make_json)
 }
 
 /* Utility function to make hash key.  */
-unsigned int lcommunity_hash_make(void *arg)
+unsigned int lcommunity_hash_make(const void *arg)
 {
 	const struct lcommunity *lcom = arg;
 	int size = lcom_length(lcom);
@@ -313,16 +311,16 @@ unsigned int lcommunity_hash_make(void *arg)
 }
 
 /* Compare two Large Communities Attribute structure.  */
-int lcommunity_cmp(const void *arg1, const void *arg2)
+bool lcommunity_cmp(const void *arg1, const void *arg2)
 {
 	const struct lcommunity *lcom1 = arg1;
 	const struct lcommunity *lcom2 = arg2;
 
 	if (lcom1 == NULL && lcom2 == NULL)
-		return 1;
+		return true;
 
 	if (lcom1 == NULL || lcom2 == NULL)
-		return 0;
+		return false;
 
 	return (lcom1->size == lcom2->size
 		&& memcmp(lcom1->val, lcom2->val, lcom_length(lcom1)) == 0);
@@ -362,7 +360,7 @@ static const char *lcommunity_gettoken(const char *str,
 	const char *p = str;
 
 	/* Skip white space. */
-	while (isspace((int)*p)) {
+	while (isspace((unsigned char)*p)) {
 		p++;
 		str++;
 	}
@@ -372,14 +370,14 @@ static const char *lcommunity_gettoken(const char *str,
 		return NULL;
 
 	/* Community value. */
-	if (isdigit((int)*p)) {
+	if (isdigit((unsigned char)*p)) {
 		int separator = 0;
 		int digit = 0;
 		uint32_t globaladmin = 0;
 		uint32_t localdata1 = 0;
 		uint32_t localdata2 = 0;
 
-		while (isdigit((int)*p) || *p == ':') {
+		while (isdigit((unsigned char)*p) || *p == ':') {
 			if (*p == ':') {
 				if (separator == 2) {
 					*token = lcommunity_token_unknown;
@@ -442,7 +440,8 @@ struct lcommunity *lcommunity_str2com(const char *str)
 	enum lcommunity_token token = lcommunity_token_unknown;
 	struct lcommunity_val lval;
 
-	while ((str = lcommunity_gettoken(str, &lval, &token))) {
+	do {
+		str = lcommunity_gettoken(str, &lval, &token);
 		switch (token) {
 		case lcommunity_token_val:
 			if (lcom == NULL)
@@ -455,7 +454,8 @@ struct lcommunity *lcommunity_str2com(const char *str)
 				lcommunity_free(&lcom);
 			return NULL;
 		}
-	}
+	} while (str);
+
 	return lcom;
 }
 
@@ -535,5 +535,154 @@ void lcommunity_del_val(struct lcommunity *lcom, uint8_t *ptr)
 			return;
 		}
 		i++;
+	}
+}
+
+static struct lcommunity *bgp_aggr_lcommunity_lookup(
+						struct bgp_aggregate *aggregate,
+						struct lcommunity *lcommunity)
+{
+	return hash_lookup(aggregate->lcommunity_hash, lcommunity);
+}
+
+static void *bgp_aggr_lcommunty_hash_alloc(void *p)
+{
+	struct lcommunity *ref = (struct lcommunity *)p;
+	struct lcommunity *lcommunity = NULL;
+
+	lcommunity = lcommunity_dup(ref);
+	return lcommunity;
+}
+
+static void bgp_aggr_lcommunity_prepare(struct hash_backet *hb, void *arg)
+{
+	struct lcommunity *hb_lcommunity = hb->data;
+	struct lcommunity **aggr_lcommunity = arg;
+
+	if (*aggr_lcommunity)
+		*aggr_lcommunity = lcommunity_merge(*aggr_lcommunity,
+						    hb_lcommunity);
+	else
+		*aggr_lcommunity = lcommunity_dup(hb_lcommunity);
+}
+
+void bgp_aggr_lcommunity_remove(void *arg)
+{
+	struct lcommunity *lcommunity = arg;
+
+	lcommunity_free(&lcommunity);
+}
+
+void bgp_compute_aggregate_lcommunity(struct bgp_aggregate *aggregate,
+				      struct lcommunity *lcommunity)
+{
+
+	bgp_compute_aggregate_lcommunity_hash(aggregate, lcommunity);
+	bgp_compute_aggregate_lcommunity_val(aggregate);
+}
+
+void bgp_compute_aggregate_lcommunity_hash(struct bgp_aggregate *aggregate,
+					   struct lcommunity *lcommunity)
+{
+
+	struct lcommunity *aggr_lcommunity = NULL;
+
+	if ((aggregate == NULL) || (lcommunity == NULL))
+		return;
+
+	/* Create hash if not already created.
+	 */
+	if (aggregate->lcommunity_hash == NULL)
+		aggregate->lcommunity_hash = hash_create(
+					lcommunity_hash_make, lcommunity_cmp,
+					"BGP Aggregator lcommunity hash");
+
+	aggr_lcommunity = bgp_aggr_lcommunity_lookup(aggregate, lcommunity);
+	if (aggr_lcommunity == NULL) {
+		/* Insert lcommunity into hash.
+		 */
+		aggr_lcommunity = hash_get(aggregate->lcommunity_hash,
+					   lcommunity,
+					   bgp_aggr_lcommunty_hash_alloc);
+	}
+
+	/* Increment reference counter.
+	 */
+	aggr_lcommunity->refcnt++;
+}
+
+void bgp_compute_aggregate_lcommunity_val(struct bgp_aggregate *aggregate)
+{
+	struct lcommunity *lcommerge = NULL;
+
+	if (aggregate == NULL)
+		return;
+
+	/* Re-compute aggregate's lcommunity.
+	 */
+	if (aggregate->lcommunity)
+		lcommunity_free(&aggregate->lcommunity);
+	if (aggregate->lcommunity_hash &&
+	    aggregate->lcommunity_hash->count) {
+		hash_iterate(aggregate->lcommunity_hash,
+			     bgp_aggr_lcommunity_prepare,
+			     &aggregate->lcommunity);
+		lcommerge = aggregate->lcommunity;
+		aggregate->lcommunity = lcommunity_uniq_sort(lcommerge);
+		if (lcommerge)
+			lcommunity_free(&lcommerge);
+	}
+}
+
+void bgp_remove_lcommunity_from_aggregate(struct bgp_aggregate *aggregate,
+					  struct lcommunity *lcommunity)
+{
+	struct lcommunity *aggr_lcommunity = NULL;
+	struct lcommunity *ret_lcomm = NULL;
+
+	if ((!aggregate)
+	    || (!aggregate->lcommunity_hash)
+	    || (!lcommunity))
+		return;
+
+	/* Look-up the lcommunity in the hash.
+	 */
+	aggr_lcommunity = bgp_aggr_lcommunity_lookup(aggregate, lcommunity);
+	if (aggr_lcommunity) {
+		aggr_lcommunity->refcnt--;
+
+		if (aggr_lcommunity->refcnt == 0) {
+			ret_lcomm = hash_release(aggregate->lcommunity_hash,
+						 aggr_lcommunity);
+			lcommunity_free(&ret_lcomm);
+
+			bgp_compute_aggregate_lcommunity_val(aggregate);
+
+		}
+	}
+}
+
+void bgp_remove_lcomm_from_aggregate_hash(struct bgp_aggregate *aggregate,
+					  struct lcommunity *lcommunity)
+{
+	struct lcommunity *aggr_lcommunity = NULL;
+	struct lcommunity *ret_lcomm = NULL;
+
+	if ((!aggregate)
+	    || (!aggregate->lcommunity_hash)
+	    || (!lcommunity))
+		return;
+
+	/* Look-up the lcommunity in the hash.
+	 */
+	aggr_lcommunity = bgp_aggr_lcommunity_lookup(aggregate, lcommunity);
+	if (aggr_lcommunity) {
+		aggr_lcommunity->refcnt--;
+
+		if (aggr_lcommunity->refcnt == 0) {
+			ret_lcomm = hash_release(aggregate->lcommunity_hash,
+						 aggr_lcommunity);
+			lcommunity_free(&ret_lcomm);
+		}
 	}
 }

@@ -144,55 +144,10 @@ void eigrp_header_dump(struct eigrp_header *eigrph)
 
 const char *eigrp_if_name_string(struct eigrp_interface *ei)
 {
-	static char buf[EIGRP_IF_STRING_MAXLEN] = "";
-
 	if (!ei)
 		return "inactive";
 
-	snprintf(buf, EIGRP_IF_STRING_MAXLEN, "%s", ei->ifp->name);
-	return buf;
-}
-
-const char *eigrp_topology_ip_string(struct eigrp_prefix_entry *tn)
-{
-	static char buf[EIGRP_IF_STRING_MAXLEN] = "";
-	uint32_t ifaddr;
-
-	ifaddr = ntohl(tn->destination->u.prefix4.s_addr);
-	snprintf(buf, EIGRP_IF_STRING_MAXLEN, "%u.%u.%u.%u",
-		 (ifaddr >> 24) & 0xff, (ifaddr >> 16) & 0xff,
-		 (ifaddr >> 8) & 0xff, ifaddr & 0xff);
-	return buf;
-}
-
-
-const char *eigrp_if_ip_string(struct eigrp_interface *ei)
-{
-	static char buf[EIGRP_IF_STRING_MAXLEN] = "";
-	uint32_t ifaddr;
-
-	if (!ei)
-		return "inactive";
-
-	ifaddr = ntohl(ei->address->u.prefix4.s_addr);
-	snprintf(buf, EIGRP_IF_STRING_MAXLEN, "%u.%u.%u.%u",
-		 (ifaddr >> 24) & 0xff, (ifaddr >> 16) & 0xff,
-		 (ifaddr >> 8) & 0xff, ifaddr & 0xff);
-
-	return buf;
-}
-
-const char *eigrp_neigh_ip_string(struct eigrp_neighbor *nbr)
-{
-	static char buf[EIGRP_IF_STRING_MAXLEN] = "";
-	uint32_t ifaddr;
-
-	ifaddr = ntohl(nbr->src.s_addr);
-	snprintf(buf, EIGRP_IF_STRING_MAXLEN, "%u.%u.%u.%u",
-		 (ifaddr >> 24) & 0xff, (ifaddr >> 16) & 0xff,
-		 (ifaddr >> 8) & 0xff, ifaddr & 0xff);
-
-	return buf;
+	return ei->ifp->name;
 }
 
 void show_ip_eigrp_interface_header(struct vty *vty, struct eigrp *eigrp)
@@ -209,7 +164,7 @@ void show_ip_eigrp_interface_header(struct vty *vty, struct eigrp *eigrp)
 void show_ip_eigrp_interface_sub(struct vty *vty, struct eigrp *eigrp,
 				 struct eigrp_interface *ei)
 {
-	vty_out(vty, "%-11s ", eigrp_if_name_string(ei));
+	vty_out(vty, "%-11s ", IF_NAME(ei));
 	vty_out(vty, "%-11u", ei->params.bandwidth);
 	vty_out(vty, "%-11u", ei->params.delay);
 	vty_out(vty, "%-7u", ei->nbrs->count);
@@ -250,7 +205,7 @@ void show_ip_eigrp_neighbor_sub(struct vty *vty, struct eigrp_neighbor *nbr,
 {
 
 	vty_out(vty, "%-3u %-17s %-21s", 0, eigrp_neigh_ip_string(nbr),
-		eigrp_if_name_string(nbr->ei));
+		IF_NAME(nbr->ei));
 	if (nbr->t_holddown)
 		vty_out(vty, "%-7lu",
 			thread_timer_remain_second(nbr->t_holddown));
@@ -276,11 +231,8 @@ void show_ip_eigrp_neighbor_sub(struct vty *vty, struct eigrp_neighbor *nbr,
  */
 void show_ip_eigrp_topology_header(struct vty *vty, struct eigrp *eigrp)
 {
-	struct in_addr router_id;
-	router_id.s_addr = eigrp->router_id;
-
 	vty_out(vty, "\nEIGRP Topology Table for AS(%d)/ID(%s)\n\n", eigrp->AS,
-		inet_ntoa(router_id));
+		inet_ntoa(eigrp->router_id));
 	vty_out(vty,
 		"Codes: P - Passive, A - Active, U - Update, Q - Query, "
 		"R - Reply\n       r - reply Status, s - sia Status\n\n");
@@ -300,27 +252,27 @@ void show_ip_eigrp_prefix_entry(struct vty *vty, struct eigrp_prefix_entry *tn)
 		tn->serno);
 
 	if (successors)
-		list_delete_and_null(&successors);
+		list_delete(&successors);
 }
 
 void show_ip_eigrp_nexthop_entry(struct vty *vty, struct eigrp *eigrp,
-				 struct eigrp_nexthop_entry *te, int *first)
+				 struct eigrp_nexthop_entry *te, bool *first)
 {
 	if (te->reported_distance == EIGRP_MAX_METRIC)
 		return;
 
 	if (*first) {
 		show_ip_eigrp_prefix_entry(vty, te->prefix);
-		*first = 0;
+		*first = false;
 	}
 
 	if (te->adv_router == eigrp->neighbor_self)
 		vty_out(vty, "%-7s%s, %s\n", " ", "via Connected",
-			eigrp_if_name_string(te->ei));
+			IF_NAME(te->ei));
 	else {
 		vty_out(vty, "%-7s%s%s (%u/%u), %s\n", " ", "via ",
 			inet_ntoa(te->adv_router->src), te->distance,
-			te->reported_distance, eigrp_if_name_string(te->ei));
+			te->reported_distance, IF_NAME(te->ei));
 	}
 }
 
@@ -608,7 +560,7 @@ static struct cmd_node eigrp_debug_node = {
 };
 
 /* Initialize debug commands. */
-void eigrp_debug_init()
+void eigrp_debug_init(void)
 {
 	install_node(&eigrp_debug_node, config_write_debug);
 

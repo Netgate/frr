@@ -23,8 +23,12 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
 #include "command.h"
-#include "memory_vty.h"
+#include "lib_vty.h"
 
 static void vty_do_exit(int isexit)
 {
@@ -52,8 +56,10 @@ int main(int argc, char **argv)
 	host.name = strdup("test");
 	host.domainname = strdup("testdomainname");
 
-	vty_init(master);
-	memory_init();
+	vty_init(master, true);
+	lib_cmd_init();
+	yang_init();
+	nb_init(master, NULL, 0);
 
 	vty_stdio(vty_do_exit);
 

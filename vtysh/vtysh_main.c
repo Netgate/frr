@@ -30,13 +30,24 @@
 #include <readline/readline.h>
 #include <readline/history.h>
 
+/*
+ * The append_history function only appears in newer versions
+ * of the readline library it appears like.  Since we don't
+ * need this just silently ignore the code on these
+ * ancient platforms.
+ */
+#if !defined HAVE_APPEND_HISTORY
+#define append_history(A, B)
+#endif
+
 #include <lib/version.h>
 #include "getopt.h"
 #include "command.h"
 #include "memory.h"
 #include "linklist.h"
-#include "memory_vty.h"
 #include "libfrr.h"
+#include "ferr.h"
+#include "lib_errors.h"
 
 #include "vtysh/vtysh.h"
 #include "vtysh/vtysh_user.h"
@@ -322,6 +333,8 @@ int main(int argc, char **argv, char **env)
 	progname = ((p = strrchr(argv[0], '/')) ? ++p : argv[0]);
 
 	strlcpy(sysconfdir, frr_sysconfdir, sizeof(sysconfdir));
+
+	frr_init_vtydir();
 	strlcpy(vtydir, frr_vtydir, sizeof(vtydir));
 
 	/* Option handling. */
@@ -449,6 +462,9 @@ int main(int argc, char **argv, char **env)
 		vtysh_read_config(vtysh_config);
 		suid_off();
 	}
+	/* Error code library system */
+	log_ref_init();
+	lib_error_init();
 
 	if (markfile) {
 		if (!inputfile) {
@@ -518,6 +534,9 @@ int main(int argc, char **argv, char **env)
 	/* Do not connect until we have passed authentication. */
 	if (vtysh_connect_all(daemon_name) <= 0) {
 		fprintf(stderr, "Exiting: failed to connect to any daemons.\n");
+		if (geteuid() != 0)
+			fprintf(stderr,
+				"Hint: if this seems wrong, try running me as a privileged user!\n");
 		if (no_error)
 			exit(0);
 		else
@@ -586,7 +605,6 @@ int main(int argc, char **argv, char **env)
 			vtysh_execute("enable");
 
 		while (cmd != NULL) {
-			int ret;
 			char *eol;
 
 			while ((eol = strchr(cmd->line, '\n')) != NULL) {
@@ -652,7 +670,7 @@ int main(int argc, char **argv, char **env)
 	/* Boot startup configuration file. */
 	if (boot_flag) {
 		vtysh_flock_config(frr_config);
-		int ret = vtysh_read_config(frr_config);
+		ret = vtysh_read_config(frr_config);
 		vtysh_unflock_config();
 		if (ret) {
 			fprintf(stderr,

@@ -148,12 +148,6 @@ static int dispatch_assert(struct interface *ifp, struct in_addr source_addr,
 	sg.src = source_addr;
 	sg.grp = group_addr;
 	ch = pim_ifchannel_add(ifp, &sg, 0, 0);
-	if (!ch) {
-		zlog_warn(
-			"%s: (S,G)=%s failure creating channel on interface %s",
-			__PRETTY_FUNCTION__, pim_str_sg_dump(&sg), ifp->name);
-		return -1;
-	}
 
 	switch (ch->ifassert_state) {
 	case PIM_IFASSERT_NOINFO:
@@ -265,11 +259,11 @@ int pim_assert_recv(struct interface *ifp, struct pim_neighbor *neigh,
 	curr += offset;
 	curr_size -= offset;
 
-	if (curr_size != 8) {
+	if (curr_size < 8) {
 		char src_str[INET_ADDRSTRLEN];
 		pim_inet4_dump("<src?>", src_addr, src_str, sizeof(src_str));
 		zlog_warn(
-			"%s: preference/metric size is not 8: size=%d from %s on interface %s",
+			"%s: preference/metric size is less than 8 bytes: size=%d from %s on interface %s",
 			__PRETTY_FUNCTION__, curr_size, src_str, ifp->name);
 		return -3;
 	}
@@ -418,7 +412,7 @@ int pim_assert_build_msg(uint8_t *pim_msg, int buf_size, struct interface *ifp,
 	  Add PIM header
 	*/
 	pim_msg_size = pim_msg_curr - pim_msg;
-	pim_msg_build_header(pim_msg, pim_msg_size, PIM_MSG_TYPE_ASSERT);
+	pim_msg_build_header(pim_msg, pim_msg_size, PIM_MSG_TYPE_ASSERT, false);
 
 	return pim_msg_size;
 }
@@ -569,7 +563,7 @@ static void pim_assert_timer_set(struct pim_ifchannel *ch, int interval)
 			   ch->interface->name);
 	}
 
-	thread_add_timer(master, on_assert_timer, ch, interval,
+	thread_add_timer(router->master, on_assert_timer, ch, interval,
 			 &ch->t_ifassert_timer);
 }
 
@@ -734,7 +728,7 @@ void assert_action_a5(struct pim_ifchannel *ch)
 	  winner metric as AssertWinnerMetric(S,G,I).
 	  Set Assert Timer to Assert_Time.
 	  If (I is RPF_interface(S)) AND (UpstreamJPState(S,G) == true)
-	  set SPTbit(S,G) to TRUE.
+	  set SPTbit(S,G) to true.
 */
 static void assert_action_a6(struct pim_ifchannel *ch,
 			     struct pim_assert_metric winner_metric)
@@ -743,7 +737,7 @@ static void assert_action_a6(struct pim_ifchannel *ch,
 
 	/*
 	  If (I is RPF_interface(S)) AND (UpstreamJPState(S,G) == true) set
-	  SPTbit(S,G) to TRUE.
+	  SPTbit(S,G) to true.
 	*/
 	if (ch->upstream->rpf.source_nexthop.interface == ch->interface)
 		if (ch->upstream->join_state == PIM_UPSTREAM_JOINED)

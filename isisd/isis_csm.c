@@ -32,7 +32,6 @@
 #include "prefix.h"
 #include "stream.h"
 
-#include "isisd/dict.h"
 #include "isisd/isis_constants.h"
 #include "isisd/isis_common.h"
 #include "isisd/isis_flags.h"
@@ -51,12 +50,12 @@
 
 extern struct isis *isis;
 
-static const char *csm_statestr[] = {"C_STATE_NA", "C_STATE_INIT",
+static const char *const csm_statestr[] = {"C_STATE_NA", "C_STATE_INIT",
 				     "C_STATE_CONF", "C_STATE_UP"};
 
 #define STATE2STR(S) csm_statestr[S]
 
-static const char *csm_eventstr[] = {
+static const char *const csm_eventstr[] = {
 	"NO_STATE",     "ISIS_ENABLE",    "IF_UP_FROM_Z",
 	"ISIS_DISABLE", "IF_DOWN_FROM_Z",
 };
@@ -139,11 +138,11 @@ isis_csm_state_change(int event, struct isis_circuit *circuit, void *arg)
 			isis_circuit_if_add(circuit, (struct interface *)arg);
 			if (isis_circuit_up(circuit) != ISIS_OK) {
 				flog_err(
-					ISIS_ERR_CONFIG,
+					EC_ISIS_CONFIG,
 					"Could not bring up %s because of invalid config.",
 					circuit->interface->name);
 				flog_err(
-					ISIS_ERR_CONFIG,
+					EC_ISIS_CONFIG,
 					"Clearing config for %s. Please re-examine it.",
 					circuit->interface->name);
 				if (circuit->ip_router) {

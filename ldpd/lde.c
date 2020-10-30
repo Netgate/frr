@@ -71,9 +71,6 @@ struct nbr_tree		 lde_nbrs = RB_INITIALIZER(&lde_nbrs);
 static struct imsgev	*iev_ldpe;
 static struct imsgev	*iev_main, *iev_main_sync;
 
-/* Master of threads. */
-struct thread_master *master;
-
 /* lde privileges */
 static zebra_capabilities_t _caps_p [] =
 {
@@ -520,7 +517,8 @@ lde_dispatch_parent(struct thread *thread)
 			switch (imsg.hdr.type) {
 			case IMSG_NETWORK_ADD:
 				lde_kernel_insert(&fec, kr->af, &kr->nexthop,
-				    kr->ifindex, kr->priority,
+				    kr->ifindex, kr->route_type,
+				    kr->route_instance,
 				    kr->flags & F_CONNECTED, NULL);
 				break;
 			case IMSG_NETWORK_UPDATE:
@@ -747,7 +745,8 @@ lde_send_change_klabel(struct fec_node *fn, struct fec_nh *fnh)
 		kr.ifindex = fnh->ifindex;
 		kr.local_label = fn->local_label;
 		kr.remote_label = fnh->remote_label;
-		kr.priority = fnh->priority;
+		kr.route_type = fnh->route_type;
+		kr.route_instance = fnh->route_instance;
 
 		lde_imsg_compose_parent(IMSG_KLABEL_CHANGE, 0, &kr,
 		    sizeof(kr));
@@ -761,7 +760,8 @@ lde_send_change_klabel(struct fec_node *fn, struct fec_nh *fnh)
 		kr.ifindex = fnh->ifindex;
 		kr.local_label = fn->local_label;
 		kr.remote_label = fnh->remote_label;
-		kr.priority = fnh->priority;
+		kr.route_type = fnh->route_type;
+		kr.route_instance = fnh->route_instance;
 
 		lde_imsg_compose_parent(IMSG_KLABEL_CHANGE, 0, &kr,
 		    sizeof(kr));
@@ -798,7 +798,8 @@ lde_send_delete_klabel(struct fec_node *fn, struct fec_nh *fnh)
 		kr.ifindex = fnh->ifindex;
 		kr.local_label = fn->local_label;
 		kr.remote_label = fnh->remote_label;
-		kr.priority = fnh->priority;
+		kr.route_type = fnh->route_type;
+		kr.route_instance = fnh->route_instance;
 
 		lde_imsg_compose_parent(IMSG_KLABEL_DELETE, 0, &kr,
 		    sizeof(kr));
@@ -812,7 +813,8 @@ lde_send_delete_klabel(struct fec_node *fn, struct fec_nh *fnh)
 		kr.ifindex = fnh->ifindex;
 		kr.local_label = fn->local_label;
 		kr.remote_label = fnh->remote_label;
-		kr.priority = fnh->priority;
+		kr.route_type = fnh->route_type;
+		kr.route_instance = fnh->route_instance;
 
 		lde_imsg_compose_parent(IMSG_KLABEL_DELETE, 0, &kr,
 		    sizeof(kr));
@@ -1620,16 +1622,14 @@ lde_address_list_free(struct lde_nbr *ln)
 {
 	struct lde_addr		*lde_addr;
 
-	while ((lde_addr = TAILQ_FIRST(&ln->addr_list)) != NULL) {
-		TAILQ_REMOVE(&ln->addr_list, lde_addr, entry);
+	while ((lde_addr = TAILQ_POP_FIRST(&ln->addr_list, entry)) != NULL)
 		free(lde_addr);
-	}
 }
 
 static void zclient_sync_init(unsigned short instance)
 {
 	/* Initialize special zclient for synchronous message exchanges. */
-	zclient_sync = zclient_new_notify(master, &zclient_options_default);
+	zclient_sync = zclient_new(master, &zclient_options_default);
 	zclient_sync->sock = -1;
 	zclient_sync->redist_default = ZEBRA_ROUTE_LDP;
 	zclient_sync->instance = instance;
@@ -1656,13 +1656,27 @@ lde_del_label_chunk(void *val)
 }
 
 static int
+lde_release_label_chunk(uint32_t start, uint32_t end)
+{
+	int		ret;
+
+	ret = lm_release_label_chunk(zclient_sync, start, end);
+	if (ret < 0) {
+		log_warnx("Error releasing label chunk!");
+		return (-1);
+	}
+	return (0);
+}
+
+static int
 lde_get_label_chunk(void)
 {
 	int		 ret;
 	uint32_t	 start, end;
 
 	debug_labels("getting label chunk (size %u)", CHUNK_SIZE);
-	ret = lm_get_label_chunk(zclient_sync, 0, CHUNK_SIZE, &start, &end);
+	ret = lm_get_label_chunk(zclient_sync, 0, MPLS_LABEL_BASE_ANY,
+				 CHUNK_SIZE, &start, &end);
 	if (ret < 0) {
 		log_warnx("Error getting label chunk!");
 		return -1;
@@ -1708,6 +1722,32 @@ on_get_label_chunk_response(uint32_t start, uint32_t end)
 	/* let's update current if needed */
 	if (!current_label_chunk)
 		current_label_chunk = listtail(label_chunk_list);
+}
+
+void
+lde_free_label(uint32_t label)
+{
+	struct listnode	*node;
+	struct label_chunk	*label_chunk;
+	uint64_t		pos;
+
+	for (ALL_LIST_ELEMENTS_RO(label_chunk_list, node, label_chunk)) {
+		if (label <= label_chunk->end && label >= label_chunk->start) {
+			pos = 1ULL << (label - label_chunk->start);
+			label_chunk->used_mask &= ~pos;
+			/* if nobody is using this chunk and it's not current_label_chunk, then free it */
+			if (!label_chunk->used_mask && (current_label_chunk != node)) {
+				if (lde_release_label_chunk(label_chunk->start, label_chunk->end) != 0)
+					log_warnx("%s: Error releasing label chunk!", __func__);
+				else {
+					listnode_delete(label_chunk_list, label_chunk);
+					lde_del_label_chunk(label_chunk);
+				}
+			}
+			break;
+		}
+	}
+	return;
 }
 
 static uint32_t

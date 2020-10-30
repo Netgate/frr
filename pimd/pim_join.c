@@ -62,7 +62,7 @@ static void recv_join(struct interface *ifp, struct pim_neighbor *neigh,
 		pim_inet4_dump("<upstream?>", upstream, up_str, sizeof(up_str));
 		pim_inet4_dump("<neigh?>", neigh->source_addr, neigh_str,
 			       sizeof(neigh_str));
-		zlog_warn(
+		zlog_debug(
 			"%s: join (S,G)=%s rpt=%d wc=%d upstream=%s holdtime=%d from %s on %s",
 			__PRETTY_FUNCTION__, pim_str_sg_dump(sg),
 			!!(source_flags & PIM_RPT_BIT_MASK),
@@ -83,6 +83,11 @@ static void recv_join(struct interface *ifp, struct pim_neighbor *neigh,
 	    && (source_flags & PIM_WILDCARD_BIT_MASK)) {
 		struct pim_rpf *rp = RP(pim_ifp->pim, sg->grp);
 
+		if (!rp) {
+			zlog_warn("%s: Lookup of RP failed for %pSG4",
+				  __PRETTY_FUNCTION__, sg);
+			return;
+		}
 		/*
 		 * If the RP sent in the message is not
 		 * our RP for the group, drop the message
@@ -94,11 +99,8 @@ static void recv_join(struct interface *ifp, struct pim_neighbor *neigh,
 				       sizeof(received_rp));
 			pim_inet4_dump("<local?>", rp->rpf_addr.u.prefix4,
 				       local_rp, sizeof(local_rp));
-			if (PIM_DEBUG_PIM_TRACE)
-				zlog_warn(
-					"%s: Specified RP(%s) in join is different than our configured RP(%s)",
-					__PRETTY_FUNCTION__, received_rp,
-					local_rp);
+			zlog_warn("%s: Specified RP(%s) in join is different than our configured RP(%s)",
+				  __PRETTY_FUNCTION__, received_rp, local_rp);
 			return;
 		}
 
@@ -122,7 +124,7 @@ static void recv_prune(struct interface *ifp, struct pim_neighbor *neigh,
 		pim_inet4_dump("<upstream?>", upstream, up_str, sizeof(up_str));
 		pim_inet4_dump("<neigh?>", neigh->source_addr, neigh_str,
 			       sizeof(neigh_str));
-		zlog_warn(
+		zlog_debug(
 			"%s: prune (S,G)=%s rpt=%d wc=%d upstream=%s holdtime=%d from %s on %s",
 			__PRETTY_FUNCTION__, pim_str_sg_dump(sg),
 			source_flags & PIM_RPT_BIT_MASK,
@@ -139,6 +141,12 @@ static void recv_prune(struct interface *ifp, struct pim_neighbor *neigh,
 	    && (source_flags & PIM_WILDCARD_BIT_MASK)) {
 		struct pim_rpf *rp = RP(pim_ifp->pim, sg->grp);
 
+		if (!rp) {
+			if (PIM_DEBUG_PIM_TRACE)
+				zlog_debug("%s: RP for %pSG4 completely failed lookup",
+					   __PRETTY_FUNCTION__, sg);
+			return;
+		}
 		// Ignoring Prune *,G's at the moment.
 		if (sg->src.s_addr != rp->rpf_addr.u.prefix4.s_addr)
 			return;
@@ -185,15 +193,11 @@ int pim_joinprune_recv(struct interface *ifp, struct pim_neighbor *neigh,
 	  Check upstream address family
 	 */
 	if (msg_upstream_addr.family != AF_INET) {
-		if (PIM_DEBUG_PIM_J_P) {
-			char src_str[INET_ADDRSTRLEN];
-			pim_inet4_dump("<src?>", src_addr, src_str,
-				       sizeof(src_str));
-			zlog_warn(
-				"%s: ignoring join/prune directed to unexpected addr family=%d from %s on %s",
-				__PRETTY_FUNCTION__, msg_upstream_addr.family,
-				src_str, ifp->name);
-		}
+		char src_str[INET_ADDRSTRLEN];
+		pim_inet4_dump("<src?>", src_addr, src_str, sizeof(src_str));
+		zlog_warn("%s: ignoring join/prune directed to unexpected addr family=%d from %s on %s",
+			  __PRETTY_FUNCTION__, msg_upstream_addr.family,
+			  src_str, ifp->name);
 		return -2;
 	}
 
@@ -270,7 +274,7 @@ int pim_joinprune_recv(struct interface *ifp, struct pim_neighbor *neigh,
 				       upstream_str, sizeof(upstream_str));
 			pim_inet4_dump("<grp?>", sg.grp, group_str,
 				       sizeof(group_str));
-			zlog_warn(
+			zlog_debug(
 				"%s: join/prune upstream=%s group=%s/32 join_src=%d prune_src=%d from %s on %s",
 				__PRETTY_FUNCTION__, upstream_str, group_str,
 				msg_num_joined_sources, msg_num_pruned_sources,
@@ -323,7 +327,6 @@ int pim_joinprune_recv(struct interface *ifp, struct pim_neighbor *neigh,
 			recv_prune(ifp, neigh, msg_holdtime,
 				   msg_upstream_addr.u.prefix4, &sg,
 				   msg_source_flags);
-
 			/*
 			 * So if we are receiving a S,G,RPT prune
 			 * before we have any data for that S,G
@@ -339,15 +342,15 @@ int pim_joinprune_recv(struct interface *ifp, struct pim_neighbor *neigh,
 				struct pim_upstream *up = sg_ch->upstream;
 				PIM_IF_FLAG_SET_S_G_RPT(sg_ch->flags);
 				if (up) {
-					if (PIM_DEBUG_TRACE)
+					if (PIM_DEBUG_PIM_TRACE)
 						zlog_debug(
 							"%s: SGRpt flag is set, del inherit oif from up %s",
 							__PRETTY_FUNCTION__,
 							up->sg_str);
-					pim_channel_del_oif(
+					pim_channel_del_inherited_oif(
 						up->channel_oil,
 						starg_ch->interface,
-						PIM_OIF_FLAG_PROTO_STAR);
+						__func__);
 				}
 			}
 		}
@@ -439,9 +442,6 @@ int pim_joinprune_send(struct pim_rpf *rpf, struct list *groups)
 	size_t packet_size = 0;
 	size_t group_size = 0;
 
-	on_trace(__PRETTY_FUNCTION__, rpf->source_nexthop.interface,
-		 rpf->rpf_addr.u.prefix4);
-
 	if (rpf->source_nexthop.interface)
 		pim_ifp = rpf->source_nexthop.interface->info;
 	else {
@@ -449,6 +449,9 @@ int pim_joinprune_send(struct pim_rpf *rpf, struct list *groups)
 			  __PRETTY_FUNCTION__);
 		return -1;
 	}
+
+	on_trace(__PRETTY_FUNCTION__, rpf->source_nexthop.interface,
+		rpf->rpf_addr.u.prefix4);
 
 	if (!pim_ifp) {
 		zlog_warn("%s: multicast not enabled on interface %s",
@@ -519,7 +522,7 @@ int pim_joinprune_send(struct pim_rpf *rpf, struct list *groups)
 		group_size = pim_msg_get_jp_group_size(group->sources);
 		if (group_size > packet_left) {
 			pim_msg_build_header(pim_msg, packet_size,
-					     PIM_MSG_TYPE_JOIN_PRUNE);
+					     PIM_MSG_TYPE_JOIN_PRUNE, false);
 			if (pim_msg_send(pim_ifp->pim_sock_fd,
 					 pim_ifp->primary_address,
 					 qpim_all_pim_routers_addr, pim_msg,
@@ -576,7 +579,7 @@ int pim_joinprune_send(struct pim_rpf *rpf, struct list *groups)
 		if (packet_left < sizeof(struct pim_jp_groups)
 		    || msg->num_groups == 255) {
 			pim_msg_build_header(pim_msg, packet_size,
-					     PIM_MSG_TYPE_JOIN_PRUNE);
+					     PIM_MSG_TYPE_JOIN_PRUNE, false);
 			if (pim_msg_send(pim_ifp->pim_sock_fd,
 					 pim_ifp->primary_address,
 					 qpim_all_pim_routers_addr, pim_msg,
@@ -596,7 +599,7 @@ int pim_joinprune_send(struct pim_rpf *rpf, struct list *groups)
 	if (!new_packet) {
 		// msg->num_groups = htons (msg->num_groups);
 		pim_msg_build_header(pim_msg, packet_size,
-				     PIM_MSG_TYPE_JOIN_PRUNE);
+				     PIM_MSG_TYPE_JOIN_PRUNE, false);
 		if (pim_msg_send(pim_ifp->pim_sock_fd, pim_ifp->primary_address,
 				 qpim_all_pim_routers_addr, pim_msg,
 				 packet_size,

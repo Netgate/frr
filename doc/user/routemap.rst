@@ -7,6 +7,9 @@ Route Maps
 Route maps provide a means to both filter and/or apply actions to route, hence
 allowing policy to be applied to routes.
 
+For a route reflector to apply a ``route-map`` to reflected routes, be sure to
+include ``bgp route-reflector allow-outbound-policy`` in ``router bgp`` mode.
+
 Route maps are an ordered list of route map entries. Each entry may specify up
 to four distinct sets of clauses:
 
@@ -38,11 +41,12 @@ to four distinct sets of clauses:
       the ordered entry in the route-map. See below.
 
    Call Action
-      Call to another route-map, after any :term:`Set Actions` have been carried out.
-      If the route-map called returns `deny` then processing of the route-map
-      finishes and the route is denied, regardless of the :term:Matching Policy` or
-      the :term:`Exit Policy`. If the called route-map returns `permit`, then
-      :term:`Matching Policy` and :term:`Exit Policy` govern further behaviour, as normal.
+      Call to another route-map, after any :term:`Set Actions` have been
+      carried out.  If the route-map called returns `deny` then processing of
+      the route-map finishes and the route is denied, regardless of the
+      :term:`Matching Policy` or the :term:`Exit Policy`. If the called
+      route-map returns `permit`, then :term:`Matching Policy` and :term:`Exit
+      Policy` govern further behaviour, as normal.
 
    Exit Policy
       An entry may, optionally, specify an alternative :dfn:`Exit Policy` to
@@ -84,6 +88,23 @@ deny
 cont
    goto next route-map entry
 
+.. _route-map-show-command:
+
+.. index:: show route-map [WORD]
+.. clicmd:: show route-map [WORD]
+
+   Display data about each daemons knowledge of individual route-maps.
+   If WORD is supplied narrow choice to that particular route-map.
+
+.. _route-map-clear-counter-command:
+
+.. index:: clear route-map counter [WORD]
+.. clicmd:: clear route-map counter [WORD]
+
+   Clear counters that are being stored about the route-map utilization
+   so that subsuquent show commands will indicate since the last clear.
+   If WORD is specified clear just that particular route-map's counters.
+
 .. _route-map-command:
 
 Route Map Command
@@ -105,10 +126,10 @@ Route Map Match Command
 
    Matches the specified `access_list`
 
-.. index:: match ip address PREFIX-LIST
-.. clicmd:: match ip address PREFIX-LIST
+.. index:: match ip address prefix-list PREFIX_LIST
+.. clicmd:: match ip address prefix-list PREFIX_LIST
 
-   Matches the specified `prefix-list`
+   Matches the specified `PREFIX_LIST`
 
 .. index:: match ip address prefix-len 0-32
 .. clicmd:: match ip address prefix-len 0-32
@@ -120,10 +141,10 @@ Route Map Match Command
 
    Matches the specified `access_list`
 
-.. index:: match ipv6 address PREFIX-LIST
-.. clicmd:: match ipv6 address PREFIX-LIST
+.. index:: match ipv6 address prefix-list PREFIX_LIST
+.. clicmd:: match ipv6 address prefix-list PREFIX_LIST
 
-   Matches the specified `prefix-list`
+   Matches the specified `PREFIX_LIST`
 
 .. index:: match ipv6 address prefix-len 0-128
 .. clicmd:: match ipv6 address prefix-len 0-128
@@ -135,8 +156,8 @@ Route Map Match Command
 
    Matches the specified `ipv4_addr`.
 
-.. index:: match aspath AS_PATH
-.. clicmd:: match aspath AS_PATH
+.. index:: match as-path AS_PATH
+.. clicmd:: match as-path AS_PATH
 
    Matches the specified `as_path`.
 
@@ -252,6 +273,12 @@ Route Map Set Command
 
    Set the BGP local preference to `local_pref`.
 
+.. index:: [no] set distance DISTANCE
+.. clicmd:: [no] set distance DISTANCE
+
+   Set the Administrative distance to DISTANCE to use for the route.
+   This is only locally significant and will not be dispersed to peers.
+
 .. index:: set weight WEIGHT
 .. clicmd:: set weight WEIGHT
 
@@ -281,6 +308,11 @@ Route Map Set Command
 .. clicmd:: set origin ORIGIN <egp|igp|incomplete>
 
    Set BGP route origin.
+
+.. index:: set table (1-4294967295)
+.. clicmd:: set table (1-4294967295)
+
+   Set the BGP table to a given table identifier
 
 .. _route-map-call-command:
 
@@ -313,6 +345,7 @@ Route Map Exit Action Command
 .. clicmd:: continue N
 
    Proceed processing the route-map at the first entry whose order is >= N
+
 
 Route Map Examples
 ==================

@@ -30,8 +30,22 @@
 #include "hash.h"
 #include "command_graph.h"
 
-DECLARE_MTYPE(HOST)
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 DECLARE_MTYPE(COMPLETION)
+
+/*
+ * From RFC 1123 (Requirements for Internet Hosts), Section 2.1 on hostnames:
+ * One aspect of host name syntax is hereby changed: the restriction on
+ * the first character is relaxed to allow either a letter or a digit.
+ * Host software MUST support this more liberal syntax.
+ *
+ * Host software MUST handle host names of up to 63 characters and
+ * SHOULD handle host names of up to 255 characters.
+ */
+#define HOSTNAME_LEN   255
 
 /* Host configuration variable */
 struct host {
@@ -64,7 +78,7 @@ struct host {
 	int encrypt;
 
 	/* Banner configuration. */
-	const char *motd;
+	char *motd;
 	char *motdfile;
 };
 
@@ -77,11 +91,13 @@ enum node_type {
 	CONFIG_NODE,		 /* Config node. Default mode of config file. */
 	DEBUG_NODE,		 /* Debug node. */
 	VRF_DEBUG_NODE,		 /* Vrf Debug node. */
+	NORTHBOUND_DEBUG_NODE,	 /* Northbound Debug node. */
 	DEBUG_VNC_NODE,		 /* Debug VNC node. */
+	RMAP_DEBUG_NODE,         /* Route-map debug node */
+	RESOLVER_DEBUG_NODE,	 /* Resolver debug node */
 	AAA_NODE,		 /* AAA node. */
 	KEYCHAIN_NODE,		 /* Key-chain node. */
 	KEYCHAIN_KEY_NODE,       /* Key-chain key node. */
-	LOGICALROUTER_NODE,      /* Logical-Router node. */
 	IP_NODE,		 /* Static ip route node. */
 	VRF_NODE,		 /* VRF mode node. */
 	INTERFACE_NODE,		 /* Interface mode node. */
@@ -141,12 +157,15 @@ enum node_type {
 	BGP_FLOWSPECV6_NODE,	/* BGP IPv6 FLOWSPEC Address-Family */
 	BFD_NODE,		 /* BFD protocol mode. */
 	BFD_PEER_NODE,		 /* BFD peer configuration mode. */
+	OPENFABRIC_NODE,	/* OpenFabric router configuration node */
+	VRRP_NODE,		 /* VRRP node */
+	BMP_NODE,		/* BMP config under router bgp */
 	NODE_TYPE_MAX, /* maximum */
 };
 
 extern vector cmdvec;
 extern const struct message tokennames[];
-extern const char *node_names[];
+extern const char *const node_names[];
 
 /* Node which has some commands and prompt string and configuration
    function pointer . */
@@ -198,7 +217,7 @@ struct cmd_node {
 
 /* helper defines for end-user DEFUN* macros */
 #define DEFUN_CMD_ELEMENT(funcname, cmdname, cmdstr, helpstr, attrs, dnum)     \
-	static struct cmd_element cmdname = {                                  \
+	static const struct cmd_element cmdname = {                            \
 		.string = cmdstr,                                              \
 		.func = funcname,                                              \
 		.doc = helpstr,                                                \
@@ -312,6 +331,9 @@ struct cmd_node {
 
 #define DEFPY_ATTR(funcname, cmdname, cmdstr, helpstr, attr)                   \
 	DEFUN_ATTR(funcname, cmdname, cmdstr, helpstr, attr)
+
+#define DEFPY_HIDDEN(funcname, cmdname, cmdstr, helpstr)                       \
+	DEFUN_HIDDEN(funcname, cmdname, cmdstr, helpstr)
 #endif /* VTYSH_EXTRACT_PL */
 
 /* Some macroes */
@@ -364,7 +386,6 @@ struct cmd_node {
 #define PREFIX_LIST_STR "Build a prefix list\n"
 #define OSPF6_DUMP_TYPE_LIST                                                   \
 	"<neighbor|interface|area|lsa|zebra|config|dbex|spf|route|lsdb|redistribute|hook|asbr|prefix|abr>"
-#define ISIS_STR "IS-IS information\n"
 #define AREA_TAG_STR "[area tag]\n"
 #define COMMUNITY_AANN_STR "Community number where AA and NN are (0-65535)\n"
 #define COMMUNITY_VAL_STR  "Community number in AA:NN format (where AA and NN are (0-65535)) or local-AS|no-advertise|no-export|internet or additive\n"
@@ -376,7 +397,9 @@ struct cmd_node {
 #define SR_STR "Segment-Routing specific commands\n"
 #define WATCHFRR_STR "watchfrr information\n"
 #define ZEBRA_STR "Zebra information\n"
+#define FILTER_LOG_STR "Filter Logs\n"
 
+#define CMD_VNI_RANGE "(1-16777215)"
 #define CONF_BACKUP_EXT ".sav"
 
 /* Command warnings. */
@@ -389,14 +412,20 @@ struct cmd_node {
 #define NEIGHBOR_ADDR_STR2 "Neighbor address\nNeighbor IPv6 address\nInterface name or neighbor tag\n"
 #define NEIGHBOR_ADDR_STR3 "Neighbor address\nIPv6 address\nInterface name\n"
 
+/* Daemons lists */
+#define DAEMONS_STR                                                            \
+	"For the zebra daemon\nFor the rip daemon\nFor the ripng daemon\nFor the ospf daemon\nFor the ospfv6 daemon\nFor the bgp daemon\nFor the isis daemon\nFor the pbr daemon\nFor the fabricd daemon\nFor the pim daemon\nFor the static daemon\nFor the sharpd daemon\nFor the vrrpd daemon\nFor the ldpd daemon\n"
+#define DAEMONS_LIST                                                           \
+	"<zebra|ripd|ripngd|ospfd|ospf6d|bgpd|isisd|pbrd|fabricd|pimd|staticd|sharpd|vrrpd|ldpd>"
+
 /* Prototypes. */
 extern void install_node(struct cmd_node *, int (*)(struct vty *));
 extern void install_default(enum node_type);
-extern void install_element(enum node_type, struct cmd_element *);
+extern void install_element(enum node_type, const struct cmd_element *);
 
 /* known issue with uninstall_element:  changes to cmd_token->attr (i.e.
  * deprecated/hidden) are not reversed. */
-extern void uninstall_element(enum node_type, struct cmd_element *);
+extern void uninstall_element(enum node_type, const struct cmd_element *);
 
 /* Concatenates argv[shift] through argv[argc-1] into a single NUL-terminated
    string with a space between each element (allocated using
@@ -419,7 +448,7 @@ extern char **cmd_complete_command(vector, struct vty *, int *status);
 extern const char *cmd_prompt(enum node_type);
 extern int command_config_read_one_line(struct vty *vty,
 					const struct cmd_element **,
-					int use_config_node);
+					uint32_t line_num, int use_config_node);
 extern int config_from_file(struct vty *, FILE *, unsigned int *line_num);
 extern enum node_type node_parent(enum node_type);
 /*
@@ -470,6 +499,7 @@ extern void host_config_set(const char *);
 extern void print_version(const char *);
 
 extern int cmd_banner_motd_file(const char *);
+extern void cmd_banner_motd_line(const char *line);
 
 /* struct host global, ick */
 extern struct host host;
@@ -486,4 +516,9 @@ cmd_variable_handler_register(const struct cmd_variable_handler *cvh);
 extern char *cmd_variable_comp2str(vector comps, unsigned short cols);
 
 extern void command_setup_early_logging(const char *dest, const char *level);
+
+#ifdef __cplusplus
+}
+#endif
+
 #endif /* _ZEBRA_COMMAND_H */

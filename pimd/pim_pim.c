@@ -39,6 +39,7 @@
 #include "pim_msg.h"
 #include "pim_register.h"
 #include "pim_errors.h"
+#include "pim_bsm.h"
 
 static int on_pim_hello_send(struct thread *t);
 static int pim_hello_send(struct interface *ifp, uint16_t holdtime);
@@ -116,9 +117,9 @@ void pim_sock_delete(struct interface *ifp, const char *delete_message)
 		  delete_message);
 
 	if (!ifp->info) {
-		flog_err(PIM_ERR_CONFIG,
-			  "%s: %s: but PIM not enabled on interface %s (!)",
-			  __PRETTY_FUNCTION__, delete_message, ifp->name);
+		flog_err(EC_PIM_CONFIG,
+			 "%s: %s: but PIM not enabled on interface %s (!)",
+			 __PRETTY_FUNCTION__, delete_message, ifp->name);
 		return;
 	}
 
@@ -148,6 +149,7 @@ int pim_pim_packet(struct interface *ifp, uint8_t *buf, size_t len)
 	uint16_t checksum;     /* computed checksum */
 	struct pim_neighbor *neigh;
 	struct pim_msg_header *header;
+	bool   no_fwd;
 
 	if (len < sizeof(*ip_hdr)) {
 		if (PIM_DEBUG_PIM_PACKETS)
@@ -185,8 +187,15 @@ int pim_pim_packet(struct interface *ifp, uint8_t *buf, size_t len)
 
 	/* for computing checksum */
 	header->checksum = 0;
+	no_fwd = header->Nbit;
 
 	if (header->type == PIM_MSG_TYPE_REGISTER) {
+		if (pim_msg_len < PIM_MSG_REGISTER_LEN) {
+			if (PIM_DEBUG_PIM_PACKETS)
+				zlog_debug("PIM Register Message size=%d shorther than min length %d",
+					   pim_msg_len, PIM_MSG_REGISTER_LEN);
+			return -1;
+		}
 		/* First 8 byte header checksum */
 		checksum = in_cksum(pim_msg, PIM_MSG_REGISTER_LEN);
 		if (checksum != pim_checksum) {
@@ -273,6 +282,11 @@ int pim_pim_packet(struct interface *ifp, uint8_t *buf, size_t len)
 				       pim_msg + PIM_MSG_HEADER_LEN,
 				       pim_msg_len - PIM_MSG_HEADER_LEN);
 		break;
+	case PIM_MSG_TYPE_BOOTSTRAP:
+		return pim_bsm_process(ifp, ip_hdr, pim_msg, pim_msg_len,
+				       no_fwd);
+		break;
+
 	default:
 		if (PIM_DEBUG_PIM_PACKETS) {
 			zlog_debug(
@@ -346,7 +360,7 @@ static int pim_sock_read(struct thread *t)
 		}
 
 		count++;
-		if (count % qpim_packet_process == 0)
+		if (count % router->packet_process == 0)
 			cont = 0;
 	}
 
@@ -376,8 +390,8 @@ static void pim_sock_read_on(struct interface *ifp)
 			   pim_ifp->pim_sock_fd);
 	}
 	pim_ifp->t_pim_sock_read = NULL;
-	thread_add_read(master, pim_sock_read, ifp, pim_ifp->pim_sock_fd,
-			&pim_ifp->t_pim_sock_read);
+	thread_add_read(router->master, pim_sock_read, ifp,
+			pim_ifp->pim_sock_fd, &pim_ifp->t_pim_sock_read);
 }
 
 static int pim_sock_open(struct interface *ifp)
@@ -566,6 +580,7 @@ int pim_msg_send(int fd, struct in_addr src, struct in_addr dst,
 	ip->ip_id = htons(++ip_id);
 	ip->ip_hl = 5;
 	ip->ip_v = 4;
+	ip->ip_tos = IPTOS_PREC_INTERNETCONTROL;
 	ip->ip_p = PIM_IP_PROTO_PIM;
 	ip->ip_src = src;
 	ip->ip_dst = dst;
@@ -573,8 +588,6 @@ int pim_msg_send(int fd, struct in_addr src, struct in_addr dst,
 	ip->ip_len = htons(sendlen);
 
 	if (PIM_DEBUG_PIM_PACKETS) {
-		struct pim_msg_header *header =
-			(struct pim_msg_header *)pim_msg;
 		char dst_str[INET_ADDRSTRLEN];
 		pim_inet4_dump("<dst?>", dst, dst_str, sizeof(dst_str));
 		zlog_debug("%s: to %s on %s: msg_size=%d checksum=%x",
@@ -636,7 +649,7 @@ static int hello_send(struct interface *ifp, uint16_t holdtime)
 	zassert(pim_msg_size >= PIM_PIM_MIN_LEN);
 	zassert(pim_msg_size <= PIM_PIM_BUFSIZE_WRITE);
 
-	pim_msg_build_header(pim_msg, pim_msg_size, PIM_MSG_TYPE_HELLO);
+	pim_msg_build_header(pim_msg, pim_msg_size, PIM_MSG_TYPE_HELLO, false);
 
 	if (pim_msg_send(pim_ifp->pim_sock_fd, pim_ifp->primary_address,
 			 qpim_all_pim_routers_addr, pim_msg, pim_msg_size,
@@ -685,7 +698,7 @@ static void hello_resched(struct interface *ifp)
 			   pim_ifp->pim_hello_period, ifp->name);
 	}
 	THREAD_OFF(pim_ifp->t_pim_hello_timer);
-	thread_add_timer(master, on_pim_hello_send, ifp,
+	thread_add_timer(router->master, on_pim_hello_send, ifp,
 			 pim_ifp->pim_hello_period,
 			 &pim_ifp->t_pim_hello_timer);
 }
@@ -798,8 +811,8 @@ void pim_hello_restart_triggered(struct interface *ifp)
 			   random_msec, ifp->name);
 	}
 
-	thread_add_timer_msec(master, on_pim_hello_send, ifp, random_msec,
-			      &pim_ifp->t_pim_hello_timer);
+	thread_add_timer_msec(router->master, on_pim_hello_send, ifp,
+			      random_msec, &pim_ifp->t_pim_hello_timer);
 }
 
 int pim_sock_add(struct interface *ifp)

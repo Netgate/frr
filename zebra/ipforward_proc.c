@@ -25,13 +25,12 @@
 
 #include "log.h"
 #include "privs.h"
-#include "lib_errors.h"
 
 #include "zebra/ipforward.h"
 
 extern struct zebra_privs_t zserv_privs;
 
-char proc_net_snmp[] = "/proc/net/snmp";
+static const char proc_net_snmp[] = "/proc/net/snmp";
 
 static void dropline(FILE *fp)
 {
@@ -71,13 +70,13 @@ int ipforward(void)
 }
 
 /* char proc_ipv4_forwarding[] = "/proc/sys/net/ipv4/conf/all/forwarding"; */
-char proc_ipv4_forwarding[] = "/proc/sys/net/ipv4/ip_forward";
+static const char proc_ipv4_forwarding[] = "/proc/sys/net/ipv4/ip_forward";
 
 int ipforward_on(void)
 {
 	FILE *fp;
 
-	frr_elevate_privs(&zserv_privs) {
+	frr_with_privs(&zserv_privs) {
 
 		fp = fopen(proc_ipv4_forwarding, "w");
 
@@ -98,7 +97,7 @@ int ipforward_off(void)
 {
 	FILE *fp;
 
-	frr_elevate_privs(&zserv_privs) {
+	frr_with_privs(&zserv_privs) {
 
 		fp = fopen(proc_ipv4_forwarding, "w");
 
@@ -115,7 +114,8 @@ int ipforward_off(void)
 	return ipforward();
 }
 
-char proc_ipv6_forwarding[] = "/proc/sys/net/ipv6/conf/all/forwarding";
+static const char proc_ipv6_forwarding[] =
+	"/proc/sys/net/ipv6/conf/all/forwarding";
 
 int ipforward_ipv6(void)
 {
@@ -144,7 +144,7 @@ int ipforward_ipv6_on(void)
 {
 	FILE *fp;
 
-	frr_elevate_privs(&zserv_privs) {
+	frr_with_privs(&zserv_privs) {
 
 		fp = fopen(proc_ipv6_forwarding, "w");
 
@@ -166,7 +166,7 @@ int ipforward_ipv6_off(void)
 {
 	FILE *fp;
 
-	frr_elevate_privs(&zserv_privs) {
+	frr_with_privs(&zserv_privs) {
 
 		fp = fopen(proc_ipv6_forwarding, "w");
 

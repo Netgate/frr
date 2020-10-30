@@ -15,8 +15,8 @@ OSPF6 router
 .. index:: router ospf6
 .. clicmd:: router ospf6
 
-.. index:: router-id A.B.C.D
-.. clicmd:: router-id A.B.C.D
+.. index:: ospf6 router-id A.B.C.D
+.. clicmd:: ospf6 router-id A.B.C.D
 
    Set router's Router-ID.
 
@@ -195,7 +195,7 @@ Example of ospf6d configured on one interface and area:
     ipv6 ospf6 instance-id 0
    !
    router ospf6
-    router-id 212.17.55.53
+    ospf6 router-id 212.17.55.53
     area 0.0.0.0 range 2001:770:105:2::/64
     interface eth0 area 0.0.0.0
    !

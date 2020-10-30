@@ -22,7 +22,9 @@
 #include <frratomic.h>
 #include "compiler.h"
 
-#define array_size(ar) (sizeof(ar) / sizeof(ar[0]))
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #if defined(HAVE_MALLOC_SIZE) && !defined(HAVE_MALLOC_USABLE_SIZE)
 #define malloc_usable_size(x) malloc_size(x)
@@ -33,10 +35,12 @@
 struct memtype {
 	struct memtype *next, **ref;
 	const char *name;
-	_Atomic size_t n_alloc;
-	_Atomic size_t size;
+	atomic_size_t n_alloc;
+	atomic_size_t n_max;
+	atomic_size_t size;
 #ifdef HAVE_MALLOC_USABLE_SIZE
-	_Atomic size_t total;
+	atomic_size_t total;
+	atomic_size_t max_size;
 #endif
 };
 
@@ -97,45 +101,47 @@ struct memgroup {
 		*_mg_##mname.ref = _mg_##mname.next;                           \
 	}
 
-
 #define DECLARE_MTYPE(name)                                                    \
-	extern struct memtype _mt_##name;                                      \
-	static struct memtype *const MTYPE_##name = &_mt_##name;
+	extern struct memtype MTYPE_##name[1];                                 \
+	/* end */
 
 #define DEFINE_MTYPE_ATTR(group, mname, attr, desc)                            \
-	attr struct memtype _mt_##mname                                        \
-		__attribute__((section(".data.mtypes"))) = {                   \
+	attr struct memtype MTYPE_##mname[1]                                   \
+		__attribute__((section(".data.mtypes"))) = { {                 \
 			.name = desc,                                          \
 			.next = NULL,                                          \
 			.n_alloc = 0,                                          \
 			.size = 0,                                             \
 			.ref = NULL,                                           \
-	};                                                                     \
+	} };                                                                   \
 	static void _mtinit_##mname(void) __attribute__((_CONSTRUCTOR(1001))); \
 	static void _mtinit_##mname(void)                                      \
 	{                                                                      \
 		if (_mg_##group.insert == NULL)                                \
 			_mg_##group.insert = &_mg_##group.types;               \
-		_mt_##mname.ref = _mg_##group.insert;                          \
-		*_mg_##group.insert = &_mt_##mname;                            \
-		_mg_##group.insert = &_mt_##mname.next;                        \
+		MTYPE_##mname->ref = _mg_##group.insert;                       \
+		*_mg_##group.insert = MTYPE_##mname;                           \
+		_mg_##group.insert = &MTYPE_##mname->next;                      \
 	}                                                                      \
 	static void _mtfini_##mname(void) __attribute__((_DESTRUCTOR(1001)));  \
 	static void _mtfini_##mname(void)                                      \
 	{                                                                      \
-		if (_mt_##mname.next)                                          \
-			_mt_##mname.next->ref = _mt_##mname.ref;               \
-		*_mt_##mname.ref = _mt_##mname.next;                           \
-	}
+		if (MTYPE_##mname->next)                                       \
+			MTYPE_##mname->next->ref = MTYPE_##mname->ref;         \
+		*MTYPE_##mname->ref = MTYPE_##mname->next;                     \
+	}                                                                      \
+	/* end */
 
-#define DEFINE_MTYPE(group, name, desc) DEFINE_MTYPE_ATTR(group, name, , desc)
+#define DEFINE_MTYPE(group, name, desc)                                        \
+	DEFINE_MTYPE_ATTR(group, name, , desc)                                 \
+	/* end */
+
 #define DEFINE_MTYPE_STATIC(group, name, desc)                                 \
 	DEFINE_MTYPE_ATTR(group, name, static, desc)                           \
-	static struct memtype *const MTYPE_##name = &_mt_##name;
+	/* end */
 
 DECLARE_MGROUP(LIB)
 DECLARE_MTYPE(TMP)
-DECLARE_MTYPE(PREFIX_FLOWSPEC)
 
 
 extern void *qmalloc(struct memtype *mt, size_t size)
@@ -174,5 +180,9 @@ extern int log_memstats(FILE *fp, const char *);
 #define log_memstats_stderr(prefix) log_memstats(stderr, prefix)
 
 extern void memory_oom(size_t size, const char *name);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* _QUAGGA_MEMORY_H */

@@ -7,6 +7,10 @@
  * (at your option) any later version.
  */
 
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
 #include <net/if_arp.h>
 #include "zebra.h"
 #include "linklist.h"
@@ -292,16 +296,8 @@ void nhrp_interface_update(struct interface *ifp)
 	}
 }
 
-int nhrp_interface_add(int cmd, struct zclient *client, zebra_size_t length,
-		       vrf_id_t vrf_id)
+int nhrp_ifp_create(struct interface *ifp)
 {
-	struct interface *ifp;
-
-	/* read and add the interface in the iflist. */
-	ifp = zebra_interface_add_read(client->ibuf, vrf_id);
-	if (ifp == NULL)
-		return 0;
-
 	debugf(NHRP_DEBUG_IF, "if-add: %s, ifindex: %u, hw_type: %d %s",
 	       ifp->name, ifp->ifindex, ifp->ll_type,
 	       if_link_type_str(ifp->ll_type));
@@ -311,60 +307,37 @@ int nhrp_interface_add(int cmd, struct zclient *client, zebra_size_t length,
 	return 0;
 }
 
-int nhrp_interface_delete(int cmd, struct zclient *client, zebra_size_t length,
-			  vrf_id_t vrf_id)
+int nhrp_ifp_destroy(struct interface *ifp)
 {
-	struct interface *ifp;
-	struct stream *s;
-
-	s = client->ibuf;
-	ifp = zebra_interface_state_read(s, vrf_id);
-	if (ifp == NULL)
-		return 0;
-
 	debugf(NHRP_DEBUG_IF, "if-delete: %s", ifp->name);
-	if_set_index(ifp, ifp->ifindex);
+
 	nhrp_interface_update(ifp);
-	/* if_delete(ifp); */
+
 	return 0;
 }
 
-int nhrp_interface_up(int cmd, struct zclient *client, zebra_size_t length,
-		      vrf_id_t vrf_id)
+int nhrp_ifp_up(struct interface *ifp)
 {
-	struct interface *ifp;
-
-	ifp = zebra_interface_state_read(client->ibuf, vrf_id);
-	if (ifp == NULL)
-		return 0;
-
 	debugf(NHRP_DEBUG_IF, "if-up: %s", ifp->name);
 	nhrp_interface_update_nbma(ifp);
 
 	return 0;
 }
 
-int nhrp_interface_down(int cmd, struct zclient *client, zebra_size_t length,
-			vrf_id_t vrf_id)
+int nhrp_ifp_down(struct interface *ifp)
 {
-	struct interface *ifp;
-
-	ifp = zebra_interface_state_read(client->ibuf, vrf_id);
-	if (ifp == NULL)
-		return 0;
-
 	debugf(NHRP_DEBUG_IF, "if-down: %s", ifp->name);
 	nhrp_interface_update(ifp);
+
 	return 0;
 }
 
-int nhrp_interface_address_add(int cmd, struct zclient *client,
-			       zebra_size_t length, vrf_id_t vrf_id)
+int nhrp_interface_address_add(ZAPI_CALLBACK_ARGS)
 {
 	struct connected *ifc;
 	char buf[PREFIX_STRLEN];
 
-	ifc = zebra_interface_address_read(cmd, client->ibuf, vrf_id);
+	ifc = zebra_interface_address_read(cmd, zclient->ibuf, vrf_id);
 	if (ifc == NULL)
 		return 0;
 
@@ -377,13 +350,12 @@ int nhrp_interface_address_add(int cmd, struct zclient *client,
 	return 0;
 }
 
-int nhrp_interface_address_delete(int cmd, struct zclient *client,
-				  zebra_size_t length, vrf_id_t vrf_id)
+int nhrp_interface_address_delete(ZAPI_CALLBACK_ARGS)
 {
 	struct connected *ifc;
 	char buf[PREFIX_STRLEN];
 
-	ifc = zebra_interface_address_read(cmd, client->ibuf, vrf_id);
+	ifc = zebra_interface_address_read(cmd, zclient->ibuf, vrf_id);
 	if (ifc == NULL)
 		return 0;
 
@@ -392,7 +364,7 @@ int nhrp_interface_address_delete(int cmd, struct zclient *client,
 
 	nhrp_interface_update_address(
 		ifc->ifp, family2afi(PREFIX_FAMILY(ifc->address)), 0);
-	connected_free(ifc);
+	connected_free(&ifc);
 
 	return 0;
 }

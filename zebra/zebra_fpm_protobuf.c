@@ -34,6 +34,7 @@
 #include "qpb/linear_allocator.h"
 #include "fpm/fpm_pb.h"
 
+#include "zebra_router.h"
 #include "zebra_fpm_private.h"
 
 /*
@@ -129,6 +130,7 @@ static inline int add_nexthop(qpb_allocator_t *allocator, Fpm__AddRoute *msg,
 	}
 
 	// TODO: Use src.
+	(void)src;
 
 	return 1;
 }
@@ -171,11 +173,11 @@ static Fpm__AddRoute *create_add_route_message(qpb_allocator_t *allocator,
 	 * Figure out the set of nexthops to be added to the message.
 	 */
 	num_nhs = 0;
-	for (ALL_NEXTHOPS(re->ng, nexthop)) {
-		if (num_nhs >= multipath_num)
+	for (ALL_NEXTHOPS_PTR(re->nhe->nhg, nexthop)) {
+		if (num_nhs >= zrouter.multipath_num)
 			break;
 
-		if (num_nhs >= ZEBRA_NUM_OF(nexthops))
+		if (num_nhs >= array_size(nexthops))
 			break;
 
 		if (nexthop->type == NEXTHOP_TYPE_BLACKHOLE) {

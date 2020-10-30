@@ -24,6 +24,10 @@
 #include "stream.h"
 #include "prefix.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define PBR_STR "Policy Based Routing\n"
 
 /*
@@ -86,7 +90,7 @@ struct pbr_rule {
 	uint32_t unique;
 	struct pbr_filter filter;
 	struct pbr_action action;
-	uint32_t ifindex;
+	ifindex_t ifindex;
 };
 
 /* TCP flags value shared
@@ -117,8 +121,13 @@ struct pbr_rule {
 #define MATCH_PKT_LEN_INVERSE_SET	(1 << 8)
 #define MATCH_FRAGMENT_INVERSE_SET	(1 << 9)
 #define MATCH_ICMP_SET			(1 << 10)
+#define MATCH_PROTOCOL_SET		(1 << 11)
 
 extern int zapi_pbr_rule_encode(uint8_t cmd, struct stream *s,
 				struct pbr_rule *zrule);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* _PBR_H */

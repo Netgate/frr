@@ -18,12 +18,13 @@
 
 #include <zebra.h>
 
+#include "memory.h"
 #include "queue.h"
 #include "imsg.h"
 
-int imsg_fd_overhead = 0;
+static int imsg_fd_overhead = 0;
 
-int imsg_get_fd(struct imsgbuf *);
+static int imsg_get_fd(struct imsgbuf *);
 
 #ifndef __OpenBSD__
 /*
@@ -35,7 +36,7 @@ static int available_fds(unsigned int n)
 	unsigned int i;
 	int ret, fds[256];
 
-	if (n > (sizeof(fds) / sizeof(fds[0])))
+	if (n > (unsigned int)array_size(fds))
 		return (1);
 
 	ret = 0;
@@ -299,11 +300,10 @@ int imsg_get_fd(struct imsgbuf *ibuf)
 	int fd;
 	struct imsg_fd *ifd;
 
-	if ((ifd = TAILQ_FIRST(&ibuf->fds)) == NULL)
+	if ((ifd = TAILQ_POP_FIRST(&ibuf->fds, entry)) == NULL)
 		return (-1);
 
 	fd = ifd->fd;
-	TAILQ_REMOVE(&ibuf->fds, ifd, entry);
 	free(ifd);
 
 	return (fd);

@@ -73,10 +73,19 @@ static void ospf6_set_checksum(void)
 #endif /* DISABLE_IPV6_CHECKSUM */
 }
 
+void ospf6_serv_close(void)
+{
+	if (ospf6_sock > 0) {
+		close(ospf6_sock);
+		ospf6_sock = -1;
+		return;
+	}
+}
+
 /* Make ospf6d's server socket. */
 int ospf6_serv_sock(void)
 {
-	frr_elevate_privs(&ospf6d_privs) {
+	frr_with_privs(&ospf6d_privs) {
 
 		ospf6_sock = socket(AF_INET6, SOCK_RAW, IPPROTO_OSPFIGP);
 		if (ospf6_sock < 0) {
@@ -118,7 +127,7 @@ int ospf6_sso(ifindex_t ifindex, struct in6_addr *group, int option)
 			 sizeof(mreq6));
 	if (ret < 0) {
 		flog_err_sys(
-			LIB_ERR_SOCKET,
+			EC_LIB_SOCKET,
 			"Network: setsockopt (%d) on ifindex %d failed: %s",
 			option, ifindex, safe_strerror(errno));
 		return ret;

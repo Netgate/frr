@@ -39,7 +39,7 @@
 #include "ospfd/ospf_zebra.h"
 #include "ospfd/ospf_dump.h"
 
-struct ospf_route *ospf_route_new()
+struct ospf_route *ospf_route_new(void)
 {
 	struct ospf_route *new;
 
@@ -51,15 +51,15 @@ struct ospf_route *ospf_route_new()
 	return new;
 }
 
-void ospf_route_free(struct ospf_route * or)
+void ospf_route_free(struct ospf_route *or)
 {
 	if (or->paths)
-		list_delete_and_null(& or->paths);
+		list_delete(& or->paths);
 
 	XFREE(MTYPE_OSPF_ROUTE, or);
 }
 
-struct ospf_path *ospf_path_new()
+struct ospf_path *ospf_path_new(void)
 {
 	struct ospf_path *new;
 
@@ -622,8 +622,10 @@ void ospf_intra_add_stub(struct route_table *rt, struct router_lsa_link *link,
 		zlog_debug("ospf_intra_add_stub(): Stop");
 }
 
-const char *ospf_path_type_str[] = {"unknown-type", "intra-area", "inter-area",
-				    "type1-external", "type2-external"};
+static const char *const ospf_path_type_str[] = {
+	"unknown-type", "intra-area", "inter-area", "type1-external",
+	"type2-external"
+};
 
 void ospf_route_table_dump(struct route_table *rt)
 {
@@ -905,7 +907,7 @@ void ospf_prune_unreachable_routers(struct route_table *rtrs)
 				zlog_debug("Pruning router node %s",
 					   inet_ntoa(rn->p.u.prefix4));
 
-			list_delete_and_null(&paths);
+			list_delete(&paths);
 			rn->info = NULL;
 			route_unlock_node(rn);
 		}

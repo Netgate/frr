@@ -23,6 +23,7 @@
 #include "prefix.h"
 #include "lib_errors.h"
 
+#include "bgp_route.h"
 #include "bgp_table.h"
 #include "bgp_flowspec_util.h"
 #include "bgp_flowspec_private.h"
@@ -68,9 +69,8 @@ static int bgp_flowspec_call_non_opaque_decode(uint8_t *nlri_content, int len,
 			     len,
 			     mval, error);
 	if (*error < 0)
-		flog_err(BGP_ERR_FLOWSPEC_PACKET,
-			  "%s: flowspec_op_decode error %d",
-			  __func__, *error);
+		flog_err(EC_BGP_FLOWSPEC_PACKET,
+			 "%s: flowspec_op_decode error %d", __func__, *error);
 	else
 		*match_num = *error;
 	return ret;
@@ -447,11 +447,19 @@ int bgp_flowspec_match_rules_fill(uint8_t *nlri_content, int len,
 					len - offset,
 					prefix, &error);
 			if (error < 0)
-				flog_err(BGP_ERR_FLOWSPEC_PACKET,
-					  "%s: flowspec_ip_address error %d",
-					  __func__, error);
-			else
-				bpem->match_bitmask |= bitmask;
+				flog_err(EC_BGP_FLOWSPEC_PACKET,
+					 "%s: flowspec_ip_address error %d",
+					 __func__, error);
+			else {
+				/* if src or dst address is 0.0.0.0,
+				 * ignore that rule
+				 */
+				if (prefix->family == AF_INET
+				    && prefix->u.prefix4.s_addr == 0)
+					bpem->match_bitmask_iprule |= bitmask;
+				else
+					bpem->match_bitmask |= bitmask;
+			}
 			offset += ret;
 			break;
 		case FLOWSPEC_IP_PROTOCOL:
@@ -542,9 +550,10 @@ int bgp_flowspec_match_rules_fill(uint8_t *nlri_content, int len,
 					len - offset,
 					&bpem->tcpflags, &error);
 			if (error < 0)
-				flog_err(BGP_ERR_FLOWSPEC_PACKET,
-					  "%s: flowspec_tcpflags_decode error %d",
-					  __func__, error);
+				flog_err(
+					EC_BGP_FLOWSPEC_PACKET,
+					"%s: flowspec_tcpflags_decode error %d",
+					__func__, error);
 			else
 				bpem->match_tcpflags_num = error;
 			/* contains the number of slots used */
@@ -557,17 +566,58 @@ int bgp_flowspec_match_rules_fill(uint8_t *nlri_content, int len,
 					len - offset, &bpem->fragment,
 					&error);
 			if (error < 0)
-				flog_err(BGP_ERR_FLOWSPEC_PACKET,
-					  "%s: flowspec_fragment_type_decode error %d",
-					  __func__, error);
+				flog_err(
+					EC_BGP_FLOWSPEC_PACKET,
+					"%s: flowspec_fragment_type_decode error %d",
+					__func__, error);
 			else
 				bpem->match_fragment_num = error;
 			offset += ret;
 			break;
 		default:
-			flog_err(LIB_ERR_DEVELOPMENT, "%s: unknown type %d\n",
-				  __func__, type);
+			flog_err(EC_LIB_DEVELOPMENT, "%s: unknown type %d\n",
+				 __func__, type);
 		}
 	}
+	if (bpem->match_packet_length_num || bpem->match_fragment_num ||
+	    bpem->match_tcpflags_num || bpem->match_dscp_num ||
+	    bpem->match_packet_length_num || bpem->match_icmp_code_num ||
+	    bpem->match_icmp_type_num || bpem->match_port_num ||
+	    bpem->match_src_port_num || bpem->match_dst_port_num ||
+	    bpem->match_protocol_num || bpem->match_bitmask)
+		bpem->type = BGP_PBR_IPSET;
+	else if ((bpem->match_bitmask_iprule & PREFIX_SRC_PRESENT) ||
+		 (bpem->match_bitmask_iprule & PREFIX_DST_PRESENT))
+		/* the extracted policy rule may not need an
+		 * iptables/ipset filtering. check this may not be
+		 * a standard ip rule : permit any to any ( eg)
+		 */
+		bpem->type = BGP_PBR_IPRULE;
+	else
+		bpem->type = BGP_PBR_UNDEFINED;
 	return error;
+}
+
+/* return 1 if FS entry invalid or no NH IP */
+int bgp_flowspec_get_first_nh(struct bgp *bgp, struct bgp_path_info *pi,
+			      struct prefix *p)
+{
+	struct bgp_pbr_entry_main api;
+	int i;
+	struct bgp_node *rn = pi->net;
+	struct bgp_pbr_entry_action *api_action;
+
+	memset(&api, 0, sizeof(struct bgp_pbr_entry_main));
+	if (bgp_pbr_build_and_validate_entry(&rn->p, pi, &api) < 0)
+		return 1;
+	for (i = 0; i < api.action_num; i++) {
+		api_action = &api.actions[i];
+		if (api_action->action != ACTION_REDIRECT_IP)
+			continue;
+		p->family = AF_INET;
+		p->prefixlen = IPV4_MAX_BITLEN;
+		p->u.prefix4 = api_action->u.zr.redirect_ip_v4;
+		return 0;
+	}
+	return 1;
 }

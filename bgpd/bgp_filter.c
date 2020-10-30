@@ -77,7 +77,7 @@ struct as_list {
 	struct as_filter *tail;
 };
 
-/* ip as-path access-list 10 permit AS1. */
+/* as-path access-list 10 permit AS1. */
 
 static struct as_list_master as_list_master = {{NULL, NULL},
 					       {NULL, NULL},
@@ -95,8 +95,7 @@ static void as_filter_free(struct as_filter *asfilter)
 {
 	if (asfilter->reg)
 		bgp_regex_free(asfilter->reg);
-	if (asfilter->reg_str)
-		XFREE(MTYPE_AS_FILTER_STR, asfilter->reg_str);
+	XFREE(MTYPE_AS_FILTER_STR, asfilter->reg_str);
 	XFREE(MTYPE_AS_FILTER, asfilter);
 }
 
@@ -194,7 +193,7 @@ static struct as_list *as_list_insert(const char *name)
 	/* If name is made by all digit character.  We treat it as
 	   number. */
 	for (number = 0, i = 0; i < strlen(name); i++) {
-		if (isdigit((int)name[i]))
+		if (isdigit((unsigned char)name[i]))
 			number = (number * 10) + (name[i] - '0');
 		else
 			break;
@@ -338,8 +337,7 @@ static void as_list_filter_delete(struct as_list *aslist,
 	/* Run hook function. */
 	if (as_list_master.delete_hook)
 		(*as_list_master.delete_hook)(name);
-	if (name)
-		XFREE(MTYPE_AS_STR, name);
+	XFREE(MTYPE_AS_STR, name);
 }
 
 static int as_filter_match(struct as_filter *asfilter, struct aspath *aspath)
@@ -391,16 +389,25 @@ static int as_list_dup_check(struct as_list *aslist, struct as_filter *new)
 	return 0;
 }
 
-DEFUN (ip_as_path,
-       ip_as_path_cmd,
-       "ip as-path access-list WORD <deny|permit> LINE...",
-       IP_STR
-       "BGP autonomous system path filter\n"
-       "Specify an access list name\n"
-       "Regular expression access list name\n"
-       "Specify packets to reject\n"
-       "Specify packets to forward\n"
-       "A regular-expression to match the BGP AS paths\n")
+int config_bgp_aspath_validate(const char *regstr)
+{
+	char valid_chars[] = "1234567890_^|[,{}() ]$*+.?-\\";
+
+	if (strspn(regstr, valid_chars) == strlen(regstr))
+		return 1;
+
+	return 0;
+}
+
+DEFUN(as_path, bgp_as_path_cmd,
+      "bgp as-path access-list WORD <deny|permit> LINE...",
+      BGP_STR
+      "BGP autonomous system path filter\n"
+      "Specify an access list name\n"
+      "Regular expression access list name\n"
+      "Specify packets to reject\n"
+      "Specify packets to forward\n"
+      "A regular-expression (1234567890_^|[,{}() ]$*+.?-\\) to match the BGP AS paths\n")
 {
 	int idx = 0;
 	enum as_filter_type type;
@@ -428,6 +435,12 @@ DEFUN (ip_as_path,
 		return CMD_WARNING_CONFIG_FAILED;
 	}
 
+	if (!config_bgp_aspath_validate(regstr)) {
+		vty_out(vty, "Invalid character in as-path access-list %s\n",
+			regstr);
+		return CMD_WARNING_CONFIG_FAILED;
+	}
+
 	asfilter = as_filter_make(regex, regstr, type);
 
 	XFREE(MTYPE_TMP, regstr);
@@ -444,17 +457,16 @@ DEFUN (ip_as_path,
 	return CMD_SUCCESS;
 }
 
-DEFUN (no_ip_as_path,
-       no_ip_as_path_cmd,
-       "no ip as-path access-list WORD <deny|permit> LINE...",
-       NO_STR
-       IP_STR
-       "BGP autonomous system path filter\n"
-       "Specify an access list name\n"
-       "Regular expression access list name\n"
-       "Specify packets to reject\n"
-       "Specify packets to forward\n"
-       "A regular-expression to match the BGP AS paths\n")
+DEFUN(no_as_path, no_bgp_as_path_cmd,
+      "no bgp as-path access-list WORD <deny|permit> LINE...",
+      NO_STR
+      BGP_STR
+      "BGP autonomous system path filter\n"
+      "Specify an access list name\n"
+      "Regular expression access list name\n"
+      "Specify packets to reject\n"
+      "Specify packets to forward\n"
+      "A regular-expression (1234567890_^|[,{}() ]$*+.?-\\) to match the BGP AS paths\n")
 {
 	int idx = 0;
 	enum as_filter_type type;
@@ -469,7 +481,7 @@ DEFUN (no_ip_as_path,
 	/* Lookup AS list from AS path list. */
 	aslist = as_list_lookup(aslistname);
 	if (aslist == NULL) {
-		vty_out(vty, "ip as-path access-list %s doesn't exist\n",
+		vty_out(vty, "bgp as-path access-list %s doesn't exist\n",
 			aslistname);
 		return CMD_WARNING_CONFIG_FAILED;
 	}
@@ -487,6 +499,12 @@ DEFUN (no_ip_as_path,
 	/* Compile AS path. */
 	argv_find(argv, argc, "LINE", &idx);
 	regstr = argv_concat(argv, argc, idx);
+
+	if (!config_bgp_aspath_validate(regstr)) {
+		vty_out(vty, "Invalid character in as-path access-list %s\n",
+			regstr);
+		return CMD_WARNING_CONFIG_FAILED;
+	}
 
 	regex = bgp_regcomp(regstr);
 	if (!regex) {
@@ -511,11 +529,11 @@ DEFUN (no_ip_as_path,
 	return CMD_SUCCESS;
 }
 
-DEFUN (no_ip_as_path_all,
-       no_ip_as_path_all_cmd,
-       "no ip as-path access-list WORD",
+DEFUN (no_as_path_all,
+       no_bgp_as_path_all_cmd,
+       "no bgp as-path access-list WORD",
        NO_STR
-       IP_STR
+       BGP_STR
        "BGP autonomous system path filter\n"
        "Specify an access list name\n"
        "Regular expression access list name\n")
@@ -525,7 +543,7 @@ DEFUN (no_ip_as_path_all,
 
 	aslist = as_list_lookup(argv[idx_word]->arg);
 	if (aslist == NULL) {
-		vty_out(vty, "ip as-path access-list %s doesn't exist\n",
+		vty_out(vty, "bgp as-path access-list %s doesn't exist\n",
 			argv[idx_word]->arg);
 		return CMD_WARNING_CONFIG_FAILED;
 	}
@@ -538,6 +556,15 @@ DEFUN (no_ip_as_path_all,
 
 	return CMD_SUCCESS;
 }
+
+ALIAS (no_as_path_all,
+       no_ip_as_path_all_cmd,
+       "no ip as-path access-list WORD",
+       NO_STR
+       IP_STR
+       "BGP autonomous system path filter\n"
+       "Specify an access list name\n"
+       "Regular expression access list name\n")
 
 static void as_list_show(struct vty *vty, struct as_list *aslist)
 {
@@ -579,11 +606,11 @@ static void as_list_show_all(struct vty *vty)
 	}
 }
 
-DEFUN (show_ip_as_path_access_list,
-       show_ip_as_path_access_list_cmd,
-       "show ip as-path-access-list WORD",
+DEFUN (show_as_path_access_list,
+       show_bgp_as_path_access_list_cmd,
+       "show bgp as-path-access-list WORD",
        SHOW_STR
-       IP_STR
+       BGP_STR
        "List AS path access lists\n"
        "AS path access list name\n")
 {
@@ -597,16 +624,31 @@ DEFUN (show_ip_as_path_access_list,
 	return CMD_SUCCESS;
 }
 
-DEFUN (show_ip_as_path_access_list_all,
-       show_ip_as_path_access_list_all_cmd,
-       "show ip as-path-access-list",
+ALIAS (show_as_path_access_list,
+       show_ip_as_path_access_list_cmd,
+       "show ip as-path-access-list WORD",
        SHOW_STR
        IP_STR
+       "List AS path access lists\n"
+       "AS path access list name\n")
+
+DEFUN (show_as_path_access_list_all,
+       show_bgp_as_path_access_list_all_cmd,
+       "show bgp as-path-access-list",
+       SHOW_STR
+       BGP_STR
        "List AS path access lists\n")
 {
 	as_list_show_all(vty);
 	return CMD_SUCCESS;
 }
+
+ALIAS (show_as_path_access_list_all,
+       show_ip_as_path_access_list_all_cmd,
+       "show ip as-path-access-list",
+       SHOW_STR
+       IP_STR
+       "List AS path access lists\n")
 
 static int config_write_as_list(struct vty *vty)
 {
@@ -617,7 +659,7 @@ static int config_write_as_list(struct vty *vty)
 	for (aslist = as_list_master.num.head; aslist; aslist = aslist->next)
 		for (asfilter = aslist->head; asfilter;
 		     asfilter = asfilter->next) {
-			vty_out(vty, "ip as-path access-list %s %s %s\n",
+			vty_out(vty, "bgp as-path access-list %s %s %s\n",
 				aslist->name, filter_type_str(asfilter->type),
 				asfilter->reg_str);
 			write++;
@@ -626,7 +668,7 @@ static int config_write_as_list(struct vty *vty)
 	for (aslist = as_list_master.str.head; aslist; aslist = aslist->next)
 		for (asfilter = aslist->head; asfilter;
 		     asfilter = asfilter->next) {
-			vty_out(vty, "ip as-path access-list %s %s %s\n",
+			vty_out(vty, "bgp as-path access-list %s %s %s\n",
 				aslist->name, filter_type_str(asfilter->type),
 				asfilter->reg_str);
 			write++;
@@ -641,11 +683,14 @@ void bgp_filter_init(void)
 {
 	install_node(&as_list_node, config_write_as_list);
 
-	install_element(CONFIG_NODE, &ip_as_path_cmd);
-	install_element(CONFIG_NODE, &no_ip_as_path_cmd);
+	install_element(CONFIG_NODE, &bgp_as_path_cmd);
+	install_element(CONFIG_NODE, &no_bgp_as_path_cmd);
+	install_element(CONFIG_NODE, &no_bgp_as_path_all_cmd);
 	install_element(CONFIG_NODE, &no_ip_as_path_all_cmd);
 
+	install_element(VIEW_NODE, &show_bgp_as_path_access_list_cmd);
 	install_element(VIEW_NODE, &show_ip_as_path_access_list_cmd);
+	install_element(VIEW_NODE, &show_bgp_as_path_access_list_all_cmd);
 	install_element(VIEW_NODE, &show_ip_as_path_access_list_all_cmd);
 }
 

@@ -30,8 +30,9 @@
 
 #define RT_ADDRSTRLEN 28
 
-/* EVPN prefix lengths. This reprsent the sizeof struct prefix_evpn  */
-#define EVPN_ROUTE_PREFIXLEN     224
+/* EVPN prefix lengths. This represents the sizeof struct evpn_addr
+ * in bits  */
+#define EVPN_ROUTE_PREFIXLEN (sizeof(struct evpn_addr) * 8)
 
 /* EVPN route types. */
 typedef enum {
@@ -73,6 +74,9 @@ struct bgpevpn {
 	 * advertising subnet for this VNI */
 	uint8_t advertise_subnet;
 
+	/* Flag to indicate if we are advertising the svi mac ip for this VNI*/
+	uint8_t advertise_svi_macip;
+
 	/* Id for deriving the RD
 	 * automatically for this VNI */
 	uint16_t rd_id;
@@ -82,6 +86,9 @@ struct bgpevpn {
 
 	/* Route type 3 field */
 	struct in_addr originator_ip;
+
+	/* PIM-SM MDT group for BUM flooding */
+	struct in_addr mcast_grp;
 
 	/* Import and Export RTs. */
 	struct list *import_rtl;
@@ -161,6 +168,38 @@ struct vrf_irt_node {
 #define RT_TYPE_EXPORT 2
 #define RT_TYPE_BOTH   3
 
+#define EVPN_DAD_DEFAULT_TIME 180 /* secs */
+#define EVPN_DAD_DEFAULT_MAX_MOVES 5 /* default from RFC 7432 */
+#define EVPN_DAD_DEFAULT_AUTO_RECOVERY_TIME 1800 /* secs */
+
+struct bgp_evpn_info {
+	/* enable disable dup detect */
+	bool dup_addr_detect;
+
+	/* Detection time(M) */
+	int dad_time;
+	/* Detection max moves(N) */
+	uint32_t dad_max_moves;
+	/* Permanent freeze */
+	bool dad_freeze;
+	/* Recovery time */
+	uint32_t dad_freeze_time;
+
+	/* EVPN enable - advertise svi macip routes */
+	int advertise_svi_macip;
+
+	/* PIP feature knob */
+	bool advertise_pip;
+	/* PIP IP (sys ip) */
+	struct in_addr pip_ip;
+	struct in_addr pip_ip_static;
+	/* PIP MAC (sys MAC) */
+	struct ethaddr pip_rmac;
+	struct ethaddr pip_rmac_static;
+	struct ethaddr pip_rmac_zebra;
+	bool is_anycast_mac;
+};
+
 static inline int is_vrf_rd_configured(struct bgp *bgp_vrf)
 {
 	return (CHECK_FLAG(bgp_vrf->vrf_flags, BGP_VRF_RD_CFGD));
@@ -211,6 +250,7 @@ static inline void bgpevpn_unlink_from_l3vni(struct bgpevpn *vpn)
 	listnode_delete(vpn->bgp_vrf->l2vnis, vpn);
 
 	/* remove the backpointer to the vrf instance */
+	bgp_unlock(vpn->bgp_vrf);
 	vpn->bgp_vrf = NULL;
 }
 
@@ -227,7 +267,7 @@ static inline void bgpevpn_link_to_l3vni(struct bgpevpn *vpn)
 		return;
 
 	/* associate the vpn to the bgp_vrf instance */
-	vpn->bgp_vrf = bgp_vrf;
+	vpn->bgp_vrf = bgp_lock(bgp_vrf);
 	listnode_add_sort(bgp_vrf->l2vnis, vpn);
 
 	/* check if we are advertising two labels for this vpn */
@@ -243,6 +283,11 @@ static inline int is_vni_configured(struct bgpevpn *vpn)
 static inline int is_vni_live(struct bgpevpn *vpn)
 {
 	return (CHECK_FLAG(vpn->flags, VNI_FLAG_LIVE));
+}
+
+static inline int is_l3vni_live(struct bgp *bgp_vrf)
+{
+	return (bgp_vrf->l3vni && bgp_vrf->l3vni_svi_ifindex);
 }
 
 static inline int is_rd_configured(struct bgpevpn *vpn)
@@ -466,6 +511,19 @@ static inline int is_es_local(struct evpnes *es)
 	return CHECK_FLAG(es->flags, EVPNES_LOCAL) ? 1 : 0;
 }
 
+static inline bool bgp_evpn_is_svi_macip_enabled(struct bgpevpn *vpn)
+{
+	struct bgp *bgp_evpn = NULL;
+
+	bgp_evpn = bgp_get_evpn();
+
+	return (bgp_evpn->evpn_info->advertise_svi_macip ||
+		vpn->advertise_svi_macip);
+}
+
+extern void bgp_evpn_install_uninstall_default_route(struct bgp *bgp_vrf,
+						     afi_t afi, safi_t safi,
+						     bool add);
 extern void evpn_rt_delete_auto(struct bgp *, vni_t, struct list *);
 extern void bgp_evpn_configure_export_rt_for_vrf(struct bgp *bgp_vrf,
 						 struct ecommunity *ecomadd);
@@ -496,12 +554,14 @@ extern void bgp_evpn_derive_auto_rd(struct bgp *bgp, struct bgpevpn *vpn);
 extern void bgp_evpn_derive_auto_rd_for_vrf(struct bgp *bgp);
 extern struct bgpevpn *bgp_evpn_lookup_vni(struct bgp *bgp, vni_t vni);
 extern struct bgpevpn *bgp_evpn_new(struct bgp *bgp, vni_t vni,
-				    struct in_addr originator_ip,
-				    vrf_id_t tenant_vrf_id);
+		struct in_addr originator_ip,
+		vrf_id_t tenant_vrf_id,
+		struct in_addr mcast_grp);
 extern void bgp_evpn_free(struct bgp *bgp, struct bgpevpn *vpn);
 extern struct evpnes *bgp_evpn_lookup_es(struct bgp *bgp, esi_t *esi);
 extern struct evpnes *bgp_evpn_es_new(struct bgp *bgp, esi_t *esi,
 				      struct ipaddr *originator_ip);
 extern void bgp_evpn_es_free(struct bgp *bgp, struct evpnes *es);
 extern bool bgp_evpn_lookup_l3vni_l2vni_table(vni_t vni);
+extern int update_routes_for_vni(struct bgp *bgp, struct bgpevpn *vpn);
 #endif /* _BGP_EVPN_PRIVATE_H */

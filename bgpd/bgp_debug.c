@@ -101,7 +101,7 @@ const struct message bgp_status_msg[] = {{Idle, "Idle"},
 					 {0}};
 
 /* BGP message type string. */
-const char *bgp_type_str[] = {NULL,	   "OPEN",      "UPDATE",
+const char *const bgp_type_str[] = {NULL,	   "OPEN",      "UPDATE",
 			      "NOTIFICATION", "KEEPALIVE", "ROUTE-REFRESH",
 			      "CAPABILITY"};
 
@@ -169,8 +169,8 @@ static const struct message bgp_notify_capability_msg[] = {
 	{0}};
 
 /* Origin strings. */
-const char *bgp_origin_str[] = {"i", "e", "?"};
-const char *bgp_origin_long_str[] = {"IGP", "EGP", "incomplete"};
+const char *const bgp_origin_str[] = {"i", "e", "?"};
+const char *const bgp_origin_long_str[] = {"IGP", "EGP", "incomplete"};
 
 static int bgp_debug_print_evpn_prefix(struct vty *vty, const char *desc,
 				       struct prefix *p);
@@ -209,7 +209,7 @@ static void bgp_debug_list_free(struct list *list)
 			listnode_delete(list, filter);
 
 			if (filter->p)
-				prefix_free(filter->p);
+				prefix_free(&filter->p);
 
 			if (filter->host)
 				XFREE(MTYPE_BGP_DEBUG_STR, filter->host);
@@ -323,7 +323,7 @@ static int bgp_debug_list_remove_entry(struct list *list, const char *host,
 		} else if (p && filter->p->prefixlen == p->prefixlen
 			   && prefix_match(filter->p, p)) {
 			listnode_delete(list, filter);
-			prefix_free(filter->p);
+			prefix_free(&filter->p);
 			XFREE(MTYPE_BGP_DEBUG_FILTER, filter);
 			return 1;
 		}
@@ -367,6 +367,8 @@ int bgp_dump_attr(struct attr *attr, char *buf, size_t size)
 
 	if (!attr)
 		return 0;
+
+	buf[0] = '\0';
 
 	if (CHECK_FLAG(attr->flag, ATTR_FLAG_BIT(BGP_ATTR_NEXT_HOP)))
 		snprintf(buf, size, "nexthop %s", inet_ntoa(attr->nexthop));
@@ -1380,7 +1382,7 @@ DEFUN (no_debug_bgp_update_direct_peer,
 
 DEFPY (debug_bgp_update_prefix_afi_safi,
        debug_bgp_update_prefix_afi_safi_cmd,
-       "debug bgp updates prefix l2vpn$afi evpn$safi type <macip mac <M:A:C|M:A:C/M> [ip <A.B.C.D|X:X::X:X>]|multicast ip <A.B.C.D|X:X::X:X>|prefix ip <A.B.C.D/M|X:X::X:X/M>>",
+       "debug bgp updates prefix l2vpn$afi evpn$safi type <macip mac <X:X:X:X:X:X|X:X:X:X:X:X/M> [ip <A.B.C.D|X:X::X:X>]|multicast ip <A.B.C.D|X:X::X:X>|prefix ip <A.B.C.D/M|X:X::X:X/M>>",
        DEBUG_STR
        BGP_STR
        "BGP updates\n"
@@ -1410,7 +1412,7 @@ DEFPY (debug_bgp_update_prefix_afi_safi,
 
 	ret = bgp_debug_parse_evpn_prefix(vty, argv, argc, &argv_p);
 	if (ret != CMD_SUCCESS) {
-		prefix_free(argv_p);
+		prefix_free(&argv_p);
 		return ret;
 	}
 
@@ -1423,7 +1425,7 @@ DEFPY (debug_bgp_update_prefix_afi_safi,
 		vty_out(vty,
 			"BGP updates debugging is already enabled for %s\n",
 			buf);
-		prefix_free(argv_p);
+		prefix_free(&argv_p);
 		return CMD_SUCCESS;
 	}
 
@@ -1436,14 +1438,14 @@ DEFPY (debug_bgp_update_prefix_afi_safi,
 		vty_out(vty, "BGP updates debugging is on for %s\n", buf);
 	}
 
-	prefix_free(argv_p);
+	prefix_free(&argv_p);
 
 	return CMD_SUCCESS;
 }
 
 DEFPY (no_debug_bgp_update_prefix_afi_safi,
        no_debug_bgp_update_prefix_afi_safi_cmd,
-       "no debug bgp updates prefix l2vpn$afi evpn$safi type <macip mac <M:A:C|M:A:C/M> [ip <A.B.C.D|X:X::X:X>]|multicast ip <A.B.C.D|X:X::X:X>|prefix ip <A.B.C.D/M|X:X::X:X/M>>",
+       "no debug bgp updates prefix l2vpn$afi evpn$safi type <macip mac <X:X:X:X:X:X|X:X:X:X:X:X/M> [ip <A.B.C.D|X:X::X:X>]|multicast ip <A.B.C.D|X:X::X:X>|prefix ip <A.B.C.D/M|X:X::X:X/M>>",
        NO_STR
        DEBUG_STR
        BGP_STR
@@ -1475,7 +1477,7 @@ DEFPY (no_debug_bgp_update_prefix_afi_safi,
 
 	ret = bgp_debug_parse_evpn_prefix(vty, argv, argc, &argv_p);
 	if (ret != CMD_SUCCESS) {
-		prefix_free(argv_p);
+		prefix_free(&argv_p);
 		return ret;
 	}
 
@@ -1503,7 +1505,7 @@ DEFPY (no_debug_bgp_update_prefix_afi_safi,
 		vty_out(vty, "BGP updates debugging was not enabled for %s\n",
 			buf);
 
-	prefix_free(argv_p);
+	prefix_free(&argv_p);
 
 	return ret;
 }
@@ -2119,67 +2121,6 @@ DEFUN_NOSH (show_debugging_bgp,
 
 	vty_out(vty, "\n");
 	return CMD_SUCCESS;
-}
-
-/* return count of number of debug flags set */
-int bgp_debug_count(void)
-{
-	int ret = 0;
-	if (BGP_DEBUG(as4, AS4))
-		ret++;
-
-	if (BGP_DEBUG(as4, AS4_SEGMENT))
-		ret++;
-
-	if (BGP_DEBUG(bestpath, BESTPATH))
-		ret++;
-
-	if (BGP_DEBUG(keepalive, KEEPALIVE))
-		ret++;
-
-	if (BGP_DEBUG(neighbor_events, NEIGHBOR_EVENTS))
-		ret++;
-
-	if (BGP_DEBUG(nht, NHT))
-		ret++;
-
-	if (BGP_DEBUG(update_groups, UPDATE_GROUPS))
-		ret++;
-
-	if (BGP_DEBUG(update, UPDATE_PREFIX))
-		ret++;
-
-	if (BGP_DEBUG(update, UPDATE_IN))
-		ret++;
-
-	if (BGP_DEBUG(update, UPDATE_OUT))
-		ret++;
-
-	if (BGP_DEBUG(zebra, ZEBRA))
-		ret++;
-
-	if (BGP_DEBUG(allow_martians, ALLOW_MARTIANS))
-		ret++;
-
-	if (BGP_DEBUG(vpn, VPN_LEAK_FROM_VRF))
-		ret++;
-	if (BGP_DEBUG(vpn, VPN_LEAK_TO_VRF))
-		ret++;
-	if (BGP_DEBUG(vpn, VPN_LEAK_RMAP_EVENT))
-		ret++;
-	if (BGP_DEBUG(vpn, VPN_LEAK_LABEL))
-		ret++;
-	if (BGP_DEBUG(flowspec, FLOWSPEC))
-		ret++;
-	if (BGP_DEBUG(labelpool, LABELPOOL))
-		ret++;
-
-	if (BGP_DEBUG(pbr, PBR))
-		ret++;
-	if (BGP_DEBUG(pbr, PBR_ERROR))
-		ret++;
-
-	return ret;
 }
 
 static int bgp_config_write_debug(struct vty *vty)

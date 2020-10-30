@@ -27,6 +27,7 @@
 #include "static_memory.h"
 #include "static_vrf.h"
 #include "static_routes.h"
+#include "static_zebra.h"
 #include "static_vty.h"
 
 static void zebra_stable_node_cleanup(struct route_table *table,
@@ -76,6 +77,8 @@ static int static_vrf_new(struct vrf *vrf)
 
 static int static_vrf_enable(struct vrf *vrf)
 {
+	static_zebra_vrf_register(vrf);
+
 	static_fixup_vrf_ids(vrf->info);
 
 	/*
@@ -89,6 +92,7 @@ static int static_vrf_enable(struct vrf *vrf)
 
 static int static_vrf_disable(struct vrf *vrf)
 {
+	static_zebra_vrf_unregister(vrf);
 	return 0;
 }
 
@@ -164,7 +168,7 @@ static int static_vrf_config_write(struct vty *vty)
 			      SAFI_UNICAST, "ipv6 route");
 
 		if (vrf->vrf_id != VRF_DEFAULT)
-			vty_endframe(vty, "!\n");
+			vty_endframe(vty, " exit-vrf\n!\n");
 	}
 
 	return 0;
@@ -196,7 +200,7 @@ int static_vrf_has_config(struct static_vrf *svrf)
 void static_vrf_init(void)
 {
 	vrf_init(static_vrf_new, static_vrf_enable,
-		 static_vrf_disable, static_vrf_delete);
+		 static_vrf_disable, static_vrf_delete, NULL);
 
 	vrf_cmd_init(static_vrf_config_write, &static_privs);
 }

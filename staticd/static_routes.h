@@ -44,6 +44,26 @@ typedef enum {
 	STATIC_IPV6_GATEWAY_IFNAME,
 } static_types;
 
+/*
+ * Route Creation gives us:
+ *  START -> Initial State, only exit is when we send the route to
+ *          zebra for installation
+ * When we send the route to Zebra move to SENT_TO_ZEBRA
+ *  SENT_TO_ZEBRA -> A way to notice that we've sent the route to zebra
+ *                   But have not received a response on it's status yet
+ * After The response from zebra we move to INSTALLED or FAILED
+ *  INSTALLED -> Route was accepted
+ *  FAILED -> Route was rejected
+ * When we receive notification about a nexthop that a route uses
+ * We move the route back to START and initiate the process again.
+ */
+enum static_install_states {
+	STATIC_START,
+	STATIC_SENT_TO_ZEBRA,
+	STATIC_INSTALLED,
+	STATIC_NOT_INSTALLED,
+};
+
 /* Static route information. */
 struct static_route {
 	/* For linked list. */
@@ -54,6 +74,12 @@ struct static_route {
 	vrf_id_t vrf_id;
 	vrf_id_t nh_vrf_id;
 	char nh_vrfname[VRF_NAMSIZ + 1];
+
+	/*
+	 * States that we walk the route through
+	 * To know where we are.
+	 */
+	enum static_install_states state;
 
 	/* Administrative distance. */
 	uint8_t distance;
@@ -79,6 +105,13 @@ struct static_route {
 	struct static_nh_label snh_label;
 
 	uint32_t table_id;
+
+	/*
+	 * Whether to pretend the nexthop is directly attached to the specified
+	 * link. Only meaningful when both a gateway address and interface name
+	 * are specified.
+	 */
+	bool onlink;
 };
 
 extern bool mpls_enabled;
@@ -94,7 +127,7 @@ extern int static_add_route(afi_t afi, safi_t safi, uint8_t type,
 			    uint8_t distance, struct static_vrf *svrf,
 			    struct static_vrf *nh_svrf,
 			    struct static_nh_label *snh_label,
-			    uint32_t table_id);
+			    uint32_t table_id, bool onlink);
 
 extern int static_delete_route(afi_t afi, safi_t safi, uint8_t type,
 			       struct prefix *p, struct prefix_ipv6 *src_p,
@@ -105,6 +138,8 @@ extern int static_delete_route(afi_t afi, safi_t safi, uint8_t type,
 			       uint32_t table_id);
 
 extern void static_cleanup_vrf_ids(struct static_vrf *disable_svrf);
+
+extern void static_install_intf_nh(struct interface *ifp);
 
 extern void static_ifindex_update(struct interface *ifp, bool up);
 #endif

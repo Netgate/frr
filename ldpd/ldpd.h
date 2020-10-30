@@ -446,7 +446,7 @@ DECLARE_QOBJ_TYPE(l2vpn)
 #define L2VPN_TYPE_VPLS		2
 
 /* ldp_conf */
-enum ldpd_process {
+extern enum ldpd_process {
 	PROC_MAIN,
 	PROC_LDP_ENGINE,
 	PROC_LDE_ENGINE
@@ -543,7 +543,8 @@ struct kroute {
 	uint32_t		 local_label;
 	uint32_t		 remote_label;
 	unsigned short		 ifindex;
-	uint8_t			 priority;
+	uint8_t			 route_type;
+	uint8_t			 route_instance;
 	uint16_t		 flags;
 };
 

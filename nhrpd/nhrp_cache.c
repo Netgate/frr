@@ -30,16 +30,18 @@ const char *const nhrp_cache_type_str[] = {
 		[NHRP_CACHE_LOCAL] = "local",
 };
 
-static unsigned int nhrp_cache_protocol_key(void *peer_data)
+static unsigned int nhrp_cache_protocol_key(const void *peer_data)
 {
-	struct nhrp_cache *p = peer_data;
+	const struct nhrp_cache *p = peer_data;
 	return sockunion_hash(&p->remote_addr);
 }
 
-static int nhrp_cache_protocol_cmp(const void *cache_data, const void *key_data)
+static bool nhrp_cache_protocol_cmp(const void *cache_data,
+				    const void *key_data)
 {
 	const struct nhrp_cache *a = cache_data;
 	const struct nhrp_cache *b = key_data;
+
 	return sockunion_same(&a->remote_addr, &b->remote_addr);
 }
 
@@ -343,7 +345,7 @@ struct nhrp_cache_iterator_ctx {
 	void *ctx;
 };
 
-static void nhrp_cache_iterator(struct hash_backet *b, void *ctx)
+static void nhrp_cache_iterator(struct hash_bucket *b, void *ctx)
 {
 	struct nhrp_cache_iterator_ctx *ic = ctx;
 	ic->cb(b->data, ic->ctx);

@@ -77,7 +77,7 @@ struct ospf_route *ospf_find_asbr_route(struct ospf *ospf,
 
 	/* If none is found -- look through all. */
 	if (listcount(chosen) == 0) {
-		list_delete_and_null(&chosen);
+		list_delete(&chosen);
 		chosen = rn->info;
 	}
 
@@ -98,7 +98,7 @@ struct ospf_route *ospf_find_asbr_route(struct ospf *ospf,
 		}
 
 	if (chosen != rn->info)
-		list_delete_and_null(&chosen);
+		list_delete(&chosen);
 
 	return best;
 }
@@ -190,7 +190,7 @@ ospf_ase_calculate_asbr_route (struct ospf *ospf,
 	zlog_debug ("ospf_ase_calculate(): Originating router is not an ASBR");
       return NULL;
     }
-   
+
   if (al->e[0].fwd_addr.s_addr != 0)
     {
       if (IS_DEBUG_OSPF (lsa, LSA))
@@ -215,7 +215,7 @@ ospf_ase_calculate_asbr_route (struct ospf *ospf,
       asbr.prefixlen = IPV4_MAX_BITLEN;
 
       rn = route_node_match (rt_network, (struct prefix *) &asbr);
-   
+
       if (rn == NULL)
 	{
 	  if (IS_DEBUG_OSPF (lsa, LSA))
@@ -775,7 +775,7 @@ void ospf_ase_external_lsas_finish(struct route_table *rt)
 		if ((lst = rn->info) != NULL) {
 			for (ALL_LIST_ELEMENTS(lst, node, nnode, lsa))
 				ospf_lsa_unlock(&lsa); /* external_lsas lst */
-			list_delete_and_null(&lst);
+			list_delete(&lst);
 		}
 
 	route_table_finish(rt);

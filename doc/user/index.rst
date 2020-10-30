@@ -42,6 +42,7 @@ Protocols
    bfd
    bgp
    babeld
+   fabricd
    ldpd
    eigrpd
    isisd
@@ -55,6 +56,9 @@ Protocols
    sharp
    static
    vnc
+   vrrp
+   bmp
+   watchfrr
 
 ########
 Appendix

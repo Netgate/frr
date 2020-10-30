@@ -141,8 +141,8 @@ static int frrzmq_read_msg(struct thread *t)
 	return 0;
 
 out_err:
-	flog_err(LIB_ERR_ZMQ, "ZeroMQ read error: %s(%d)", strerror(errno),
-		  errno);
+	flog_err(EC_LIB_ZMQ, "ZeroMQ read error: %s(%d)", strerror(errno),
+		 errno);
 	if (cb->read.cb_error)
 		cb->read.cb_error(cb->read.arg, cb->zmqsock);
 	return 1;
@@ -176,8 +176,6 @@ int funcname_frrzmq_thread_add_read(struct thread_master *master,
 		cb = *cbp;
 	else {
 		cb = XCALLOC(MTYPE_ZEROMQ_CB, sizeof(struct frrzmq_cb));
-		if (!cb)
-			return -1;
 
 		cb->write.cancelled = 1;
 		*cbp = cb;
@@ -255,8 +253,8 @@ static int frrzmq_write_msg(struct thread *t)
 	return 0;
 
 out_err:
-	flog_err(LIB_ERR_ZMQ, "ZeroMQ write error: %s(%d)", strerror(errno),
-		  errno);
+	flog_err(EC_LIB_ZMQ, "ZeroMQ write error: %s(%d)", strerror(errno),
+		 errno);
 	if (cb->write.cb_error)
 		cb->write.cb_error(cb->write.arg, cb->zmqsock);
 	return 1;
@@ -286,8 +284,6 @@ int funcname_frrzmq_thread_add_write(struct thread_master *master,
 		cb = *cbp;
 	else {
 		cb = XCALLOC(MTYPE_ZEROMQ_CB, sizeof(struct frrzmq_cb));
-		if (!cb)
-			return -1;
 
 		cb->read.cancelled = 1;
 		*cbp = cb;

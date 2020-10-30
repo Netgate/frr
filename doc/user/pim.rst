@@ -8,7 +8,15 @@ PIM -- Protocol Independent Multicast
 
 *pimd* supports pim-sm as well as igmp v2 and v3. pim is
 vrf aware and can work within the context of vrf's in order to
-do S,G mrouting.
+do S,G mrouting.  Additionally PIM can be used in the EVPN underlay
+network for optimizing forwarding of overlay BUM traffic.
+
+.. note::
+
+   On Linux for PIM-SM operation you *must* have kernel version 4.18 or greater.
+   To use PIM for EVPN BUM forwarding, kernels 5.0 or greater are required.
+   OpenBSD has no multicast support and FreeBSD, NetBSD and Solaris only
+   have support for SSM.
 
 .. _starting-and-stopping-pimd:
 
@@ -150,6 +158,12 @@ Certain signals have special meanings to *pimd*.
    urib-only
       Lookup in the Unicast Rib only.
 
+.. index:: ip igmp generate-query-once [version (2-3)]
+.. clicmd:: ip igmp generate-query-once [version (2-3)]
+
+   Generate IGMP query (v2/v3) on user requirement. This will not depend on
+   the existing IGMP general query timer.If no version is provided in the cli,
+   it will be considered as default v2 query.This is a hidden command.
 
 .. _pim-interface-configuration:
 
@@ -165,6 +179,20 @@ is in a vrf, enter the interface command with the vrf keyword at the end.
 
    Turns on BFD support for PIM for this interface.
 
+.. index:: ip pim bsm
+.. clicmd:: ip pim bsm
+
+   Tell pim that we would like to use this interface to process bootstrap
+   messages. This is enabled by default. 'no' form of this command is used to
+   restrict bsm messages on this interface.
+
+.. index:: ip pim unicast-bsm
+.. clicmd:: ip pim unicast-bsm
+
+   Tell pim that we would like to allow interface to process unicast bootstrap
+   messages. This is enabled by default. 'no' form of this command is used to
+   restrict processing of unicast bsm messages on this interface.
+
 .. index:: ip pim drpriority (1-4294967295)
 .. clicmd:: ip pim drpriority (1-4294967295)
 
@@ -176,23 +204,24 @@ is in a vrf, enter the interface command with the vrf keyword at the end.
 
    Set the pim hello and hold interval for a interface.
 
-.. index:: ip pim sm
-.. clicmd:: ip pim sm
+.. index:: ip pim
+.. clicmd:: ip pim
 
    Tell pim that we would like to use this interface to form pim neighbors
-   over. Please note we will *not* accept igmp reports over this interface with
-   this command.
+   over. Please note that this command does not enable the reception of IGMP
+   reports on the interface. Refer to the next `ip igmp` command for IGMP
+   management.
 
 .. index:: ip igmp
 .. clicmd:: ip igmp
 
    Tell pim to receive IGMP reports and Query on this interface. The default
-   version is v3. This command is useful on the LHR.
+   version is v3. This command is useful on a LHR.
 
-.. index:: ip igmp join A.B.C.D A.B.C.D
-.. clicmd:: ip igmp join A.B.C.D A.B.C.D
+.. index:: ip igmp join A.B.C.D [A.B.C.D]
+.. clicmd:: ip igmp join A.B.C.D [A.B.C.D]
 
-   Join multicast source-group on an interface.
+   Join multicast group or source-group on an interface.
 
 .. index:: ip igmp query-interval (1-1800)
 .. clicmd:: ip igmp query-interval (1-1800)
@@ -210,12 +239,32 @@ is in a vrf, enter the interface command with the vrf keyword at the end.
 
    Set the IGMP version used on this interface. The default value is 3.
 
-.. index:: ip multicat boundary oil WORD
-.. clicmd:: ip multicat boundary oil WORD
+.. index:: ip multicast boundary oil WORD
+.. clicmd:: ip multicast boundary oil WORD
 
    Set a pim multicast boundary, based upon the WORD prefix-list. If a pim join
    or IGMP report is received on this interface and the Group is denied by the
    prefix-list, PIM will ignore the join or report.
+
+.. index:: ip igmp last-member-query-count (1-7)
+.. clicmd:: ip igmp last-member-query-count (1-7)
+
+   Set the IGMP last member query count. The default value is 2. 'no' form of
+   this command is used to to configure back to the default value.
+
+.. index:: ip igmp last-member-query-interval (1-255)
+.. clicmd:: ip igmp last-member-query-interval (1-255)
+
+   Set the IGMP last member query interval in deciseconds. The default value is
+   10 deciseconds. 'no' form of this command is used to to configure back to the
+   default value.
+
+.. index:: ip mroute INTERFACE A.B.C.D [A.B.C.D]
+.. clicmd:: ip mroute INTERFACE A.B.C.D [A.B.C.D]
+
+   Set a static multicast route for a traffic coming on the current interface to
+   be forwarded on the given interface if the traffic matches the group address
+   and optionally the source address.
 
 .. _pim-multicast-rib-insertion:
 
@@ -292,16 +341,26 @@ cause great confusion.
 
    Display various information about the interfaces used in this pim instance.
 
-.. index:: show ip mroute
-.. clicmd:: show ip mroute
+.. index:: show ip mroute [vrf NAME] [A.B.C.D [A.B.C.D]] [fill] [json]
+.. clicmd:: show ip mroute [vrf NAME] [A.B.C.D [A.B.C.D]] [fill] [json]
 
-   Display information about installed into the kernel S,G mroutes.
+   Display information about installed into the kernel S,G mroutes.  If
+   one address is specified we assume it is the Group we are interested
+   in displaying data on.  If the second address is specified then it is
+   Source Group.  The keyword `fill` says to fill in all assumed data
+   for test/data gathering purposes.
 
 .. index:: show ip mroute count
 .. clicmd:: show ip mroute count
 
    Display information about installed into the kernel S,G mroutes and in
    addition display data about packet flow for the mroutes.
+
+.. index:: show ip mroute summary
+.. clicmd:: show ip mroute summary
+
+   Display total number of S,G mroutes and number of S,G mroutes installed
+   into the kernel.
 
 .. index:: show ip pim assert
 .. clicmd:: show ip pim assert
@@ -333,10 +392,12 @@ cause great confusion.
 
    Display information about interfaces PIM is using.
 
-.. index:: show ip pim join
+.. index:: show ip pim [vrf NAME] join [A.B.C.D [A.B.C.D]] [json]
 .. clicmd:: show ip pim join
 
-   Display information about PIM joins received.
+   Display information about PIM joins received.  If one address is specified
+   then we assume it is the Group we are interested in displaying data on.
+   If the second address is specified then it is Source Group.
 
 .. index:: show ip pim local-membership
 .. clicmd:: show ip pim local-membership
@@ -383,10 +444,11 @@ cause great confusion.
    Display information about known S,G's and incoming interface as well as the
    OIL and how they were chosen.
 
-.. index:: show ip pim upstream
+.. index:: show ip pim [vrf NAME] upstream [A.B.C.D [A.B.C.D]] [json]
 .. clicmd:: show ip pim upstream
 
-   Display upstream information about a S,G mroute.
+   Display upstream information about a S,G mroute.  Allow the user to
+   specify sub Source and Groups that we are only interested in.
 
 .. index:: show ip pim upstream-join-desired
 .. clicmd:: show ip pim upstream-join-desired
@@ -398,6 +460,21 @@ cause great confusion.
 .. clicmd:: show ip pim upstream-rpf
 
    Display upstream information for S,G's and the RPF data associated with them.
+
+.. index:: show ip pim bsr
+.. clicmd:: show ip pim bsr
+
+   Display current bsr, its uptime and last received bsm age.
+
+.. index:: show ip pim bsrp-info
+.. clicmd:: show ip pim bsrp-info
+
+   Display group-to-rp mappings received from E-BSR.
+
+.. index:: show ip pim bsm-database
+.. clicmd:: show ip pim bsm-database
+
+   Display all fragments ofstored bootstrap message in user readable format.
 
 .. index:: show ip rpf
 .. clicmd:: show ip rpf
@@ -462,6 +539,11 @@ the config was written out.
 
    This traces pim code and how it is running.
 
+.. index:: debug pim bsm
+.. clicmd:: debug pim bsm
+
+   This turns on debugging for BSR message processing.
+
 .. index:: debug pim zebra
 .. clicmd:: debug pim zebra
 
@@ -486,6 +568,13 @@ Clear commands reset various variables.
 
    Reset multicast routes.
 
+.. index:: clear ip mroute [vrf NAME] count
+.. clicmd:: clear ip mroute [vrf NAME] count
+
+   When this command is issued, reset the counts of data shown for
+   packet count, byte count and wrong interface to 0 and start count
+   up from this spot.
+
 .. index:: clear ip pim interfaces
 .. clicmd:: clear ip pim interfaces
 
@@ -495,3 +584,28 @@ Clear commands reset various variables.
 .. clicmd:: clear ip pim oil
 
    Rescan PIM OIL (output interface list).
+
+PIM EVPN configuration
+======================
+To use PIM in the underlay for overlay BUM forwarding associate a multicast
+group with the L2 VNI. The actual configuration is based on your distribution.
+Here is an ifupdown2 example::
+
+   auto vx-10100
+   iface vx-10100
+       vxlan-id 10100
+       bridge-access 100
+       vxlan-local-tunnelip 27.0.0.11
+       vxlan-mcastgrp 239.1.1.100
+
+.. note::
+
+   PIM will see the ``vxlan-mcastgrp`` configuration and auto configure state
+   to properly forward BUM traffic.
+
+PIM also needs to be configured in the underlay to allow the BUM MDT to be
+setup. This is existing PIM configuration:
+
+- Enable pim on the underlay L3 interface via the "ip pim" command.
+- Configure RPs for the BUM multicast group range.
+- Ensure the PIM is enabled on the lo of the VTEPs and the RP.

@@ -1,11 +1,11 @@
 /*
- * Copyright 2019, Rubicon Communications, LLC.
- * 
+ * Copyright 2020, Rubicon Communications, LLC.
+ *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
  * Free Software Foundation; either version 2 of the License, or (at your
  * option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
  * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
@@ -22,17 +22,21 @@
 
 #include "zebra/debug.h"
 #include "zebra/zserv.h"
+#include "zebra/zebra_ptm_vpp.h"
+
+#include <tnsrinfra/types.h>
+#include <tnsrinfra/vec.h>
 
 #include <vppmgmt/vpp_mgmt_api.h>
-
-#include "zebra/zebra_ptm_vpp.h"
-#include "zebra/rt_vpp.h"
-
 #include <vnet/bfd/bfd_protocol.h>
 
 
-#define ZEBRA_BFD_DEST_UPD_PACK_SIZE 128
+extern struct zebra_privs_t zserv_privs;
 
+
+/*
+ * Peers storage functions
+ */
 
 struct vpp_bfd_peer {
 	uint8_t peer_addr_family;
@@ -40,7 +44,9 @@ struct vpp_bfd_peer {
 	uint8_t local_addr_family;
 	uint8_t local_addr[IPV6_MAX_BYTELEN];
 	uint32_t sw_if_index;
+	uint32_t ifindex;
 	uint8_t multi_hop;
+	uint8_t cbit;
 };
 
 static struct vpp_bfd_peer *bfd_peers_to_monitor;
@@ -89,29 +95,9 @@ static struct vpp_bfd_peer *zebra_ptm_vpp_bfd_get_peer(uint8_t *peer_addr,
 }
 
 
-static struct bfd_session *zebra_ptm_vpp_bfd_get_sess(uint8_t *peer_addr,
-						      uint32_t sw_if_index)
-{
-	struct bfd_session *bfd_sessions;
-	struct bfd_session *bs;
-
-	bfd_sessions = vmgmt_bfd_get_sessions();
-	
-	tnsr_vec_foreach(bs, bfd_sessions) {
-		if (memcmp(bs->peer_addr, peer_addr, IPV6_MAX_BYTELEN) != 0) {
-			continue;
-		}
-
-		if (bs->sw_if_index != sw_if_index) {
-			continue;
-		}
-
-		return bs;
-	}
-
-	return NULL;
-}
-
+/*
+ * Messages parsing functions
+ */
 
 static void zebra_ptm_vpp_parse_addr(struct stream *msg, uint8_t *family,
 				     uint8_t *addr)
@@ -177,22 +163,45 @@ static void zebra_ptm_vpp_parse_msg(struct stream *msg, uint32_t command,
 		}
 
 		uint8_t if_len;
-		char if_name[INTERFACE_NAMSIZ];
-		struct interface *ifp;
 
 		STREAM_GETC(msg, if_len);
-		STREAM_GET(if_name, msg, if_len);
-		if_name[if_len] = '\0';
 
-		ifp = if_get_by_name(if_name, VRF_DEFAULT, 0);
+		if (if_len > 0) {
+			char if_name[INTERFACE_NAMSIZ];
+			int n;
 
-		bfd_peer->sw_if_index = vpp_map_ifindex_to_swif(ifp->ifindex);
+			STREAM_GET(if_name, msg, if_len);
+			if_name[if_len] = '\0';
+
+			n = sscanf(if_name, "vpp%u", &bfd_peer->sw_if_index);
+			if (n < 1) {
+				bfd_peer->sw_if_index = ~0;
+				zlog_warn("%s: cannot parse sw_if_index",
+					  __func__);
+			}
+
+			struct interface *ifp;
+
+			ifp = if_get_by_name(if_name, VRF_DEFAULT);
+			bfd_peer->ifindex = ifp->ifindex;
+		} else {
+			zlog_err("%s: if_name is not provided, "
+				 "cannot determine sw_if_index", __func__);
+			bfd_peer->sw_if_index = ~0;
+			bfd_peer->ifindex = IFINDEX_INTERNAL;
+		}
 	}
+
+	STREAM_GETC(msg, bfd_peer->cbit);
 
 stream_failure:
 	return;
 }
 
+
+/*
+ * Messages construction functions
+ */
 
 static void zebra_ptm_vpp_make_addr(struct stream *msg, uint8_t family,
 				    uint8_t *addr)
@@ -206,9 +215,6 @@ static void zebra_ptm_vpp_make_addr(struct stream *msg, uint8_t family,
 		stream_put(msg, addr, IPV6_MAX_BYTELEN);
 		stream_putc(msg, 128);
 	}
-
-stream_failure:
-	return;
 }
 
 
@@ -222,7 +228,7 @@ static struct stream *zebra_ptm_vpp_make_msg(struct vpp_bfd_peer *bfd_peer,
 	zclient_create_header(msg, ZEBRA_INTERFACE_BFD_DEST_UPDATE,
 			      VRF_DEFAULT);
 
-	stream_putl(msg, vpp_map_swif_to_ifindex(bfd_peer->sw_if_index));
+	stream_putl(msg, bfd_peer->ifindex);
 
 	zebra_ptm_vpp_make_addr(msg, bfd_peer->peer_addr_family,
 				bfd_peer->peer_addr);
@@ -234,6 +240,10 @@ static struct stream *zebra_ptm_vpp_make_msg(struct vpp_bfd_peer *bfd_peer,
 		break;
 
 	case BFD_STATE_admin_down:
+		stream_putl(msg, BFD_STATUS_ADMIN_DOWN);
+		zlog_debug("%s: BFD_STATUS_ADMIN_DOWN", __func__);
+		break;
+
 	case BFD_STATE_down:
 	case BFD_STATE_init:
 		stream_putl(msg, BFD_STATUS_DOWN);
@@ -255,11 +265,17 @@ static struct stream *zebra_ptm_vpp_make_msg(struct vpp_bfd_peer *bfd_peer,
 					bfd_peer->local_addr);
 	}
 
+	stream_putc(msg, bfd_peer->cbit);
+
 	stream_putw_at(msg, 0, stream_get_endp(msg));
 
 	return msg;
 }
 
+
+/*
+ * BFD events processing
+ */
 
 static void zebra_ptm_vpp_bfd_event_process(struct bfd_session *bfd_sess)
 {
@@ -281,6 +297,34 @@ static void zebra_ptm_vpp_bfd_event_process(struct bfd_session *bfd_sess)
 }
 
 
+/*
+ * Peers registration/deregistration functions
+ */
+
+static struct bfd_session *zebra_ptm_vpp_bfd_get_sess(uint8_t *peer_addr,
+						      uint32_t sw_if_index)
+{
+	struct bfd_session *bfd_sessions;
+	struct bfd_session *bs;
+
+	bfd_sessions = vmgmt_bfd_get_sessions();
+
+	tnsr_vec_foreach(bs, bfd_sessions) {
+		if (memcmp(bs->peer_addr, peer_addr, IPV6_MAX_BYTELEN) != 0) {
+			continue;
+		}
+
+		if (bs->sw_if_index != sw_if_index) {
+			continue;
+		}
+
+		return bs;
+	}
+
+	return NULL;
+}
+
+
 static void zebra_ptm_vpp_dest_reg(struct vpp_bfd_peer *bfd_peer)
 {
 	struct bfd_session *bfd_sess;
@@ -288,7 +332,7 @@ static void zebra_ptm_vpp_dest_reg(struct vpp_bfd_peer *bfd_peer)
 
 	bfd_sess = zebra_ptm_vpp_bfd_get_sess(bfd_peer->peer_addr,
 					      bfd_peer->sw_if_index);
-	
+
 	if (bfd_sess) {
 		struct stream *msg_upd;
 
@@ -322,6 +366,44 @@ static void zebra_ptm_vpp_dest_dereg(struct vpp_bfd_peer *bfd_peer)
 }
 
 
+void zebra_ptm_vpp_reroute(struct zserv *zs, struct zebra_vrf *zvrf,
+			   struct stream *msg, uint32_t command)
+{
+	int ret;
+
+	ret = vmgmt_check_connection();
+	if (ret < 0) {
+		zlog_err("%s: VPP may be down or API is not responding",
+			 __func__);
+		return;
+	}
+
+	struct vpp_bfd_peer bfd_peer;
+
+	zebra_ptm_vpp_parse_msg(msg, command, &bfd_peer);
+
+	switch (command) {
+	case ZEBRA_BFD_DEST_REGISTER:
+		zlog_debug("%s: ZEBRA_BFD_DEST_REGISTER", __func__);
+		zebra_ptm_vpp_dest_reg(&bfd_peer);
+		break;
+
+	case ZEBRA_BFD_DEST_DEREGISTER:
+		zlog_debug("%s: ZEBRA_BFD_DEST_[DE]REGISTER", __func__);
+		zebra_ptm_vpp_dest_dereg(&bfd_peer);
+		break;
+
+	default:
+		zlog_warn("%s: unknown bfd command", __func__);
+		break;
+	}
+}
+
+
+/*
+ * Init/finish functions
+ */
+
 void zebra_ptm_vpp_init(void)
 {
 	vmgmt_bfd_events_register(zebra_ptm_vpp_bfd_event_process, 1);
@@ -332,29 +414,4 @@ void zebra_ptm_vpp_finish(void)
 {
 	vmgmt_bfd_events_register(zebra_ptm_vpp_bfd_event_process, 0);
 	tnsr_vec_free(bfd_peers_to_monitor);
-}
-
-
-void zebra_ptm_vpp_reroute(struct zserv *zs, struct stream *msg,
-			   uint32_t command)
-{
-	struct vpp_bfd_peer bfd_peer;
-
-	zebra_ptm_vpp_parse_msg(msg, command, &bfd_peer);
-
-	switch (command) {
-	case ZEBRA_BFD_DEST_REGISTER:
-		zlog_debug("%s: ZEBRA_BFD_DEST_REGISTER", __func__);
-		zebra_ptm_vpp_dest_reg(&bfd_peer);
-		break;
-	
-	case ZEBRA_BFD_DEST_DEREGISTER:
-		zlog_debug("%s: ZEBRA_BFD_DEST_[DE]REGISTER", __func__);
-		zebra_ptm_vpp_dest_dereg(&bfd_peer);
-		break;
-
-	default:
-		zlog_warn("%s: unknown bfd command", __func__);
-		break;
-	}
 }

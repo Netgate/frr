@@ -7,6 +7,10 @@
  * (at your option) any later version.
  */
 
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
 #include "nhrpd.h"
 #include "table.h"
 #include "memory.h"
@@ -180,8 +184,7 @@ void nhrp_route_announce(int add, enum nhrp_cache_type type,
 			   &api);
 }
 
-int nhrp_route_read(int cmd, struct zclient *zclient, zebra_size_t length,
-		    vrf_id_t vrf_id)
+int nhrp_route_read(ZAPI_CALLBACK_ARGS)
 {
 	struct zapi_route api;
 	struct zapi_nexthop *api_nh;
@@ -340,12 +343,8 @@ void nhrp_zebra_init(void)
 	zebra_rib[AFI_IP] = route_table_init();
 	zebra_rib[AFI_IP6] = route_table_init();
 
-	zclient = zclient_new_notify(master, &zclient_options_default);
+	zclient = zclient_new(master, &zclient_options_default);
 	zclient->zebra_connected = nhrp_zebra_connected;
-	zclient->interface_add = nhrp_interface_add;
-	zclient->interface_delete = nhrp_interface_delete;
-	zclient->interface_up = nhrp_interface_up;
-	zclient->interface_down = nhrp_interface_down;
 	zclient->interface_address_add = nhrp_interface_address_add;
 	zclient->interface_address_delete = nhrp_interface_address_delete;
 	zclient->redistribute_route_add = nhrp_route_read;

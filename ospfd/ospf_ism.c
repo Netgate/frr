@@ -104,7 +104,7 @@ static struct ospf_neighbor *ospf_elect_dr(struct ospf_interface *oi,
 	else
 		DR(oi).s_addr = 0;
 
-	list_delete_and_null(&dr_list);
+	list_delete(&dr_list);
 
 	return dr;
 }
@@ -144,8 +144,8 @@ static struct ospf_neighbor *ospf_elect_bdr(struct ospf_interface *oi,
 	else
 		BDR(oi).s_addr = 0;
 
-	list_delete_and_null(&bdr_list);
-	list_delete_and_null(&no_dr_list);
+	list_delete(&bdr_list);
+	list_delete(&no_dr_list);
 
 	return bdr;
 }
@@ -232,7 +232,7 @@ static int ospf_dr_election(struct ospf_interface *oi)
 		zlog_debug("DR-Election[2nd]: DR     %s", inet_ntoa(DR(oi)));
 	}
 
-	list_delete_and_null(&el_list);
+	list_delete(&el_list);
 
 	/* if DR or BDR changes, cause AdjOK? neighbor event. */
 	if (!IPV4_ADDR_SAME(&old_dr, &DR(oi))
@@ -380,12 +380,10 @@ static int ism_interface_up(struct ospf_interface *oi)
 
 static int ism_loop_ind(struct ospf_interface *oi)
 {
-	int ret = 0;
-
 	/* call ism_interface_down. */
 	/* ret = ism_interface_down (oi); */
 
-	return ret;
+	return 0;
 }
 
 /* Interface down event handler. */
@@ -420,7 +418,7 @@ static int ism_ignore(struct ospf_interface *oi)
 }
 
 /* Interface State Machine */
-struct {
+const struct {
 	int (*func)(struct ospf_interface *);
 	int next_state;
 } ISM[OSPF_ISM_STATE_MAX][OSPF_ISM_EVENT_MAX] = {
@@ -514,7 +512,7 @@ struct {
 	},
 };
 
-static const char *ospf_ism_event_str[] = {
+static const char *const ospf_ism_event_str[] = {
 	"NoEvent",	"InterfaceUp", "WaitTimer", "BackupSeen",
 	"NeighborChange", "LoopInd",     "UnLoopInd", "InterfaceDown",
 };

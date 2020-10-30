@@ -23,6 +23,7 @@
 
 #include "mpls.h"
 #include "bgp_attr_evpn.h"
+#include "bgpd/bgp_encap_types.h"
 
 /* Simple bit mapping. */
 #define BITMAP_NBBY 8
@@ -61,10 +62,16 @@
 #define BGP_PREFIX_SID_LABEL_INDEX     1
 #define BGP_PREFIX_SID_IPV6            2
 #define BGP_PREFIX_SID_ORIGINATOR_SRGB 3
+#define BGP_PREFIX_SID_SRV6_L3_SERVICE 5
+#define BGP_PREFIX_SID_SRV6_L2_SERVICE 6
 
 #define BGP_PREFIX_SID_LABEL_INDEX_LENGTH      7
 #define BGP_PREFIX_SID_IPV6_LENGTH            19
 #define BGP_PREFIX_SID_ORIGINATOR_SRGB_LENGTH  6
+
+#define BGP_ATTR_NH_AFI(afi, attr) \
+	((afi != AFI_L2VPN) ? afi : \
+	((attr->mp_nexthop_len == BGP_ATTR_NHLEN_IPV4) ? AFI_IP : AFI_IP6))
 
 /* PMSI tunnel types (RFC 6514) */
 
@@ -91,12 +98,6 @@ struct bgp_tea_options {
 };
 
 #endif
-
-/* Overlay Index Info */
-struct overlay_index {
-	struct eth_segment_id eth_s_id;
-	union gw_addr gw_ip;
-};
 
 enum pta_type {
 	PMSI_TNLTYPE_NO_INFO = 0,
@@ -204,13 +205,19 @@ struct attr {
 	struct bgp_attr_encap_subtlv *vnc_subtlvs; /* VNC-specific */
 #endif
 	/* EVPN */
-	struct overlay_index evpn_overlay;
+	struct bgp_route_evpn evpn_overlay;
 
 	/* EVPN MAC Mobility sequence number, if any. */
 	uint32_t mm_seqnum;
 
 	/* EVPN local router-mac */
 	struct ethaddr rmac;
+
+	/* Distance as applied by Route map */
+	uint8_t distance;
+
+	/* rmap set table */
+	uint32_t rmap_table_id;
 };
 
 /* rmap_change_flags definition */
@@ -265,17 +272,20 @@ extern void bgp_attr_finish(void);
 extern bgp_attr_parse_ret_t bgp_attr_parse(struct peer *, struct attr *,
 					   bgp_size_t, struct bgp_nlri *,
 					   struct bgp_nlri *);
-extern void bgp_attr_dup(struct attr *, struct attr *);
 extern void bgp_attr_undup(struct attr *new, struct attr *old);
 extern struct attr *bgp_attr_intern(struct attr *attr);
 extern void bgp_attr_unintern_sub(struct attr *);
 extern void bgp_attr_unintern(struct attr **);
 extern void bgp_attr_flush(struct attr *);
 extern struct attr *bgp_attr_default_set(struct attr *attr, uint8_t);
-extern struct attr *bgp_attr_aggregate_intern(struct bgp *, uint8_t,
-					      struct aspath *,
-					      struct community *, int as_set,
-					      uint8_t);
+extern struct attr *bgp_attr_aggregate_intern(struct bgp *bgp, uint8_t origin,
+					      struct aspath *aspath,
+					      struct community *community,
+					      struct ecommunity *ecommunity,
+					      struct lcommunity *lcommunity,
+					      struct bgp_aggregate *aggregate,
+					      uint8_t atomic_aggregate,
+					      struct prefix *p);
 extern bgp_size_t bgp_packet_attribute(struct bgp *bgp, struct peer *,
 				       struct stream *, struct attr *,
 				       struct bpacket_attr_vec_arr *vecarr,
@@ -284,8 +294,8 @@ extern bgp_size_t bgp_packet_attribute(struct bgp *bgp, struct peer *,
 				       mpls_label_t *, uint32_t, int, uint32_t);
 extern void bgp_dump_routes_attr(struct stream *, struct attr *,
 				 struct prefix *);
-extern int attrhash_cmp(const void *, const void *);
-extern unsigned int attrhash_key_make(void *);
+extern bool attrhash_cmp(const void *arg1, const void *arg2);
+extern unsigned int attrhash_key_make(const void *);
 extern void attr_show_all(struct vty *);
 extern unsigned long int attr_count(void);
 extern unsigned long int attr_unknown_count(void);
@@ -293,9 +303,6 @@ extern unsigned long int attr_unknown_count(void);
 /* Cluster list prototypes. */
 extern int cluster_loop_check(struct cluster_list *, struct in_addr);
 extern void cluster_unintern(struct cluster_list *);
-
-/* Transit attribute prototypes. */
-void transit_unintern(struct transit *);
 
 /* Below exported for unit-test purposes only */
 struct bgp_attr_parser_args {
@@ -312,13 +319,16 @@ extern int bgp_mp_reach_parse(struct bgp_attr_parser_args *args,
 extern int bgp_mp_unreach_parse(struct bgp_attr_parser_args *args,
 				struct bgp_nlri *);
 extern bgp_attr_parse_ret_t
-bgp_attr_prefix_sid(int32_t tlength, struct bgp_attr_parser_args *args,
+bgp_attr_prefix_sid(struct bgp_attr_parser_args *args,
 		    struct bgp_nlri *mp_update);
 
 extern struct bgp_attr_encap_subtlv *
 encap_tlv_dup(struct bgp_attr_encap_subtlv *orig);
 
 extern void bgp_attr_flush_encap(struct attr *attr);
+
+extern void bgp_attr_extcom_tunnel_type(struct attr *attr,
+					 bgp_encap_types *tunnel_type);
 
 /**
  * Set of functions to encode MP_REACH_NLRI and MP_UNREACH_NLRI attributes.
@@ -346,6 +356,9 @@ extern void bgp_packet_mpunreach_prefix(struct stream *s, struct prefix *p,
 					struct prefix_rd *prd, mpls_label_t *,
 					uint32_t, int, uint32_t, struct attr *);
 extern void bgp_packet_mpunreach_end(struct stream *s, size_t attrlen_pnt);
+
+extern bgp_attr_parse_ret_t bgp_attr_nexthop_valid(struct peer *peer,
+						   struct attr *attr);
 
 static inline int bgp_rmap_nhop_changed(uint32_t out_rmap_flags,
 					uint32_t in_rmap_flags)

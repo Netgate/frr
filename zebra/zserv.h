@@ -40,6 +40,10 @@
 #include "zebra/zebra_vrf.h"  /* for zebra_vrf */
 /* clang-format on */
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Default port information. */
 #define ZEBRA_VTY_PORT                2601
 
@@ -73,21 +77,18 @@ struct zserv {
 	struct thread *t_read;
 	struct thread *t_write;
 
+	/* Event for message processing, for the main pthread */
+	struct thread *t_process;
+
 	/* Threads for the main pthread */
 	struct thread *t_cleanup;
-
-	/* default routing table this client munges */
-	int rtm_table;
 
 	/* This client's redistribute flag. */
 	struct redist_proto mi_redist[AFI_MAX][ZEBRA_ROUTE_MAX];
 	vrf_bitmap_t redist[AFI_MAX][ZEBRA_ROUTE_MAX];
 
 	/* Redistribute default route flag. */
-	vrf_bitmap_t redist_default;
-
-	/* Interface information. */
-	vrf_bitmap_t ifinfo;
+	vrf_bitmap_t redist_default[AFI_MAX];
 
 	/* Router-id information. */
 	vrf_bitmap_t ridinfo;
@@ -97,7 +98,13 @@ struct zserv {
 	/* client's protocol */
 	uint8_t proto;
 	uint16_t instance;
-	uint8_t is_synchronous;
+
+	/*
+	 * Interested for MLAG Updates, and also stores the client
+	 * interested message mask
+	 */
+	bool mlag_updates_interested;
+	uint32_t mlag_reg_mask1;
 
 	/* Statistics */
 	uint32_t redist_v4_add_cnt;
@@ -133,6 +140,13 @@ struct zserv {
 	uint32_t macipdel_cnt;
 	uint32_t prefixadd_cnt;
 	uint32_t prefixdel_cnt;
+	uint32_t v4_nh_watch_add_cnt;
+	uint32_t v4_nh_watch_rem_cnt;
+	uint32_t v6_nh_watch_add_cnt;
+	uint32_t v6_nh_watch_rem_cnt;
+	uint32_t vxlan_sg_add_cnt;
+	uint32_t vxlan_sg_del_cnt;
+	uint32_t error_cnt;
 
 	time_t nh_reg_time;
 	time_t nh_dereg_time;
@@ -153,9 +167,9 @@ struct zserv {
 	/* monotime of last message sent */
 	_Atomic uint32_t last_write_time;
 	/* command code of last message read */
-	_Atomic uint16_t last_read_cmd;
+	_Atomic uint32_t last_read_cmd;
 	/* command code of last message written */
-	_Atomic uint16_t last_write_cmd;
+	_Atomic uint32_t last_write_cmd;
 };
 
 #define ZAPI_HANDLER_ARGS                                                      \
@@ -166,38 +180,19 @@ struct zserv {
 DECLARE_HOOK(zserv_client_connect, (struct zserv *client), (client));
 DECLARE_KOOH(zserv_client_close, (struct zserv *client), (client));
 
-/* Zebra instance */
-struct zebra_t {
-	/* Thread master */
-	struct thread_master *master;
-	struct list *client_list;
-
-	/* Socket */
-	int sock;
-
-	/* default table */
-	uint32_t rtm_table_default;
-
-/* rib work queue */
-#define ZEBRA_RIB_PROCESS_HOLD_TIME 10
-	struct work_queue *ribq;
-	struct meta_queue *mq;
-
-	/* LSP work queue */
-	struct work_queue *lsp_process_q;
-
-#define ZEBRA_ZAPI_PACKETS_TO_PROCESS 1000
-	_Atomic uint32_t packets_to_process;
-};
-extern struct zebra_t zebrad;
-extern unsigned int multipath_num;
-
 /*
  * Initialize Zebra API server.
  *
  * Installs CLI commands and creates the client list.
  */
 extern void zserv_init(void);
+
+/*
+ * Stop the Zebra API server.
+ *
+ * closes the socket
+ */
+extern void zserv_close(void);
 
 /*
  * Start Zebra API server.
@@ -247,8 +242,31 @@ extern struct zserv *zserv_find_client(uint8_t proto, unsigned short instance);
  */
 extern void zserv_close_client(struct zserv *client);
 
+
+/*
+ * Log a ZAPI message hexdump.
+ *
+ * errmsg
+ *    Error message to include with packet hexdump
+ *
+ * msg
+ *    Message to log
+ *
+ * hdr
+ *    Message header
+ */
+void zserv_log_message(const char *errmsg, struct stream *msg,
+		       struct zmsghdr *hdr);
+
 #if defined(HANDLE_ZAPI_FUZZING)
 extern void zserv_read_file(char *input);
+#endif
+
+/* TODO */
+int zebra_finalize(struct thread *event);
+
+#ifdef __cplusplus
+}
 #endif
 
 #endif /* _ZEBRA_ZEBRA_H */

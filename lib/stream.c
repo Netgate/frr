@@ -28,6 +28,7 @@
 #include "network.h"
 #include "prefix.h"
 #include "log.h"
+#include "frr_pthread.h"
 #include "lib_errors.h"
 
 DEFINE_MTYPE_STATIC(LIB, STREAM, "Stream")
@@ -54,7 +55,8 @@ DEFINE_MTYPE_STATIC(LIB, STREAM_FIFO, "Stream FIFO")
  * using stream_put..._at() functions.
  */
 #define STREAM_WARN_OFFSETS(S)                                                 \
-	zlog_warn("&(struct stream): %p, size: %lu, getp: %lu, endp: %lu\n",   \
+	flog_warn(EC_LIB_STREAM,                                               \
+		  "&(struct stream): %p, size: %lu, getp: %lu, endp: %lu\n",   \
 		  (void *)(S), (unsigned long)(S)->size,                       \
 		  (unsigned long)(S)->getp, (unsigned long)(S)->endp)
 
@@ -68,16 +70,16 @@ DEFINE_MTYPE_STATIC(LIB, STREAM_FIFO, "Stream FIFO")
 
 #define STREAM_BOUND_WARN(S, WHAT)                                             \
 	do {                                                                   \
-		zlog_warn("%s: Attempt to %s out of bounds", __func__,         \
-			  (WHAT));                                             \
+		flog_warn(EC_LIB_STREAM, "%s: Attempt to %s out of bounds",    \
+			  __func__, (WHAT));                                   \
 		STREAM_WARN_OFFSETS(S);                                        \
 		assert(0);                                                     \
 	} while (0)
 
 #define STREAM_BOUND_WARN2(S, WHAT)                                            \
 	do {                                                                   \
-		zlog_warn("%s: Attempt to %s out of bounds", __func__,         \
-			  (WHAT));                                             \
+		flog_warn(EC_LIB_STREAM, "%s: Attempt to %s out of bounds",    \
+			  __func__, (WHAT));                                   \
 		STREAM_WARN_OFFSETS(S);                                        \
 	} while (0)
 
@@ -85,7 +87,8 @@ DEFINE_MTYPE_STATIC(LIB, STREAM_FIFO, "Stream FIFO")
 #define CHECK_SIZE(S, Z)                                                       \
 	do {                                                                   \
 		if (((S)->endp + (Z)) > (S)->size) {                           \
-			zlog_warn(                                             \
+			flog_warn(                                             \
+				EC_LIB_STREAM,                                 \
 				"CHECK_SIZE: truncating requested size %lu\n", \
 				(unsigned long)(Z));                           \
 			STREAM_WARN_OFFSETS(S);                                \
@@ -184,14 +187,6 @@ size_t stream_resize_inplace(struct stream **sptr, size_t newsize)
 	return orig->size;
 }
 
-size_t __attribute__((deprecated))stream_resize_orig(struct stream *s,
-						     size_t newsize)
-{
-	assert("stream_resize: Switch code to use stream_resize_inplace" == NULL);
-
-	return stream_resize_inplace(&s, newsize);
-}
-
 size_t stream_get_getp(struct stream *s)
 {
 	STREAM_VERIFY_SANE(s);
@@ -270,7 +265,7 @@ void stream_forward_endp(struct stream *s, size_t size)
 }
 
 /* Copy from stream to destination. */
-inline bool stream_get2(void *dst, struct stream *s, size_t size)
+bool stream_get2(void *dst, struct stream *s, size_t size)
 {
 	STREAM_VERIFY_SANE(s);
 
@@ -299,7 +294,7 @@ void stream_get(void *dst, struct stream *s, size_t size)
 }
 
 /* Get next character from the stream. */
-inline bool stream_getc2(struct stream *s, uint8_t *byte)
+bool stream_getc2(struct stream *s, uint8_t *byte)
 {
 	STREAM_VERIFY_SANE(s);
 
@@ -344,7 +339,7 @@ uint8_t stream_getc_from(struct stream *s, size_t from)
 	return c;
 }
 
-inline bool stream_getw2(struct stream *s, uint16_t *word)
+bool stream_getw2(struct stream *s, uint16_t *word)
 {
 	STREAM_VERIFY_SANE(s);
 
@@ -465,7 +460,7 @@ void stream_get_from(void *dst, struct stream *s, size_t from, size_t size)
 	memcpy(dst, s->data + from, size);
 }
 
-inline bool stream_getl2(struct stream *s, uint32_t *l)
+bool stream_getl2(struct stream *s, uint32_t *l)
 {
 	STREAM_VERIFY_SANE(s);
 
@@ -817,7 +812,7 @@ int stream_put_ipv4(struct stream *s, uint32_t l)
 }
 
 /* Put long word to the stream. */
-int stream_put_in_addr(struct stream *s, struct in_addr *addr)
+int stream_put_in_addr(struct stream *s, const struct in_addr *addr)
 {
 	STREAM_VERIFY_SANE(s);
 
@@ -833,7 +828,8 @@ int stream_put_in_addr(struct stream *s, struct in_addr *addr)
 }
 
 /* Put in_addr at location in the stream. */
-int stream_put_in_addr_at(struct stream *s, size_t putp, struct in_addr *addr)
+int stream_put_in_addr_at(struct stream *s, size_t putp,
+			  const struct in_addr *addr)
 {
 	STREAM_VERIFY_SANE(s);
 
@@ -847,7 +843,8 @@ int stream_put_in_addr_at(struct stream *s, size_t putp, struct in_addr *addr)
 }
 
 /* Put in6_addr at location in the stream. */
-int stream_put_in6_addr_at(struct stream *s, size_t putp, struct in6_addr *addr)
+int stream_put_in6_addr_at(struct stream *s, size_t putp,
+			   const struct in6_addr *addr)
 {
 	STREAM_VERIFY_SANE(s);
 
@@ -861,7 +858,7 @@ int stream_put_in6_addr_at(struct stream *s, size_t putp, struct in6_addr *addr)
 }
 
 /* Put prefix by nlri type format. */
-int stream_put_prefix_addpath(struct stream *s, struct prefix *p,
+int stream_put_prefix_addpath(struct stream *s, const struct prefix *p,
 			      int addpath_encode, uint32_t addpath_tx_id)
 {
 	size_t psize;
@@ -895,25 +892,35 @@ int stream_put_prefix_addpath(struct stream *s, struct prefix *p,
 	return psize;
 }
 
-int stream_put_prefix(struct stream *s, struct prefix *p)
+int stream_put_prefix(struct stream *s, const struct prefix *p)
 {
 	return stream_put_prefix_addpath(s, p, 0, 0);
 }
 
 /* Put NLRI with label */
 int stream_put_labeled_prefix(struct stream *s, struct prefix *p,
-			      mpls_label_t *label)
+			      mpls_label_t *label, int addpath_encode,
+			      uint32_t addpath_tx_id)
 {
 	size_t psize;
+	size_t psize_with_addpath;
 	uint8_t *label_pnt = (uint8_t *)label;
 
 	STREAM_VERIFY_SANE(s);
 
 	psize = PSIZE(p->prefixlen);
+	psize_with_addpath = psize + (addpath_encode ? 4 : 0);
 
-	if (STREAM_WRITEABLE(s) < (psize + 3)) {
+	if (STREAM_WRITEABLE(s) < (psize_with_addpath + 3)) {
 		STREAM_BOUND_WARN(s, "put");
 		return 0;
+	}
+
+	if (addpath_encode) {
+		s->data[s->endp++] = (uint8_t)(addpath_tx_id >> 24);
+		s->data[s->endp++] = (uint8_t)(addpath_tx_id >> 16);
+		s->data[s->endp++] = (uint8_t)(addpath_tx_id >> 8);
+		s->data[s->endp++] = (uint8_t)addpath_tx_id;
 	}
 
 	stream_putc(s, (p->prefixlen + 24));
@@ -966,8 +973,8 @@ ssize_t stream_read_try(struct stream *s, int fd, size_t size)
 	/* Error: was it transient (return -2) or fatal (return -1)? */
 	if (ERRNO_IO_RETRY(errno))
 		return -2;
-	zlog_warn("%s: read failed on fd %d: %s", __func__, fd,
-		  safe_strerror(errno));
+	flog_err(EC_LIB_SOCKET, "%s: read failed on fd %d: %s", __func__, fd,
+		 safe_strerror(errno));
 	return -1;
 }
 
@@ -997,8 +1004,8 @@ ssize_t stream_recvfrom(struct stream *s, int fd, size_t size, int flags,
 	/* Error: was it transient (return -2) or fatal (return -1)? */
 	if (ERRNO_IO_RETRY(errno))
 		return -2;
-	zlog_warn("%s: read failed on fd %d: %s", __func__, fd,
-		  safe_strerror(errno));
+	flog_err(EC_LIB_SOCKET, "%s: read failed on fd %d: %s", __func__, fd,
+		 safe_strerror(errno));
 	return -1;
 }
 
@@ -1132,11 +1139,9 @@ void stream_fifo_push(struct stream_fifo *fifo, struct stream *s)
 
 void stream_fifo_push_safe(struct stream_fifo *fifo, struct stream *s)
 {
-	pthread_mutex_lock(&fifo->mtx);
-	{
+	frr_with_mutex(&fifo->mtx) {
 		stream_fifo_push(fifo, s);
 	}
-	pthread_mutex_unlock(&fifo->mtx);
 }
 
 /* Delete first stream from fifo. */
@@ -1166,11 +1171,9 @@ struct stream *stream_fifo_pop_safe(struct stream_fifo *fifo)
 {
 	struct stream *ret;
 
-	pthread_mutex_lock(&fifo->mtx);
-	{
+	frr_with_mutex(&fifo->mtx) {
 		ret = stream_fifo_pop(fifo);
 	}
-	pthread_mutex_unlock(&fifo->mtx);
 
 	return ret;
 }
@@ -1184,11 +1187,9 @@ struct stream *stream_fifo_head_safe(struct stream_fifo *fifo)
 {
 	struct stream *ret;
 
-	pthread_mutex_lock(&fifo->mtx);
-	{
+	frr_with_mutex(&fifo->mtx) {
 		ret = stream_fifo_head(fifo);
 	}
-	pthread_mutex_unlock(&fifo->mtx);
 
 	return ret;
 }
@@ -1208,11 +1209,9 @@ void stream_fifo_clean(struct stream_fifo *fifo)
 
 void stream_fifo_clean_safe(struct stream_fifo *fifo)
 {
-	pthread_mutex_lock(&fifo->mtx);
-	{
+	frr_with_mutex(&fifo->mtx) {
 		stream_fifo_clean(fifo);
 	}
-	pthread_mutex_unlock(&fifo->mtx);
 }
 
 size_t stream_fifo_count_safe(struct stream_fifo *fifo)

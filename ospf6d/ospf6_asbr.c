@@ -732,7 +732,8 @@ void ospf6_asbr_lsa_remove(struct ospf6_lsa *lsa,
 							? 1
 							: 2,
 						buf, listcount(route->paths),
-						listcount(route->nh_list));
+						route->nh_list ?
+						listcount(route->nh_list) : 0);
 				}
 
 				if (listcount(route->paths)) {
@@ -855,16 +856,22 @@ void ospf6_asbr_lsentry_remove(struct ospf6_route *asbr_entry)
 
 static void ospf6_asbr_routemap_set(int type, const char *mapname)
 {
-	if (ospf6->rmap[type].name)
+	if (ospf6->rmap[type].name) {
+		route_map_counter_decrement(ospf6->rmap[type].map);
 		free(ospf6->rmap[type].name);
+	}
 	ospf6->rmap[type].name = strdup(mapname);
 	ospf6->rmap[type].map = route_map_lookup_by_name(mapname);
+	route_map_counter_increment(ospf6->rmap[type].map);
 }
 
 static void ospf6_asbr_routemap_unset(int type)
 {
 	if (ospf6->rmap[type].name)
 		free(ospf6->rmap[type].name);
+
+	route_map_counter_decrement(ospf6->rmap[type].map);
+
 	ospf6->rmap[type].name = NULL;
 	ospf6->rmap[type].map = NULL;
 }
@@ -938,6 +945,10 @@ static void ospf6_asbr_routemap_update(const char *mapname)
 						"%s: route-map %s update, reset redist %s",
 						__PRETTY_FUNCTION__, mapname,
 						ZROUTE_NAME(type));
+
+				route_map_counter_increment(
+					ospf6->rmap[type].map);
+
 				ospf6_asbr_distribute_list_update(type);
 			}
 		} else
@@ -945,7 +956,7 @@ static void ospf6_asbr_routemap_update(const char *mapname)
 	}
 }
 
-static void ospf6_asbr_routemap_event(route_map_event_t event, const char *name)
+static void ospf6_asbr_routemap_event(const char *name)
 {
 	int type;
 
@@ -995,7 +1006,7 @@ void ospf6_asbr_send_externals_to_area(struct ospf6_area *oa)
 
 	for (ALL_LSDB(oa->ospf6->lsdb, lsa)) {
 		if (ntohs(lsa->header->type) == OSPF6_LSTYPE_AS_EXTERNAL) {
-			zlog_debug("%s: Flooding AS-External LSA %s\n",
+			zlog_debug("%s: Flooding AS-External LSA %s",
 				   __func__, lsa->name);
 			ospf6_flood_area(NULL, lsa, oa);
 		}
@@ -1007,7 +1018,7 @@ void ospf6_asbr_redistribute_add(int type, ifindex_t ifindex,
 				 unsigned int nexthop_num,
 				 struct in6_addr *nexthop, route_tag_t tag)
 {
-	int ret;
+	route_map_result_t ret;
 	struct ospf6_route troute;
 	struct ospf6_external_info tinfo;
 	struct ospf6_route *route, *match;
@@ -1344,7 +1355,7 @@ static void ospf6_redistribute_show_config(struct vty *vty)
 
 
 /* Routemap Functions */
-static route_map_result_t
+static enum route_map_cmd_result_t
 ospf6_routemap_rule_match_address_prefixlist(void *rule,
 					     const struct prefix *prefix,
 					     route_map_object_t type,
@@ -1374,7 +1385,8 @@ static void ospf6_routemap_rule_match_address_prefixlist_free(void *rule)
 	XFREE(MTYPE_ROUTE_MAP_COMPILED, rule);
 }
 
-struct route_map_rule_cmd ospf6_routemap_rule_match_address_prefixlist_cmd = {
+static const struct route_map_rule_cmd
+		ospf6_routemap_rule_match_address_prefixlist_cmd = {
 	"ipv6 address prefix-list",
 	ospf6_routemap_rule_match_address_prefixlist,
 	ospf6_routemap_rule_match_address_prefixlist_compile,
@@ -1384,7 +1396,7 @@ struct route_map_rule_cmd ospf6_routemap_rule_match_address_prefixlist_cmd = {
 /* `match interface IFNAME' */
 /* Match function should return 1 if match is success else return
    zero. */
-static route_map_result_t
+static enum route_map_cmd_result_t
 ospf6_routemap_rule_match_interface(void *rule, const struct prefix *prefix,
 				    route_map_object_t type, void *object)
 {
@@ -1416,16 +1428,18 @@ static void ospf6_routemap_rule_match_interface_free(void *rule)
 }
 
 /* Route map commands for interface matching. */
-struct route_map_rule_cmd ospf6_routemap_rule_match_interface_cmd = {
-	"interface", ospf6_routemap_rule_match_interface,
+static const struct route_map_rule_cmd
+		ospf6_routemap_rule_match_interface_cmd = {
+	"interface",
+	ospf6_routemap_rule_match_interface,
 	ospf6_routemap_rule_match_interface_compile,
-	ospf6_routemap_rule_match_interface_free};
+	ospf6_routemap_rule_match_interface_free
+};
 
 /* Match function for matching route tags */
-static route_map_result_t ospf6_routemap_rule_match_tag(void *rule,
-							const struct prefix *p,
-							route_map_object_t type,
-							void *object)
+static enum route_map_cmd_result_t
+ospf6_routemap_rule_match_tag(void *rule, const struct prefix *p,
+			      route_map_object_t type, void *object)
 {
 	route_tag_t *tag = rule;
 	struct ospf6_route *route = object;
@@ -1437,12 +1451,15 @@ static route_map_result_t ospf6_routemap_rule_match_tag(void *rule,
 	return RMAP_NOMATCH;
 }
 
-static struct route_map_rule_cmd ospf6_routemap_rule_match_tag_cmd = {
-	"tag", ospf6_routemap_rule_match_tag, route_map_rule_tag_compile,
+static const struct route_map_rule_cmd
+		ospf6_routemap_rule_match_tag_cmd = {
+	"tag",
+	ospf6_routemap_rule_match_tag,
+	route_map_rule_tag_compile,
 	route_map_rule_tag_free,
 };
 
-static route_map_result_t
+static enum route_map_cmd_result_t
 ospf6_routemap_rule_set_metric_type(void *rule, const struct prefix *prefix,
 				    route_map_object_t type, void *object)
 {
@@ -1472,13 +1489,15 @@ static void ospf6_routemap_rule_set_metric_type_free(void *rule)
 	XFREE(MTYPE_ROUTE_MAP_COMPILED, rule);
 }
 
-struct route_map_rule_cmd ospf6_routemap_rule_set_metric_type_cmd = {
-	"metric-type", ospf6_routemap_rule_set_metric_type,
+static const struct route_map_rule_cmd
+		ospf6_routemap_rule_set_metric_type_cmd = {
+	"metric-type",
+	ospf6_routemap_rule_set_metric_type,
 	ospf6_routemap_rule_set_metric_type_compile,
 	ospf6_routemap_rule_set_metric_type_free,
 };
 
-static route_map_result_t
+static enum route_map_cmd_result_t
 ospf6_routemap_rule_set_metric(void *rule, const struct prefix *prefix,
 			       route_map_object_t type, void *object)
 {
@@ -1507,13 +1526,15 @@ static void ospf6_routemap_rule_set_metric_free(void *rule)
 	XFREE(MTYPE_ROUTE_MAP_COMPILED, rule);
 }
 
-struct route_map_rule_cmd ospf6_routemap_rule_set_metric_cmd = {
-	"metric", ospf6_routemap_rule_set_metric,
+static const struct route_map_rule_cmd
+		ospf6_routemap_rule_set_metric_cmd = {
+	"metric",
+	ospf6_routemap_rule_set_metric,
 	ospf6_routemap_rule_set_metric_compile,
 	ospf6_routemap_rule_set_metric_free,
 };
 
-static route_map_result_t
+static enum route_map_cmd_result_t
 ospf6_routemap_rule_set_forwarding(void *rule, const struct prefix *prefix,
 				   route_map_object_t type, void *object)
 {
@@ -1545,16 +1566,17 @@ static void ospf6_routemap_rule_set_forwarding_free(void *rule)
 	XFREE(MTYPE_ROUTE_MAP_COMPILED, rule);
 }
 
-struct route_map_rule_cmd ospf6_routemap_rule_set_forwarding_cmd = {
-	"forwarding-address", ospf6_routemap_rule_set_forwarding,
+static const struct route_map_rule_cmd
+		ospf6_routemap_rule_set_forwarding_cmd = {
+	"forwarding-address",
+	ospf6_routemap_rule_set_forwarding,
 	ospf6_routemap_rule_set_forwarding_compile,
 	ospf6_routemap_rule_set_forwarding_free,
 };
 
-static route_map_result_t ospf6_routemap_rule_set_tag(void *rule,
-						      const struct prefix *p,
-						      route_map_object_t type,
-						      void *object)
+static enum route_map_cmd_result_t
+ospf6_routemap_rule_set_tag(void *rule, const struct prefix *p,
+			    route_map_object_t type, void *object)
 {
 	route_tag_t *tag = rule;
 	struct ospf6_route *route = object;
@@ -1567,12 +1589,15 @@ static route_map_result_t ospf6_routemap_rule_set_tag(void *rule,
 	return RMAP_OKAY;
 }
 
-static struct route_map_rule_cmd ospf6_routemap_rule_set_tag_cmd = {
-	"tag", ospf6_routemap_rule_set_tag, route_map_rule_tag_compile,
+static const struct route_map_rule_cmd
+		ospf6_routemap_rule_set_tag_cmd = {
+	"tag",
+	ospf6_routemap_rule_set_tag,
+	route_map_rule_tag_compile,
 	route_map_rule_tag_free,
 };
 
-static int route_map_command_status(struct vty *vty, int ret)
+static int route_map_command_status(struct vty *vty, enum rmap_compile_rets ret)
 {
 	switch (ret) {
 	case RMAP_RULE_MISSING:
@@ -1601,8 +1626,10 @@ DEFUN (ospf6_routemap_set_metric_type,
 {
 	VTY_DECLVAR_CONTEXT(route_map_index, route_map_index);
 	int idx_external = 2;
-	int ret = route_map_add_set(route_map_index, "metric-type",
-				    argv[idx_external]->arg);
+	enum rmap_compile_rets ret = route_map_add_set(route_map_index,
+						       "metric-type",
+						       argv[idx_external]->arg);
+
 	return route_map_command_status(vty, ret);
 }
 
@@ -1618,7 +1645,9 @@ DEFUN (ospf6_routemap_no_set_metric_type,
 {
 	VTY_DECLVAR_CONTEXT(route_map_index, route_map_index);
 	char *ext = (argc == 4) ? argv[3]->text : NULL;
-	int ret = route_map_delete_set(route_map_index, "metric-type", ext);
+	enum rmap_compile_rets ret = route_map_delete_set(route_map_index,
+							  "metric-type", ext);
+
 	return route_map_command_status(vty, ret);
 }
 
@@ -1632,8 +1661,10 @@ DEFUN (ospf6_routemap_set_forwarding,
 {
 	VTY_DECLVAR_CONTEXT(route_map_index, route_map_index);
 	int idx_ipv6 = 2;
-	int ret = route_map_add_set(route_map_index, "forwarding-address",
-				    argv[idx_ipv6]->arg);
+	enum rmap_compile_rets ret = route_map_add_set(route_map_index,
+						       "forwarding-address",
+						       argv[idx_ipv6]->arg);
+
 	return route_map_command_status(vty, ret);
 }
 
@@ -1648,8 +1679,10 @@ DEFUN (ospf6_routemap_no_set_forwarding,
 {
 	VTY_DECLVAR_CONTEXT(route_map_index, route_map_index);
 	int idx_ipv6 = 3;
-	int ret = route_map_delete_set(route_map_index, "forwarding-address",
-				       argv[idx_ipv6]->arg);
+	enum rmap_compile_rets ret = route_map_delete_set(route_map_index,
+							  "forwarding-address",
+							  argv[idx_ipv6]->arg);
+
 	return route_map_command_status(vty, ret);
 }
 
@@ -1825,7 +1858,7 @@ DEFUN (show_ipv6_ospf6_redistribute,
 	return CMD_SUCCESS;
 }
 
-struct ospf6_lsa_handler as_external_handler = {
+static const struct ospf6_lsa_handler as_external_handler = {
 	.lh_type = OSPF6_LSTYPE_AS_EXTERNAL,
 	.lh_name = "AS-External",
 	.lh_short_name = "ASE",
@@ -1896,7 +1929,7 @@ int config_write_ospf6_debug_asbr(struct vty *vty)
 	return 0;
 }
 
-void install_element_ospf6_debug_asbr()
+void install_element_ospf6_debug_asbr(void)
 {
 	install_element(ENABLE_NODE, &debug_ospf6_asbr_cmd);
 	install_element(ENABLE_NODE, &no_debug_ospf6_asbr_cmd);

@@ -57,12 +57,12 @@
 #include "bgpd/bgp_zebra.h"
 
 DEFINE_HOOK(peer_backward_transition, (struct peer * peer), (peer))
-DEFINE_HOOK(peer_established, (struct peer * peer), (peer))
+DEFINE_HOOK(peer_status_changed, (struct peer * peer), (peer))
 
 /* Definition of display strings corresponding to FSM events. This should be
  * kept consistent with the events defined in bgpd.h
  */
-static const char *bgp_event_str[] = {
+static const char *const bgp_event_str[] = {
 	NULL,
 	"BGP_Start",
 	"BGP_Stop",
@@ -101,7 +101,7 @@ static int bgp_peer_reg_with_nht(struct peer *peer)
 {
 	int connected = 0;
 
-	if (peer->sort == BGP_PEER_EBGP && peer->ttl == 1
+	if (peer->sort == BGP_PEER_EBGP && peer->ttl == BGP_DEFAULT_TTL
 	    && !CHECK_FLAG(peer->flags, PEER_FLAG_DISABLE_CONNECTED_CHECK)
 	    && !bgp_flag_check(peer->bgp, BGP_FLAG_DISABLE_NH_CONNECTED_CHK))
 		connected = 1;
@@ -140,6 +140,20 @@ static struct peer *peer_xfer_conn(struct peer *from_peer)
 	if (!peer || !CHECK_FLAG(peer->flags, PEER_FLAG_CONFIG_NODE))
 		return from_peer;
 
+	/*
+	 * Let's check that we are not going to loose known configuration
+	 * state based upon doppelganger rules.
+	 */
+	FOREACH_AFI_SAFI (afi, safi) {
+		if (from_peer->afc[afi][safi] != peer->afc[afi][safi]) {
+			flog_err(
+				EC_BGP_DOPPELGANGER_CONFIG,
+				"from_peer->afc[%d][%d] is not the same as what we are overwriting",
+				afi, safi);
+			return NULL;
+		}
+	}
+
 	if (bgp_debug_neighbor_events(peer))
 		zlog_debug("%s: peer transfer %p fd %d -> %p fd %d)",
 			   from_peer->host, from_peer, from_peer->fd, peer,
@@ -149,6 +163,14 @@ static struct peer *peer_xfer_conn(struct peer *from_peer)
 	bgp_reads_off(peer);
 	bgp_writes_off(from_peer);
 	bgp_reads_off(from_peer);
+
+	/*
+	 * Before exchanging FD remove doppelganger from
+	 * keepalive peer hash. It could be possible conf peer
+	 * fd is set to -1. If blocked on lock then keepalive
+	 * thread can access peer pointer with fd -1.
+	 */
+	bgp_keepalives_off(from_peer);
 
 	BGP_TIMER_OFF(peer->t_routeadv);
 	BGP_TIMER_OFF(peer->t_connect);
@@ -165,9 +187,7 @@ static struct peer *peer_xfer_conn(struct peer *from_peer)
 	 * on various buffers. Those need to be transferred or dropped,
 	 * otherwise we'll get spurious failures during session establishment.
 	 */
-	pthread_mutex_lock(&peer->io_mtx);
-	pthread_mutex_lock(&from_peer->io_mtx);
-	{
+	frr_with_mutex(&peer->io_mtx, &from_peer->io_mtx) {
 		fd = peer->fd;
 		peer->fd = from_peer->fd;
 		from_peer->fd = fd;
@@ -182,12 +202,14 @@ static struct peer *peer_xfer_conn(struct peer *from_peer)
 		 */
 		if (peer->curr) {
 			flog_err(
-				BGP_ERR_PKT_PROCESS,
+				EC_BGP_PKT_PROCESS,
 				"[%s] Dropping pending packet on connection transfer:",
 				peer->host);
-			uint16_t type = stream_getc_from(peer->curr,
-							 BGP_MARKER_SIZE + 2);
-			bgp_dump_packet(peer, type, peer->curr);
+			/* there used to be a bgp_packet_dump call here, but
+			 * that's extremely confusing since there's no way to
+			 * identify the packet in MRT dumps or BMP as dropped
+			 * due to connection transfer.
+			 */
 			stream_free(peer->curr);
 			peer->curr = NULL;
 		}
@@ -206,8 +228,6 @@ static struct peer *peer_xfer_conn(struct peer *from_peer)
 		ringbuf_copy(peer->ibuf_work, from_peer->ibuf_work,
 			     ringbuf_remain(from_peer->ibuf_work));
 	}
-	pthread_mutex_unlock(&from_peer->io_mtx);
-	pthread_mutex_unlock(&peer->io_mtx);
 
 	peer->as = from_peer->as;
 	peer->v_holdtime = from_peer->v_holdtime;
@@ -228,6 +248,7 @@ static struct peer *peer_xfer_conn(struct peer *from_peer)
 	from_peer->last_event = last_evt;
 	from_peer->last_major_event = last_maj_evt;
 	peer->remote_id = from_peer->remote_id;
+	peer->last_reset = from_peer->last_reset;
 
 	if (from_peer->hostname != NULL) {
 		if (peer->hostname) {
@@ -261,7 +282,7 @@ static struct peer *peer_xfer_conn(struct peer *from_peer)
 
 	if (bgp_getsockname(peer) < 0) {
 		flog_err(
-			LIB_ERR_SOCKET,
+			EC_LIB_SOCKET,
 			"%%bgp_getsockname() failed for %s peer %s fd %d (from_peer fd %d)",
 			(CHECK_FLAG(peer->sflags, PEER_STATUS_ACCEPT_PEER)
 				 ? "accept"
@@ -274,7 +295,7 @@ static struct peer *peer_xfer_conn(struct peer *from_peer)
 	if (from_peer->status > Active) {
 		if (bgp_getsockname(from_peer) < 0) {
 			flog_err(
-				LIB_ERR_SOCKET,
+				EC_LIB_SOCKET,
 				"%%bgp_getsockname() failed for %s from_peer %s fd %d (peer fd %d)",
 
 				(CHECK_FLAG(from_peer->sflags,
@@ -316,7 +337,8 @@ void bgp_timer_set(struct peer *peer)
 		   status start timer is on unless peer is shutdown or peer is
 		   inactive.  All other timer must be turned off */
 		if (BGP_PEER_START_SUPPRESSED(peer) || !peer_active(peer)
-		    || peer->bgp->vrf_id == VRF_UNKNOWN) {
+		    || (peer->bgp->inst_type != BGP_INSTANCE_TYPE_VIEW &&
+			peer->bgp->vrf_id == VRF_UNKNOWN)) {
 			BGP_TIMER_OFF(peer->t_start);
 		} else {
 			BGP_TIMER_ON(peer->t_start, bgp_start_timer,
@@ -508,7 +530,7 @@ int bgp_routeadv_timer(struct thread *thread)
 }
 
 /* BGP Peer Down Cause */
-const char *peer_down_str[] = {"",
+const char *const peer_down_str[] = {"",
 			       "Router ID changed",
 			       "Remote AS changed",
 			       "Local AS change",
@@ -534,7 +556,14 @@ const char *peer_down_str[] = {"",
 			       "Intf peering v6only config change",
 			       "BFD down received",
 			       "Interface down",
-			       "Neighbor address lost"};
+			       "Neighbor address lost",
+			       "Waiting for NHT",
+			       "Waiting for Peer IPv6 LLA",
+			       "Waiting for VRF to be initialized",
+			       "No AFI/SAFI activated for peer",
+			       "AS Set config change",
+			       "Waiting for peer OPEN",
+			       "Reached received prefix count"};
 
 static int bgp_graceful_restart_timer_expire(struct thread *thread)
 {
@@ -941,8 +970,32 @@ static void bgp_update_delay_process_status_change(struct peer *peer)
    read/write and timer thread. */
 void bgp_fsm_change_status(struct peer *peer, int status)
 {
+	struct bgp *bgp;
+	uint32_t peer_count;
 
-	bgp_dump_state(peer, peer->status, status);
+	bgp = peer->bgp;
+	peer_count = bgp->established_peers;
+
+	if (status == Established)
+		bgp->established_peers++;
+	else if ((peer->status == Established) && (status != Established))
+		bgp->established_peers--;
+
+	if (bgp_debug_neighbor_events(peer)) {
+		struct vrf *vrf = vrf_lookup_by_id(bgp->vrf_id);
+
+		zlog_debug("%s : vrf %s(%u), Status: %s established_peers %u", __func__,
+			   vrf ? vrf->name : "Unknown", bgp->vrf_id,
+			   lookup_msg(bgp_status_msg, status, NULL),
+			   bgp->established_peers);
+	}
+
+	/* Set to router ID to the value provided by RIB if there are no peers
+	 * in the established state and peer count did not change
+	 */
+	if ((peer_count != bgp->established_peers) &&
+	    (bgp->established_peers == 0))
+		bgp_router_id_zebra_bump(bgp->vrf_id, NULL);
 
 	/* Transition into Clearing or Deleted must /always/ clear all routes..
 	 * (and must do so before actually changing into Deleted..
@@ -980,6 +1033,9 @@ void bgp_fsm_change_status(struct peer *peer, int status)
 
 	/* Save event that caused status change. */
 	peer->last_major_event = peer->cur_event;
+
+	/* Operations after status change */
+	hook_call(peer_status_changed, peer);
 
 	if (status == Established)
 		UNSET_FLAG(peer->sflags, PEER_STATUS_ACCEPT_PEER);
@@ -1049,8 +1105,9 @@ int bgp_stop(struct peer *peer)
 				"%%ADJCHANGE: neighbor %s(%s) in vrf %s Down %s",
 				peer->host,
 				(peer->hostname) ? peer->hostname : "Unknown",
-				vrf ? ((vrf->vrf_id != VRF_DEFAULT) ? vrf->name
-								    : "Default")
+				vrf ? ((vrf->vrf_id != VRF_DEFAULT)
+						? vrf->name
+						: VRF_DEFAULT_NAME)
 				    : "",
 				peer_down_str[(int)peer->last_reset]);
 		}
@@ -1099,8 +1156,6 @@ int bgp_stop(struct peer *peer)
 
 		/* Reset peer synctime */
 		peer->synctime = 0;
-
-		bgp_bfd_deregister_peer(peer);
 	}
 
 	/* stop keepalives */
@@ -1120,8 +1175,7 @@ int bgp_stop(struct peer *peer)
 	BGP_TIMER_OFF(peer->t_routeadv);
 
 	/* Clear input and output buffer.  */
-	pthread_mutex_lock(&peer->io_mtx);
-	{
+	frr_with_mutex(&peer->io_mtx) {
 		if (peer->ibuf)
 			stream_fifo_clean(peer->ibuf);
 		if (peer->obuf)
@@ -1137,7 +1191,6 @@ int bgp_stop(struct peer *peer)
 			peer->curr = NULL;
 		}
 	}
-	pthread_mutex_unlock(&peer->io_mtx);
 
 	/* Close of file descriptor. */
 	if (peer->fd >= 0) {
@@ -1282,7 +1335,7 @@ static int bgp_connect_check(struct thread *thread)
 
 	/* If getsockopt is fail, this is fatal error. */
 	if (ret < 0) {
-		zlog_info("can't get sockopt for nonblocking connect: %d(%s)",
+		zlog_err("can't get sockopt for nonblocking connect: %d(%s)",
 			  errno, safe_strerror(errno));
 		BGP_EVENT_ADD(peer, TCP_fatal_error);
 		return -1;
@@ -1306,19 +1359,20 @@ static int bgp_connect_check(struct thread *thread)
 static int bgp_connect_success(struct peer *peer)
 {
 	if (peer->fd < 0) {
-		flog_err(BGP_ERR_CONNECT,
-			  "bgp_connect_success peer's fd is negative value %d",
-			  peer->fd);
+		flog_err(EC_BGP_CONNECT,
+			 "bgp_connect_success peer's fd is negative value %d",
+			 peer->fd);
 		bgp_stop(peer);
 		return -1;
 	}
 
 	if (bgp_getsockname(peer) < 0) {
-		flog_err_sys(LIB_ERR_SOCKET,
+		flog_err_sys(EC_LIB_SOCKET,
 			     "%s: bgp_getsockname(): failed for peer %s, fd %d",
 			     __FUNCTION__, peer->host, peer->fd);
-		bgp_notify_send(peer, BGP_NOTIFY_FSM_ERR,
-				0); /* internal error */
+		bgp_notify_send(
+			peer, BGP_NOTIFY_FSM_ERR,
+			BGP_NOTIFY_SUBCODE_UNSPECIFIC); /* internal error */
 		bgp_writes_on(peer);
 		return -1;
 	}
@@ -1368,15 +1422,20 @@ int bgp_start(struct peer *peer)
 			zlog_debug(
 				"%s [FSM] Unable to get neighbor's IP address, waiting...",
 				peer->host);
+		peer->last_reset = PEER_DOWN_NBR_ADDR;
 		return -1;
 	}
 
 	if (BGP_PEER_START_SUPPRESSED(peer)) {
 		if (bgp_debug_neighbor_events(peer))
-			flog_err(BGP_ERR_FSM,
-				  "%s [FSM] Trying to start suppressed peer"
-				  " - this is never supposed to happen!",
-				  peer->host);
+			flog_err(EC_BGP_FSM,
+				 "%s [FSM] Trying to start suppressed peer"
+				 " - this is never supposed to happen!",
+				 peer->host);
+		if (CHECK_FLAG(peer->flags, PEER_FLAG_SHUTDOWN))
+			peer->last_reset = PEER_DOWN_USER_SHUTDOWN;
+		else if (CHECK_FLAG(peer->sflags, PEER_STATUS_PREFIX_OVERFLOW))
+			peer->last_reset = PEER_DOWN_PFX_COUNT;
 		return -1;
 	}
 
@@ -1406,12 +1465,14 @@ int bgp_start(struct peer *peer)
 		return 0;
 	}
 
-	if (peer->bgp->vrf_id == VRF_UNKNOWN) {
+	if (peer->bgp->inst_type != BGP_INSTANCE_TYPE_VIEW &&
+	    peer->bgp->vrf_id == VRF_UNKNOWN) {
 		if (bgp_debug_neighbor_events(peer))
 			flog_err(
-				BGP_ERR_FSM,
+				EC_BGP_FSM,
 				"%s [FSM] In a VRF that is not initialised yet",
 				peer->host);
+		peer->last_reset = PEER_DOWN_VRF_UNINIT;
 		return -1;
 	}
 
@@ -1423,7 +1484,7 @@ int bgp_start(struct peer *peer)
 			if (bgp_debug_neighbor_events(peer))
 				zlog_debug("%s [FSM] Waiting for NHT",
 					   peer->host);
-
+			peer->last_reset = PEER_DOWN_WAITING_NHT;
 			BGP_EVENT_ADD(peer, TCP_connection_open_failed);
 			return 0;
 		}
@@ -1456,9 +1517,9 @@ int bgp_start(struct peer *peer)
 				"%s [FSM] Non blocking connect waiting result, fd %d",
 				peer->host, peer->fd);
 		if (peer->fd < 0) {
-			flog_err(BGP_ERR_FSM,
-				  "bgp_start peer's fd is negative value %d",
-				  peer->fd);
+			flog_err(EC_BGP_FSM,
+				 "bgp_start peer's fd is negative value %d",
+				 peer->fd);
 			return -1;
 		}
 		/*
@@ -1504,9 +1565,8 @@ static int bgp_fsm_open(struct peer *peer)
    peer and change to Idle status. */
 static int bgp_fsm_event_error(struct peer *peer)
 {
-	flog_err(BGP_ERR_FSM,
-		  "%s [FSM] unexpected packet received in state %s", peer->host,
-		  lookup_msg(bgp_status_msg, peer->status, NULL));
+	flog_err(EC_BGP_FSM, "%s [FSM] unexpected packet received in state %s",
+		 peer->host, lookup_msg(bgp_status_msg, peer->status, NULL));
 
 	return bgp_stop_with_notify(peer, BGP_NOTIFY_FSM_ERR, 0);
 }
@@ -1538,7 +1598,7 @@ static int bgp_establish(struct peer *peer)
 	other = peer->doppelganger;
 	peer = peer_xfer_conn(peer);
 	if (!peer) {
-		flog_err(BGP_ERR_CONNECT, "%%Neighbor failed in xfer_conn");
+		flog_err(EC_BGP_CONNECT, "%%Neighbor failed in xfer_conn");
 		return -1;
 	}
 
@@ -1563,8 +1623,9 @@ static int bgp_establish(struct peer *peer)
 		zlog_info("%%ADJCHANGE: neighbor %s(%s) in vrf %s Up",
 			  peer->host,
 			  (peer->hostname) ? peer->hostname : "Unknown",
-			  vrf ? ((vrf->vrf_id != VRF_DEFAULT) ? vrf->name
-							      : "Default")
+			  vrf ? ((vrf->vrf_id != VRF_DEFAULT)
+					? vrf->name
+					: VRF_DEFAULT_NAME)
 			      : "");
 	}
 	/* assign update-group/subgroup */
@@ -1612,8 +1673,6 @@ static int bgp_establish(struct peer *peer)
 			zlog_debug("%s graceful restart timer stopped",
 				   peer->host);
 	}
-
-	hook_call(peer_established, peer);
 
 	/* Reset uptime, turn on keepalives, send current table. */
 	if (!peer->v_holdtime)
@@ -1676,6 +1735,15 @@ static int bgp_establish(struct peer *peer)
 			peer_delete(peer->doppelganger);
 	}
 
+	/*
+	 * If we are replacing the old peer for a doppelganger
+	 * then switch it around in the bgp->peerhash
+	 * the doppelgangers su and this peer's su are the same
+	 * so the hash_release is the same for either.
+	 */
+	hash_release(peer->bgp->peerhash, peer);
+	hash_get(peer->bgp->peerhash, peer, hash_alloc_intern);
+
 	bgp_bfd_register_peer(peer);
 	return ret;
 }
@@ -1698,7 +1766,7 @@ static int bgp_fsm_update(struct peer *peer)
 static int bgp_ignore(struct peer *peer)
 {
 	flog_err(
-		BGP_ERR_FSM,
+		EC_BGP_FSM,
 		"%s [FSM] Ignoring event %s in state %s, prior events %s, %s, fd %d",
 		peer->host, bgp_event_str[peer->cur_event],
 		lookup_msg(bgp_status_msg, peer->status, NULL),
@@ -1711,7 +1779,7 @@ static int bgp_ignore(struct peer *peer)
 static int bgp_fsm_exeption(struct peer *peer)
 {
 	flog_err(
-		BGP_ERR_FSM,
+		EC_BGP_FSM,
 		"%s [FSM] Unexpected event %s in state %s, prior events %s, %s, fd %d",
 		peer->host, bgp_event_str[peer->cur_event],
 		lookup_msg(bgp_status_msg, peer->status, NULL),
@@ -1720,7 +1788,7 @@ static int bgp_fsm_exeption(struct peer *peer)
 	return (bgp_stop(peer));
 }
 
-void bgp_fsm_nht_update(struct peer *peer, int valid)
+void bgp_fsm_event_update(struct peer *peer, int valid)
 {
 	if (!peer)
 		return;
@@ -1753,7 +1821,6 @@ void bgp_fsm_nht_update(struct peer *peer, int valid)
 		break;
 	}
 }
-
 
 /* Finite State Machine structure */
 static const struct {
@@ -1827,7 +1894,7 @@ static const struct {
 		{bgp_fsm_open, OpenConfirm}, /* Receive_OPEN_message         */
 		{bgp_fsm_event_error, Idle}, /* Receive_KEEPALIVE_message    */
 		{bgp_fsm_event_error, Idle}, /* Receive_UPDATE_message       */
-		{bgp_stop_with_error, Idle}, /* Receive_NOTIFICATION_message */
+		{bgp_fsm_event_error, Idle}, /* Receive_NOTIFICATION_message */
 		{bgp_fsm_exeption, Idle},    /* Clearing_Completed           */
 	},
 	{
@@ -1986,7 +2053,7 @@ int bgp_event_update(struct peer *peer, int event)
 		 */
 		if (!dyn_nbr && !passive_conn && peer->bgp) {
 			flog_err(
-				BGP_ERR_FSM,
+				EC_BGP_FSM,
 				"%s [FSM] Failure handling event %s in state %s, "
 				"prior events %s, %s, fd %d",
 				peer->host, bgp_event_str[peer->cur_event],

@@ -26,11 +26,13 @@
 
 #include <zebra.h>
 
-#include <zebra.h>
-
 #include "if.h"
 #include "linklist.h"
 #include "zebra_vxlan.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #define ERR_STR_SZ 256
 
@@ -50,6 +52,10 @@ struct zebra_vtep_t_ {
 	/* Remote IP. */
 	/* NOTE: Can only be IPv4 right now. */
 	struct in_addr vtep_ip;
+	/* Flood mode (one of enum vxlan_flood_control) based on the PMSI
+	 * tunnel type advertised by the remote VTEP
+	 */
+	int flood_control;
 
 	/* Links. */
 	struct zebra_vtep_t_ *next;
@@ -70,6 +76,9 @@ struct zebra_vni_t_ {
 	/* Flag for advertising gw macip */
 	uint8_t advertise_gw_macip;
 
+	/* Flag for advertising svi macip */
+	uint8_t advertise_svi_macip;
+
 	/* Flag for advertising gw macip */
 	uint8_t advertise_subnet;
 
@@ -81,6 +90,9 @@ struct zebra_vni_t_ {
 
 	/* Local IP */
 	struct in_addr local_vtep_ip;
+
+	/* PIM-SM MDT group for BUM flooding */
+	struct in_addr mcast_grp;
 
 	/* tenant VRF, if any */
 	vrf_id_t vrf_id;
@@ -112,6 +124,8 @@ struct zebra_l3vni_t_ {
 
 	/* SVI interface corresponding to the l3vni */
 	struct interface *svi_if;
+
+	struct interface *mac_vlan_if;
 
 	/* list of L2 VNIs associated with the L3 VNI */
 	struct list *l2vnis;
@@ -148,8 +162,44 @@ static inline const char *zl3vni_rmac2str(zebra_l3vni_t *zl3vni, char *buf,
 	char *ptr;
 
 	if (!buf)
-		ptr = (char *)XMALLOC(MTYPE_TMP,
-				      ETHER_ADDR_STRLEN * sizeof(char));
+		ptr = XMALLOC(MTYPE_TMP, ETHER_ADDR_STRLEN * sizeof(char));
+	else {
+		assert(size >= ETHER_ADDR_STRLEN);
+		ptr = buf;
+	}
+
+	if (zl3vni->mac_vlan_if)
+		snprintf(ptr, (ETHER_ADDR_STRLEN),
+			 "%02x:%02x:%02x:%02x:%02x:%02x",
+			 (uint8_t)zl3vni->mac_vlan_if->hw_addr[0],
+			 (uint8_t)zl3vni->mac_vlan_if->hw_addr[1],
+			 (uint8_t)zl3vni->mac_vlan_if->hw_addr[2],
+			 (uint8_t)zl3vni->mac_vlan_if->hw_addr[3],
+			 (uint8_t)zl3vni->mac_vlan_if->hw_addr[4],
+			 (uint8_t)zl3vni->mac_vlan_if->hw_addr[5]);
+	else if (zl3vni->svi_if)
+		snprintf(ptr, (ETHER_ADDR_STRLEN),
+			 "%02x:%02x:%02x:%02x:%02x:%02x",
+			 (uint8_t)zl3vni->svi_if->hw_addr[0],
+			 (uint8_t)zl3vni->svi_if->hw_addr[1],
+			 (uint8_t)zl3vni->svi_if->hw_addr[2],
+			 (uint8_t)zl3vni->svi_if->hw_addr[3],
+			 (uint8_t)zl3vni->svi_if->hw_addr[4],
+			 (uint8_t)zl3vni->svi_if->hw_addr[5]);
+	else
+		snprintf(ptr, ETHER_ADDR_STRLEN, "None");
+
+	return ptr;
+}
+
+/* get the sys mac string */
+static inline const char *zl3vni_sysmac2str(zebra_l3vni_t *zl3vni, char *buf,
+					    int size)
+{
+	char *ptr;
+
+	if (!buf)
+		ptr = XMALLOC(MTYPE_TMP, ETHER_ADDR_STRLEN * sizeof(char));
 	else {
 		assert(size >= ETHER_ADDR_STRLEN);
 		ptr = buf;
@@ -203,7 +253,8 @@ static inline vrf_id_t zl3vni_vrf_id(zebra_l3vni_t *zl3vni)
 	return zl3vni->vrf_id;
 }
 
-static inline void zl3vni_get_rmac(zebra_l3vni_t *zl3vni, struct ethaddr *rmac)
+static inline void zl3vni_get_svi_rmac(zebra_l3vni_t *zl3vni,
+				       struct ethaddr *rmac)
 {
 	if (!zl3vni)
 		return;
@@ -249,6 +300,10 @@ struct zebra_mac_t_ {
 #define ZEBRA_MAC_DEF_GW  0x20
 /* remote VTEP advertised MAC as default GW */
 #define ZEBRA_MAC_REMOTE_DEF_GW	0x40
+#define ZEBRA_MAC_DUPLICATE 0x80
+
+	/* back pointer to zvni */
+	zebra_vni_t     *zvni;
 
 	/* Local or remote info. */
 	union {
@@ -260,11 +315,24 @@ struct zebra_mac_t_ {
 		struct in_addr r_vtep_ip;
 	} fwd_info;
 
+	/* Mobility sequence numbers associated with this entry. */
+	uint32_t rem_seq;
+	uint32_t loc_seq;
+
 	/* List of neigh associated with this mac */
 	struct list *neigh_list;
 
 	/* list of hosts pointing to this remote RMAC */
 	struct host_rb_tree_entry host_rb;
+
+	/* Duplicate mac detection */
+	uint32_t dad_count;
+
+	struct thread *dad_mac_auto_recovery_timer;
+
+	struct timeval detect_start_time;
+
+	time_t dad_dup_detect_time;
 };
 
 /*
@@ -288,6 +356,7 @@ struct mac_walk_ctx {
 	struct vty *vty;	  /* Used by VTY handlers */
 	uint32_t count;		  /* Used by VTY handlers */
 	struct json_object *json; /* Used for JSON Output */
+	bool print_dup; /* Used to print dup addr list */
 };
 
 struct rmac_walk_ctx {
@@ -295,11 +364,9 @@ struct rmac_walk_ctx {
 	struct json_object *json;
 };
 
-enum zebra_neigh_state { ZEBRA_NEIGH_INACTIVE = 0, ZEBRA_NEIGH_ACTIVE = 1 };
+#define IS_ZEBRA_NEIGH_ACTIVE(n) (n->state == ZEBRA_NEIGH_ACTIVE)
 
-#define IS_ZEBRA_NEIGH_ACTIVE(n) n->state == ZEBRA_NEIGH_ACTIVE
-
-#define IS_ZEBRA_NEIGH_INACTIVE(n) n->state == ZEBRA_NEIGH_INACTIVE
+#define IS_ZEBRA_NEIGH_INACTIVE(n) (n->state == ZEBRA_NEIGH_INACTIVE)
 
 #define ZEBRA_NEIGH_SET_ACTIVE(n) n->state = ZEBRA_NEIGH_ACTIVE
 
@@ -326,20 +393,43 @@ struct zebra_neigh_t_ {
 	/* Underlying interface. */
 	ifindex_t ifindex;
 
+	zebra_vni_t *zvni;
+
 	uint32_t flags;
 #define ZEBRA_NEIGH_LOCAL     0x01
 #define ZEBRA_NEIGH_REMOTE    0x02
 #define ZEBRA_NEIGH_REMOTE_NH    0x04 /* neigh entry for remote vtep */
 #define ZEBRA_NEIGH_DEF_GW    0x08
 #define ZEBRA_NEIGH_ROUTER_FLAG 0x10
+#define ZEBRA_NEIGH_DUPLICATE 0x20
+#define ZEBRA_NEIGH_SVI_IP 0x40
 
 	enum zebra_neigh_state state;
 
 	/* Remote VTEP IP - applicable only for remote neighbors. */
 	struct in_addr r_vtep_ip;
 
+	/*
+	 * Mobility sequence numbers associated with this entry. The rem_seq
+	 * represents the sequence number from the client (BGP) for the most
+	 * recent add or update of this entry while the loc_seq represents
+	 * the sequence number informed (or to be informed) by zebra to BGP
+	 * for this entry.
+	 */
+	uint32_t rem_seq;
+	uint32_t loc_seq;
+
 	/* list of hosts pointing to this remote NH entry */
 	struct host_rb_tree_entry host_rb;
+
+	/* Duplicate ip detection */
+	uint32_t dad_count;
+
+	struct thread *dad_ip_auto_recovery_timer;
+
+	struct timeval detect_start_time;
+
+	time_t dad_dup_detect_time;
 };
 
 /*
@@ -379,5 +469,40 @@ struct nh_walk_ctx {
 	struct vty *vty;
 	struct json_object *json;
 };
+
+extern zebra_l3vni_t *zl3vni_from_vrf(vrf_id_t vrf_id);
+extern struct interface *zl3vni_map_to_vxlan_if(zebra_l3vni_t *zl3vni);
+extern struct interface *zl3vni_map_to_svi_if(zebra_l3vni_t *zl3vni);
+extern struct interface *zl3vni_map_to_mac_vlan_if(zebra_l3vni_t *zl3vni);
+
+DECLARE_HOOK(zebra_rmac_update, (zebra_mac_t *rmac, zebra_l3vni_t *zl3vni,
+	     bool delete, const char *reason), (rmac, zl3vni, delete, reason))
+
+
+#ifdef __cplusplus
+}
+#endif
+
+/*
+ * Multicast hash table.
+ *
+ * This table contains -
+ * 1. The (S, G) entries used for encapsulating and forwarding BUM traffic.
+ *    S is the local VTEP-IP and G is a BUM mcast group address.
+ * 2. The (X, G) entries used for terminating a BUM flow.
+ * Multiple L2-VNIs can share the same MDT hence the need to maintain
+ * an aggregated table that pimd can consume without much
+ * re-interpretation.
+ */
+typedef struct zebra_vxlan_sg_ {
+	struct zebra_vrf *zvrf;
+
+	struct prefix_sg sg;
+	char sg_str[PREFIX_SG_STR_LEN];
+
+	/* For SG - num of L2 VNIs using this entry for sending BUM traffic */
+	/* For XG - num of SG using this as parent */
+	uint32_t ref_cnt;
+} zebra_vxlan_sg_t;
 
 #endif /* _ZEBRA_VXLAN_PRIVATE_H */

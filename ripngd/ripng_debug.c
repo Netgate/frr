@@ -207,14 +207,7 @@ static int config_write_debug(struct vty *vty)
 	return write;
 }
 
-void ripng_debug_reset()
-{
-	ripng_debug_event = 0;
-	ripng_debug_packet = 0;
-	ripng_debug_zebra = 0;
-}
-
-void ripng_debug_init()
+void ripng_debug_init(void)
 {
 	ripng_debug_event = 0;
 	ripng_debug_packet = 0;

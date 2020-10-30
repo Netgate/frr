@@ -22,6 +22,7 @@
 #define _QUAGGA_BGP_ASPATH_H
 
 #include "lib/json.h"
+#include "bgpd/bgp_route.h"
 
 /* AS path segment type.  */
 #define AS_SET                       1
@@ -85,9 +86,10 @@ extern struct aspath *aspath_filter_exclude(struct aspath *, struct aspath *);
 extern struct aspath *aspath_add_seq_n(struct aspath *, as_t, unsigned);
 extern struct aspath *aspath_add_seq(struct aspath *, as_t);
 extern struct aspath *aspath_add_confed_seq(struct aspath *, as_t);
-extern int aspath_cmp(const void *, const void *);
+extern bool aspath_cmp(const void *as1, const void *as2);
 extern int aspath_cmp_left(const struct aspath *, const struct aspath *);
-extern int aspath_cmp_left_confed(const struct aspath *, const struct aspath *);
+extern bool aspath_cmp_left_confed(const struct aspath *as1,
+				   const struct aspath *as2xs);
 extern struct aspath *aspath_delete_confed_seq(struct aspath *);
 extern struct aspath *aspath_empty(void);
 extern struct aspath *aspath_empty_get(void);
@@ -100,7 +102,7 @@ extern const char *aspath_print(struct aspath *);
 extern void aspath_print_vty(struct vty *, const char *, struct aspath *,
 			     const char *);
 extern void aspath_print_all_vty(struct vty *);
-extern unsigned int aspath_key_make(void *);
+extern unsigned int aspath_key_make(const void *);
 extern unsigned int aspath_get_first_as(struct aspath *);
 extern unsigned int aspath_get_last_as(struct aspath *);
 extern int aspath_loop_check(struct aspath *, as_t);
@@ -110,13 +112,15 @@ extern struct aspath *aspath_replace_specific_asn(struct aspath *aspath,
 						  as_t target_asn,
 						  as_t our_asn);
 extern struct aspath *aspath_replace_private_asns(struct aspath *aspath,
-						  as_t asn);
-extern struct aspath *aspath_remove_private_asns(struct aspath *aspath);
+						  as_t asn, as_t peer_asn);
+extern struct aspath *aspath_remove_private_asns(struct aspath *aspath,
+						 as_t peer_asn);
 extern int aspath_firstas_check(struct aspath *, as_t);
 extern int aspath_confed_check(struct aspath *);
 extern int aspath_left_confed_check(struct aspath *);
 extern unsigned long aspath_count(void);
 extern unsigned int aspath_count_hops(const struct aspath *);
+extern bool aspath_check_as_sets(struct aspath *aspath);
 extern unsigned int aspath_count_confeds(struct aspath *);
 extern unsigned int aspath_size(struct aspath *);
 extern as_t aspath_highest(struct aspath *);
@@ -128,5 +132,19 @@ extern unsigned int aspath_has_as4(struct aspath *);
 
 /* For SNMP BGP4PATHATTRASPATHSEGMENT, might be useful for debug */
 extern uint8_t *aspath_snmp_pathseg(struct aspath *, size_t *);
+
+extern void bgp_compute_aggregate_aspath(struct bgp_aggregate *aggregate,
+					 struct aspath *aspath);
+
+extern void bgp_compute_aggregate_aspath_hash(struct bgp_aggregate *aggregate,
+					      struct aspath *aspath);
+extern void bgp_compute_aggregate_aspath_val(struct bgp_aggregate *aggregate);
+extern void bgp_remove_aspath_from_aggregate(struct bgp_aggregate *aggregate,
+					     struct aspath *aspath);
+extern void bgp_remove_aspath_from_aggregate_hash(
+						struct bgp_aggregate *aggregate,
+						struct aspath *aspath);
+
+extern void bgp_aggr_aspath_remove(void *arg);
 
 #endif /* _QUAGGA_BGP_ASPATH_H */

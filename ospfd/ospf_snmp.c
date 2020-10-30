@@ -901,7 +901,7 @@ static struct ospf_lsa *lsdb_lookup_next(struct ospf_area *area, uint8_t *type,
 	/* Sanity check, if LSA type unknwon
 	   merley skip any LSA */
 	if ((i < OSPF_MIN_LSA) || (i >= OSPF_MAX_LSA)) {
-		zlog_debug("Strange request with LSA type %d\n", i);
+		zlog_debug("Strange request with LSA type %d", i);
 		return NULL;
 	}
 
@@ -995,7 +995,6 @@ static struct ospf_lsa *ospfLsdbLookup(struct variable *v, oid *name,
 			if (len <= 0)
 				type_next = 1;
 			else {
-				len = 1;
 				type_next = 0;
 				*type = *offset;
 			}
@@ -2258,8 +2257,6 @@ static uint8_t *ospfNbrEntry(struct variable *v, oid *name, size_t *length,
 	if (!nbr)
 		return NULL;
 	oi = nbr->oi;
-	if (!oi)
-		return NULL;
 
 	/* Return the current value of the variable */
 	switch (v->magic) {
@@ -2591,13 +2588,10 @@ static void ospfTrapNbrStateChange(struct ospf_neighbor *on)
 	oid_copy_addr(index, &(on->address.u.prefix4), IN_ADDR_SIZE);
 	index[IN_ADDR_SIZE] = 0;
 
-	smux_trap(ospf_variables,
-		  sizeof ospf_variables / sizeof(struct variable),
-		  ospf_trap_oid, sizeof ospf_trap_oid / sizeof(oid), ospf_oid,
+	smux_trap(ospf_variables, array_size(ospf_variables), ospf_trap_oid,
+		  array_size(ospf_trap_oid), ospf_oid,
 		  sizeof ospf_oid / sizeof(oid), index, IN_ADDR_SIZE + 1,
-		  ospfNbrTrapList,
-		  sizeof ospfNbrTrapList / sizeof(struct trap_object),
-		  NBRSTATECHANGE);
+		  ospfNbrTrapList, array_size(ospfNbrTrapList), NBRSTATECHANGE);
 }
 
 static void ospfTrapVirtNbrStateChange(struct ospf_neighbor *on)
@@ -2609,12 +2603,10 @@ static void ospfTrapVirtNbrStateChange(struct ospf_neighbor *on)
 	oid_copy_addr(index, &(on->address.u.prefix4), IN_ADDR_SIZE);
 	index[IN_ADDR_SIZE] = 0;
 
-	smux_trap(ospf_variables,
-		  sizeof ospf_variables / sizeof(struct variable),
-		  ospf_trap_oid, sizeof ospf_trap_oid / sizeof(oid), ospf_oid,
+	smux_trap(ospf_variables, array_size(ospf_variables), ospf_trap_oid,
+		  array_size(ospf_trap_oid), ospf_oid,
 		  sizeof ospf_oid / sizeof(oid), index, IN_ADDR_SIZE + 1,
-		  ospfVirtNbrTrapList,
-		  sizeof ospfVirtNbrTrapList / sizeof(struct trap_object),
+		  ospfVirtNbrTrapList, array_size(ospfVirtNbrTrapList),
 		  VIRTNBRSTATECHANGE);
 }
 
@@ -2650,13 +2642,10 @@ static void ospfTrapIfStateChange(struct ospf_interface *oi)
 	oid_copy_addr(index, &(oi->address->u.prefix4), IN_ADDR_SIZE);
 	index[IN_ADDR_SIZE] = 0;
 
-	smux_trap(ospf_variables,
-		  sizeof ospf_variables / sizeof(struct variable),
-		  ospf_trap_oid, sizeof ospf_trap_oid / sizeof(oid), ospf_oid,
+	smux_trap(ospf_variables, array_size(ospf_variables), ospf_trap_oid,
+		  array_size(ospf_trap_oid), ospf_oid,
 		  sizeof ospf_oid / sizeof(oid), index, IN_ADDR_SIZE + 1,
-		  ospfIfTrapList,
-		  sizeof ospfIfTrapList / sizeof(struct trap_object),
-		  IFSTATECHANGE);
+		  ospfIfTrapList, array_size(ospfIfTrapList), IFSTATECHANGE);
 }
 
 static void ospfTrapVirtIfStateChange(struct ospf_interface *oi)
@@ -2668,12 +2657,10 @@ static void ospfTrapVirtIfStateChange(struct ospf_interface *oi)
 	oid_copy_addr(index, &(oi->address->u.prefix4), IN_ADDR_SIZE);
 	index[IN_ADDR_SIZE] = 0;
 
-	smux_trap(ospf_variables,
-		  sizeof ospf_variables / sizeof(struct variable),
-		  ospf_trap_oid, sizeof ospf_trap_oid / sizeof(oid), ospf_oid,
+	smux_trap(ospf_variables, array_size(ospf_variables), ospf_trap_oid,
+		  array_size(ospf_trap_oid), ospf_oid,
 		  sizeof ospf_oid / sizeof(oid), index, IN_ADDR_SIZE + 1,
-		  ospfVirtIfTrapList,
-		  sizeof ospfVirtIfTrapList / sizeof(struct trap_object),
+		  ospfVirtIfTrapList, array_size(ospfVirtIfTrapList),
 		  VIRTIFSTATECHANGE);
 }
 

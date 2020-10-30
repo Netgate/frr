@@ -21,6 +21,8 @@
 #ifndef _QUAGGA_BGP_VTY_H
 #define _QUAGGA_BGP_VTY_H
 
+#include "bgpd/bgpd.h"
+
 struct bgp;
 
 #define BGP_INSTANCE_HELP_STR "BGP view\nBGP VRF\nView/VRF name\n"
@@ -45,8 +47,9 @@ struct bgp;
 	"Address Family modifier\n"
 
 extern void bgp_vty_init(void);
-extern const char *afi_safi_print(afi_t afi, safi_t safi);
-extern const char *afi_safi_json(afi_t afi, safi_t safi);
+extern const char *get_afi_safi_str(afi_t afi, safi_t safi, bool for_json);
+extern int bgp_get_vty(struct bgp **bgp, as_t *as, const char *name,
+		       enum bgp_instance_type inst_type);
 extern void bgp_config_write_update_delay(struct vty *vty, struct bgp *bgp);
 extern void bgp_config_write_wpkt_quanta(struct vty *vty, struct bgp *bgp);
 extern void bgp_config_write_rpkt_quanta(struct vty *vty, struct bgp *bgp);
@@ -69,9 +72,9 @@ extern int argv_find_and_parse_safi(struct cmd_token **argv, int argc,
 extern int bgp_vty_find_and_parse_afi_safi_bgp(struct vty *vty,
 					       struct cmd_token **argv,
 					       int argc, int *idx, afi_t *afi,
-					       safi_t *safi, struct bgp **bgp);
+					       safi_t *safi, struct bgp **bgp,
+					       bool use_json);
 extern int bgp_show_summary_vty(struct vty *vty, const char *name, afi_t afi,
-				safi_t safi, uint8_t use_json);
-extern void bgp_vpn_policy_config_write_afi(struct vty *vty, struct bgp *bgp,
-					    afi_t afi);
+				safi_t safi, bool show_failed, bool use_json);
+
 #endif /* _QUAGGA_BGP_VTY_H */

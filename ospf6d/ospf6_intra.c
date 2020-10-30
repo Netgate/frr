@@ -1729,7 +1729,7 @@ void ospf6_intra_prefix_lsa_add(struct ospf6_lsa *lsa)
 		listnode_add_sort(route->paths, path);
 
 		old = ospf6_route_lookup(&route->prefix, oa->route_table);
-		if (old && (ospf6_route_cmp(route, old) == 0)) {
+		if (old) {
 			if (IS_OSPF6_DEBUG_EXAMIN(INTRA_PREFIX)) {
 				prefix2str(&route->prefix, buf, sizeof(buf));
 				zlog_debug("%s Update route: %s old cost %u new cost %u paths %u nh %u",
@@ -2232,31 +2232,31 @@ void ospf6_intra_brouter_calculation(struct ospf6_area *oa)
 			  __PRETTY_FUNCTION__, oa->name);
 }
 
-struct ospf6_lsa_handler router_handler = {.lh_type = OSPF6_LSTYPE_ROUTER,
-					   .lh_name = "Router",
-					   .lh_short_name = "Rtr",
-					   .lh_show = ospf6_router_lsa_show,
-					   .lh_get_prefix_str =
-						   ospf6_router_lsa_get_nbr_id,
-					   .lh_debug = 0};
+static const struct ospf6_lsa_handler router_handler = {
+	.lh_type = OSPF6_LSTYPE_ROUTER,
+	.lh_name = "Router",
+	.lh_short_name = "Rtr",
+	.lh_show = ospf6_router_lsa_show,
+	.lh_get_prefix_str = ospf6_router_lsa_get_nbr_id,
+	.lh_debug = 0};
 
-struct ospf6_lsa_handler network_handler = {.lh_type = OSPF6_LSTYPE_NETWORK,
-					    .lh_name = "Network",
-					    .lh_short_name = "Net",
-					    .lh_show = ospf6_network_lsa_show,
-					    .lh_get_prefix_str =
-						    ospf6_network_lsa_get_ar_id,
-					    .lh_debug = 0};
+static const struct ospf6_lsa_handler network_handler = {
+	.lh_type = OSPF6_LSTYPE_NETWORK,
+	.lh_name = "Network",
+	.lh_short_name = "Net",
+	.lh_show = ospf6_network_lsa_show,
+	.lh_get_prefix_str = ospf6_network_lsa_get_ar_id,
+	.lh_debug = 0};
 
-struct ospf6_lsa_handler link_handler = {.lh_type = OSPF6_LSTYPE_LINK,
-					 .lh_name = "Link",
-					 .lh_short_name = "Lnk",
-					 .lh_show = ospf6_link_lsa_show,
-					 .lh_get_prefix_str =
-						 ospf6_link_lsa_get_prefix_str,
-					 .lh_debug = 0};
+static const struct ospf6_lsa_handler link_handler = {
+	.lh_type = OSPF6_LSTYPE_LINK,
+	.lh_name = "Link",
+	.lh_short_name = "Lnk",
+	.lh_show = ospf6_link_lsa_show,
+	.lh_get_prefix_str = ospf6_link_lsa_get_prefix_str,
+	.lh_debug = 0};
 
-struct ospf6_lsa_handler intra_prefix_handler = {
+static const struct ospf6_lsa_handler intra_prefix_handler = {
 	.lh_type = OSPF6_LSTYPE_INTRA_PREFIX,
 	.lh_name = "Intra-Prefix",
 	.lh_short_name = "INP",

@@ -17,6 +17,11 @@
  * with this program; see the file COPYING; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
  */
+
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -120,7 +125,7 @@ static int _ptm_lib_decode_header(csv_t *csv, int *msglen, int *version,
 	}
 	/* remove leading spaces */
 	for (i = j = 0; i < csv_field_len(fld); i++) {
-		if (!isspace((int)hdr[i])) {
+		if (!isspace((unsigned char)hdr[i])) {
 			client_name[j] = hdr[i];
 			j++;
 		}

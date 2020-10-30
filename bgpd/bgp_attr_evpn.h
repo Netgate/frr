@@ -34,7 +34,6 @@
 
 #define MAX_ET 0xffffffff
 
-unsigned long eth_tag_id;
 struct attr;
 
 /* EVPN ESI */
@@ -60,7 +59,7 @@ extern void bgp_add_routermac_ecom(struct attr *attr,
 				   struct ethaddr *routermac);
 extern int bgp_build_evpn_prefix(int type, uint32_t eth_tag,
 				 struct prefix *dst);
-extern void bgp_attr_rmac(struct attr *attr, struct ethaddr *rmac);
+extern bool bgp_attr_rmac(struct attr *attr, struct ethaddr *rmac);
 extern uint32_t bgp_attr_mac_mobility_seqnum(struct attr *attr,
 					     uint8_t *sticky);
 extern uint8_t bgp_attr_default_gw(struct attr *attr);

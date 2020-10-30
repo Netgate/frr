@@ -49,6 +49,7 @@
 #include "ospfd/ospf_ase.h"
 #include "ospfd/ospf_zebra.h"
 #include "ospfd/ospf_dump.h"
+#include "ospfd/ospf_errors.h"
 
 static struct ospf_area_range *ospf_area_range_new(struct prefix_ipv4 *p)
 {
@@ -195,6 +196,8 @@ int ospf_area_range_set(struct ospf *ospf, struct in_addr area_id,
 
 	range = ospf_area_range_lookup(area, p);
 	if (range != NULL) {
+		if (!CHECK_FLAG(advertise, OSPF_AREA_RANGE_ADVERTISE))
+			range->cost_config = OSPF_AREA_RANGE_COST_UNSPEC;
 		if ((CHECK_FLAG(range->flags, OSPF_AREA_RANGE_ADVERTISE)
 		     && !CHECK_FLAG(advertise, OSPF_AREA_RANGE_ADVERTISE))
 		    || (!CHECK_FLAG(range->flags, OSPF_AREA_RANGE_ADVERTISE)
@@ -208,8 +211,10 @@ int ospf_area_range_set(struct ospf *ospf, struct in_addr area_id,
 
 	if (CHECK_FLAG(advertise, OSPF_AREA_RANGE_ADVERTISE))
 		SET_FLAG(range->flags, OSPF_AREA_RANGE_ADVERTISE);
-	else
+	else {
 		UNSET_FLAG(range->flags, OSPF_AREA_RANGE_ADVERTISE);
+		range->cost_config = OSPF_AREA_RANGE_COST_UNSPEC;
+	}
 
 	return 1;
 }
@@ -742,7 +747,8 @@ void ospf_abr_announce_network_to_area(struct prefix_ipv4 *p, uint32_t cost,
 
 				prefix2str((struct prefix *)p, buf,
 					   sizeof(buf));
-				zlog_warn("%s: Could not refresh %s to %s",
+				flog_warn(EC_OSPF_LSA_MISSING,
+					  "%s: Could not refresh %s to %s",
 					  __func__, buf,
 					  inet_ntoa(area->area_id));
 				return;
@@ -764,7 +770,8 @@ void ospf_abr_announce_network_to_area(struct prefix_ipv4 *p, uint32_t cost,
 			char buf[PREFIX2STR_BUFFER];
 
 			prefix2str((struct prefix *)p, buf, sizeof(buf));
-			zlog_warn("%s: Could not originate %s to %s", __func__,
+			flog_warn(EC_OSPF_LSA_MISSING,
+				  "%s: Could not originate %s to %s", __func__,
 				  buf, inet_ntoa(area->area_id));
 			return;
 		}
@@ -1132,7 +1139,8 @@ static void ospf_abr_announce_rtr_to_area(struct prefix_ipv4 *p, uint32_t cost,
 			char buf[PREFIX2STR_BUFFER];
 
 			prefix2str((struct prefix *)p, buf, sizeof(buf));
-			zlog_warn("%s: Could not refresh/originate %s to %s",
+			flog_warn(EC_OSPF_LSA_MISSING,
+				  "%s: Could not refresh/originate %s to %s",
 				  __func__, buf, inet_ntoa(area->area_id));
 			return;
 		}
@@ -1833,6 +1841,29 @@ void ospf_abr_task(struct ospf *ospf)
 		zlog_debug("ospf_abr_task(): Stop");
 }
 
+/* If there's redistribution configured, we need to refresh external
+ * LSAs in order to install Type-7 and flood to all NSSA Areas
+ */
+static void ospf_abr_nssa_redist_task(struct ospf *ospf)
+{
+	int type;
+
+	for (type = 0; type < ZEBRA_ROUTE_MAX; type++) {
+		struct list *red_list;
+		struct listnode *node;
+		struct ospf_redist *red;
+
+		red_list = ospf->redist[type];
+		if (!red_list)
+			continue;
+
+		for (ALL_LIST_ELEMENTS_RO(red_list, node, red))
+			ospf_external_lsa_refresh_type(ospf, type,
+						       red->instance,
+						       LSA_REFRESH_FORCE);
+	}
+}
+
 static int ospf_abr_task_timer(struct thread *thread)
 {
 	struct ospf *ospf = THREAD_ARG(thread);
@@ -1847,6 +1878,7 @@ static int ospf_abr_task_timer(struct thread *thread)
 
 	ospf_abr_task(ospf);
 	ospf_abr_nssa_task(ospf); /* if nssa-abr, then scan Type-7 LSDB */
+	ospf_abr_nssa_redist_task(ospf);
 
 	return 0;
 }

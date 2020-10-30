@@ -88,8 +88,14 @@ struct pim_interface {
 	int igmp_query_max_response_time_dsec; /* IGMPv3 Max Response Time in
 						  dsecs for general queries */
 	int igmp_specific_query_max_response_time_dsec; /* IGMPv3 Max Response
-							   Time in dsecs for
-							   specific queries */
+							   Time in dsecs called
+							   as last member query
+							   interval, defines the
+							   maximum response time
+							   advertised in IGMP
+							   group-specific
+							   queries */
+	int igmp_last_member_query_count; /* IGMP last member query count */
 	struct list *igmp_socket_list; /* list of struct igmp_sock */
 	struct list *igmp_join_list;   /* list of struct igmp_join */
 
@@ -124,7 +130,12 @@ struct pim_interface {
 	/* boundary prefix-list */
 	char *boundary_oil_plist;
 
+	/* Turn on Active-Active for this interface */
+	bool activeactive;
+
 	int64_t pim_ifstat_start; /* start timestamp for stats */
+	uint64_t pim_ifstat_bsm_rx;
+	uint64_t pim_ifstat_bsm_tx;
 	uint32_t pim_ifstat_hello_sent;
 	uint32_t pim_ifstat_hello_sendfail;
 	uint32_t pim_ifstat_hello_recv;
@@ -139,7 +150,12 @@ struct pim_interface {
 	uint32_t pim_ifstat_reg_stop_send;
 	uint32_t pim_ifstat_assert_recv;
 	uint32_t pim_ifstat_assert_send;
+	uint32_t pim_ifstat_bsm_cfg_miss;
+	uint32_t pim_ifstat_ucast_bsm_cfg_miss;
+	uint32_t pim_ifstat_bsm_invalid_sz;
 	struct bfd_info *bfd_info;
+	bool bsm_enable; /* bsm processing enable */
+	bool ucast_bsm_accept; /* ucast bsm processing */
 };
 
 /*
@@ -154,8 +170,8 @@ struct pim_interface {
 void pim_if_init(struct pim_instance *pim);
 void pim_if_terminate(struct pim_instance *pim);
 
-struct pim_interface *pim_if_new(struct interface *ifp, int igmp, int pim,
-				 bool ispimreg);
+struct pim_interface *pim_if_new(struct interface *ifp, bool igmp, bool pim,
+				 bool ispimreg, bool is_vxlan_term);
 void pim_if_delete(struct interface *ifp);
 void pim_if_addr_add(struct connected *ifc);
 void pim_if_addr_del(struct connected *ifc, int force_prim_as_any);
@@ -164,7 +180,7 @@ void pim_if_addr_del_all(struct interface *ifp);
 void pim_if_addr_del_all_igmp(struct interface *ifp);
 void pim_if_addr_del_all_pim(struct interface *ifp);
 
-int pim_if_add_vif(struct interface *ifp, bool ispimreg);
+int pim_if_add_vif(struct interface *ifp, bool ispimreg, bool is_vxlan_term);
 int pim_if_del_vif(struct interface *ifp);
 void pim_if_add_vif_all(struct pim_instance *pim);
 void pim_if_del_vif_all(struct pim_instance *pim);
@@ -211,4 +227,10 @@ int pim_update_source_set(struct interface *ifp, struct in_addr source);
 bool pim_if_is_vrf_device(struct interface *ifp);
 
 int pim_if_ifchannel_count(struct pim_interface *pim_ifp);
+
+extern int pim_ifp_create(struct interface *ifp);
+extern int pim_ifp_up(struct interface *ifp);
+extern int pim_ifp_down(struct interface *ifp);
+extern int pim_ifp_destroy(struct interface *ifp);
+
 #endif /* PIM_IFACE_H */

@@ -15,8 +15,7 @@ Build-Depends:
  install-info,
  libc-ares-dev,
  libcap-dev,
- libjson0 | libjson-c2 | libjson-c3,
- libjson0-dev | libjson-c-dev,
+ libjson-c-dev | libjson0-dev,
  libpam0g-dev | libpam-dev,
  libpcre3-dev,
  libpython3-dev,
@@ -25,6 +24,7 @@ Build-Depends:
  libsnmp-dev,
  libssh-dev <!pkg.frr.nortrlib>,
  libsystemd-dev <!pkg.frr.nosystemd>,
+ libyang-dev (>= 0.16.74),
  pkg-config,
  python3,
  python3-dev,
@@ -46,7 +46,19 @@ Depends:
 Pre-Depends: adduser
 Recommends: frr-pythontools
 Suggests: frr-doc
-Conflicts: zebra, zebra-pj, quagga
+Conflicts:
+ zebra,
+ zebra-pj,
+ pimd,
+ quagga,
+ quagga-bgpd,
+ quagga-core,
+ quagga-isisd,
+ quagga-ospf6d,
+ quagga-ospfd,
+ quagga-pimd,
+ quagga-ripd,
+ quagga-ripngd
 Replaces: zebra, zebra-pj
 Description: FRRouting suite of internet protocols (BGP, OSPF, IS-IS, ...)
  FRRouting implements the routing protocols commonly used in the
@@ -97,6 +109,7 @@ Depends:
  libjs-jquery,
  libjs-underscore
 Suggests: frr
+Conflicts: quagga-doc
 Description: FRRouting suite - user manual
  This provides the FRR user manual in HTML form.  This is the official
  manual maintained as part of the package and is also available online

@@ -142,6 +142,8 @@ static void test_init(void)
 	struct cmd_element *cmd;
 
 	cmd_init(1);
+	yang_init();
+	nb_init(master, NULL, 0);
 
 	install_node(&bgp_node, NULL);
 	install_node(&rip_node, NULL);
@@ -184,6 +186,8 @@ static void test_terminate(void)
 		XFREE(MTYPE_TMP, vector_slot(test_cmds, i));
 	vector_free(test_cmds);
 	cmd_terminate();
+	nb_terminate();
+	yang_terminate();
 }
 
 static void test_run(struct prng *prng, struct vty *vty, const char *cmd,
@@ -239,7 +243,8 @@ static void test_run(struct prng *prng, struct vty *vty, const char *cmd,
 				       (test_buf[0] != '\0') ? ", " : "",
 				       test_buf);
 
-			if (isspace((int)test_str[strlen(test_str) - 1])) {
+			if (isspace((unsigned char)test_str[
+				    strlen(test_str) - 1])) {
 				vector_set(vline, NULL);
 				appended_null = 1;
 			}
@@ -265,10 +270,10 @@ static void test_run(struct prng *prng, struct vty *vty, const char *cmd,
 			if (descriptions != NULL) {
 				for (j = 0; j < vector_active(descriptions);
 				     j++) {
-					struct cmd_token *cmd =
+					struct cmd_token *ct =
 						vector_slot(descriptions, j);
-					printf("  '%s' '%s'\n", cmd->text,
-					       cmd->desc);
+					printf("  '%s' '%s'\n", ct->text,
+					       ct->desc);
 				}
 				vector_free(descriptions);
 			}

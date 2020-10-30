@@ -34,7 +34,7 @@ static inline int ns_compare(const struct ns *ns, const struct ns *ns2);
 
 RB_GENERATE(ns_head, ns, entry, ns_compare)
 
-struct ns_head ns_tree = RB_INITIALIZER(&ns_tree);
+static struct ns_head ns_tree = RB_INITIALIZER(&ns_tree);
 
 static inline int ns_compare(const struct ns *a, const struct ns *b)
 {
@@ -82,7 +82,7 @@ const char *ns_get_name(struct ns *ns)
 }
 
 /* only called from vrf ( when removing netns from vrf)
- * or at VRF or logical router termination
+ * or at VRF termination
  */
 void ns_delete(struct ns *ns)
 {

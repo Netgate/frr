@@ -24,6 +24,7 @@
 
 #include "privs.h"
 #include "zebra/ipforward.h"
+#include "zebra/zebra_errors.h"
 
 #include "log.h"
 #include "lib_errors.h"
@@ -42,7 +43,8 @@ int ipforward(void)
 
 	len = sizeof ipforwarding;
 	if (sysctl(mib, MIB_SIZ, &ipforwarding, &len, 0, 0) < 0) {
-		zlog_warn("Can't get ipforwarding value");
+		flog_err_sys(EC_LIB_SYSTEM_CALL,
+			     "Can't get ipforwarding value");
 		return -1;
 	}
 	return ipforwarding;
@@ -54,9 +56,10 @@ int ipforward_on(void)
 	int ipforwarding = 1;
 
 	len = sizeof ipforwarding;
-	frr_elevate_privs(&zserv_privs) {
+	frr_with_privs(&zserv_privs) {
 		if (sysctl(mib, MIB_SIZ, NULL, NULL, &ipforwarding, len) < 0) {
-			zlog_warn("Can't set ipforwarding on");
+			flog_err_sys(EC_LIB_SYSTEM_CALL,
+				     "Can't set ipforwarding on");
 			return -1;
 		}
 	}
@@ -69,9 +72,10 @@ int ipforward_off(void)
 	int ipforwarding = 0;
 
 	len = sizeof ipforwarding;
-	frr_elevate_privs(&zserv_privs) {
+	frr_with_privs(&zserv_privs) {
 		if (sysctl(mib, MIB_SIZ, NULL, NULL, &ipforwarding, len) < 0) {
-			zlog_warn("Can't set ipforwarding on");
+			flog_err_sys(EC_LIB_SYSTEM_CALL,
+				     "Can't set ipforwarding on");
 			return -1;
 		}
 	}
@@ -93,9 +97,10 @@ int ipforward_ipv6(void)
 	int ip6forwarding = 0;
 
 	len = sizeof ip6forwarding;
-	frr_elevate_privs(&zserv_privs) {
+	frr_with_privs(&zserv_privs) {
 		if (sysctl(mib_ipv6, MIB_SIZ, &ip6forwarding, &len, 0, 0) < 0) {
-			zlog_warn("can't get ip6forwarding value");
+			flog_err_sys(EC_LIB_SYSTEM_CALL,
+				     "can't get ip6forwarding value");
 			return -1;
 		}
 	}
@@ -108,10 +113,11 @@ int ipforward_ipv6_on(void)
 	int ip6forwarding = 1;
 
 	len = sizeof ip6forwarding;
-	frr_elevate_privs(&zserv_privs) {
+	frr_with_privs(&zserv_privs) {
 		if (sysctl(mib_ipv6, MIB_SIZ, NULL, NULL, &ip6forwarding, len)
 		    < 0) {
-			zlog_warn("can't get ip6forwarding value");
+			flog_err_sys(EC_LIB_SYSTEM_CALL,
+				     "can't get ip6forwarding value");
 			return -1;
 		}
 	}
@@ -124,10 +130,11 @@ int ipforward_ipv6_off(void)
 	int ip6forwarding = 0;
 
 	len = sizeof ip6forwarding;
-	frr_elevate_privs(&zserv_privs) {
+	frr_with_privs(&zserv_privs) {
 		if (sysctl(mib_ipv6, MIB_SIZ, NULL, NULL, &ip6forwarding, len)
 		    < 0) {
-			zlog_warn("can't get ip6forwarding value");
+			flog_err_sys(EC_LIB_SYSTEM_CALL,
+				     "can't get ip6forwarding value");
 			return -1;
 		}
 	}

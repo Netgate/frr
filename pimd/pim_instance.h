@@ -21,8 +21,15 @@
 #ifndef __PIM_INSTANCE_H__
 #define __PIM_INSTANCE_H__
 
+#include <mlag.h>
+
 #include "pim_str.h"
 #include "pim_msdp.h"
+#include "pim_assert.h"
+#include "pim_bsm.h"
+#include "pim_vxlan_instance.h"
+#include "pim_oil.h"
+#include "pim_upstream.h"
 
 #if defined(HAVE_LINUX_MROUTE_H)
 #include <linux/mroute.h>
@@ -35,11 +42,41 @@
 #define MAXVIFS (256)
 #endif
 #endif
-extern struct pim_instance *pimg; // Pim Global Instance
 
 enum pim_spt_switchover {
 	PIM_SPT_IMMEDIATE,
 	PIM_SPT_INFINITY,
+};
+
+struct pim_router {
+	struct thread_master *master;
+
+	uint32_t debugs;
+
+	int t_periodic;
+	struct pim_assert_metric infinite_assert_metric;
+	long rpf_cache_refresh_delay_msec;
+	int32_t register_suppress_time;
+	int packet_process;
+	int32_t register_probe_time;
+
+	/*
+	 * What is the default vrf that we work in
+	 */
+	vrf_id_t vrf_id;
+
+	enum mlag_role role;
+	uint32_t pim_mlag_intf_cnt;
+	/* if true we have registered with MLAG */
+	bool mlag_process_register;
+	/* if true local MLAG process reported that it is connected
+	 * with the peer MLAG process
+	 */
+	bool connected_to_mlag;
+	/* Holds the client data(unencoded) that need to be pushed to MCLAGD*/
+	struct stream_fifo *mlag_fifo;
+	struct stream *mlag_stream;
+	struct thread *zpthread_mlag_write;
 };
 
 /* Per VRF PIM DB */
@@ -72,8 +109,7 @@ struct pim_instance {
 	struct list *static_routes;
 
 	// Upstream vrf specific information
-	struct list *upstream_list;
-	struct hash *upstream_hash;
+	struct rb_pim_upstream_head upstream_head;
 	struct timer_wheel *upstream_sg_wheel;
 
 	/*
@@ -84,10 +120,10 @@ struct pim_instance {
 
 	int iface_vif_index[MAXVIFS];
 
-	struct list *channel_oil_list;
-	struct hash *channel_oil_hash;
+	struct rb_pim_oil_head channel_oil_head;
 
 	struct pim_msdp msdp;
+	struct pim_vxlan_instance vxlan;
 
 	struct list *ssmpingd_list;
 	struct in_addr ssmpingd_group_addr;
@@ -97,6 +133,14 @@ struct pim_instance {
 
 	bool ecmp_enable;
 	bool ecmp_rebalance_enable;
+	/* No. of Dual active I/fs in pim_instance */
+	uint32_t inst_mlag_intf_cnt;
+
+	/* Bsm related */
+	struct bsm_scope global_scope;
+	uint64_t bsm_rcvd;
+	uint64_t bsm_sent;
+	uint64_t bsm_dropped;
 
 	/* If we need to rescan all our upstreams */
 	struct thread *rpf_cache_refresher;

@@ -79,7 +79,7 @@ ldp_create_socket(int af, enum socket_type type)
 		sock_set_bindany(fd, 1);
 		break;
 	}
-	frr_elevate_privs(&ldpd_privs) {
+	frr_with_privs(&ldpd_privs) {
 		if (sock_set_reuse(fd, 1) == -1) {
 			close(fd);
 			return (-1);
@@ -254,7 +254,7 @@ int
 sock_set_bindany(int fd, int enable)
 {
 #ifdef HAVE_SO_BINDANY
-	frr_elevate_privs(&ldpd_privs) {
+	frr_with_privs(&ldpd_privs) {
 		if (setsockopt(fd, SOL_SOCKET, SO_BINDANY, &enable,
 			       sizeof(int)) < 0) {
 			log_warn("%s: error setting SO_BINDANY", __func__);
@@ -268,9 +268,19 @@ sock_set_bindany(int fd, int enable)
 		return (-1);
 	}
 	return (0);
+#elif defined(IP_BINDANY)
+	frr_with_privs(&ldpd_privs) {
+		if (setsockopt(fd, IPPROTO_IP, IP_BINDANY, &enable, sizeof(int))
+		    < 0) {
+			log_warn("%s: error setting IP_BINDANY", __func__);
+			return (-1);
+		}
+	}
+	return (0);
 #else
-	log_warnx("%s: missing SO_BINDANY and IP_FREEBIND, unable to bind "
-	    "to a nonlocal IP address", __func__);
+	log_warnx(
+		"%s: missing SO_BINDANY, IP_FREEBIND and IP_BINDANY, unable to bind to a nonlocal IP address",
+		__func__);
 	return (-1);
 #endif /* HAVE_SO_BINDANY */
 }
@@ -294,7 +304,7 @@ sock_set_md5sig(int fd, int af, union ldpd_addr *addr, const char *password)
 #if HAVE_DECL_TCP_MD5SIG
 	addr2sa(af, addr, 0, &su);
 
-	frr_elevate_privs(&ldpe_privs) {
+	frr_with_privs(&ldpe_privs) {
 		ret = sockopt_tcp_signature(fd, &su, password);
 		save_errno = errno;
 	}

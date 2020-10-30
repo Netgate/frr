@@ -55,12 +55,28 @@ static int agentx_timeout(struct thread *t)
 static int agentx_read(struct thread *t)
 {
 	fd_set fds;
+	int flags;
+	int nonblock = false;
 	struct listnode *ln = THREAD_ARG(t);
 	list_delete_node(events, ln);
+
+	/* fix for non blocking socket */
+	flags = fcntl(THREAD_FD(t), F_GETFL, 0);
+	if (-1 == flags)
+		return -1;
+
+	if (flags & O_NONBLOCK)
+		nonblock = true;
+	else
+		fcntl(THREAD_FD(t), F_SETFL, flags | O_NONBLOCK);
 
 	FD_ZERO(&fds);
 	FD_SET(THREAD_FD(t), &fds);
 	snmp_read(&fds);
+
+	/* Reset the flag */
+	if (!nonblock)
+		fcntl(THREAD_FD(t), F_SETFL, flags);
 
 	netsnmp_check_outstanding_agent_requests();
 	agentx_events_update();
@@ -142,23 +158,20 @@ static int agentx_log_callback(int major, int minor, void *serverarg,
 		msg[strlen(msg) - 1] = '\0';
 	switch (slm->priority) {
 	case LOG_EMERG:
-		flog_err(LIB_ERR_SNMP,
-			  "snmp[emerg]: %s", msg ? msg : slm->msg);
+		flog_err(EC_LIB_SNMP, "snmp[emerg]: %s", msg ? msg : slm->msg);
 		break;
 	case LOG_ALERT:
-		flog_err(LIB_ERR_SNMP,
-			  "snmp[alert]: %s", msg ? msg : slm->msg);
+		flog_err(EC_LIB_SNMP, "snmp[alert]: %s", msg ? msg : slm->msg);
 		break;
 	case LOG_CRIT:
-		flog_err(LIB_ERR_SNMP,
-			  "snmp[crit]: %s", msg ? msg : slm->msg);
+		flog_err(EC_LIB_SNMP, "snmp[crit]: %s", msg ? msg : slm->msg);
 		break;
 	case LOG_ERR:
-		flog_err(LIB_ERR_SNMP,
-			  "snmp[err]: %s", msg ? msg : slm->msg);
+		flog_err(EC_LIB_SNMP, "snmp[err]: %s", msg ? msg : slm->msg);
 		break;
 	case LOG_WARNING:
-		zlog_warn("snmp[warning]: %s", msg ? msg : slm->msg);
+		flog_warn(EC_LIB_SNMP, "snmp[warning]: %s",
+			  msg ? msg : slm->msg);
 		break;
 	case LOG_NOTICE:
 		zlog_notice("snmp[notice]: %s", msg ? msg : slm->msg);
@@ -191,9 +204,8 @@ DEFUN (agentx_enable,
 		events = list_new();
 		agentx_events_update();
 		agentx_enabled = 1;
-		return CMD_SUCCESS;
 	}
-	vty_out(vty, "SNMP AgentX already enabled\n");
+
 	return CMD_SUCCESS;
 }
 

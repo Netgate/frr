@@ -2,7 +2,7 @@
 
 # configure options
 #
-# Some can be overriden on rpmbuild commandline with:
+# Some can be overridden on rpmbuild commandline with:
 # rpmbuild --define 'variable value'
 #   (use any value, ie 1 for flag "with_XXXX" definitions)
 #
@@ -26,10 +26,10 @@
 %{!?with_pam:           %global  with_pam           0 }
 %{!?with_pbrd:          %global  with_pbrd          1 }
 %{!?with_pimd:          %global  with_pimd          1 }
+%{!?with_vrrpd:         %global  with_vrrpd         1 }
 %{!?with_rpki:          %global  with_rpki          0 }
 %{!?with_rtadv:         %global  with_rtadv         1 }
 %{!?with_watchfrr:      %global  with_watchfrr      1 }
-%{!?with_caps:          %global  with_caps          0 }
 
 # user and group
 %{!?frr_user:           %global  frr_user           frr }
@@ -39,24 +39,19 @@
 %{!?libvppmgmt_dir:	%global  libvppmgmt_dir     / }
 %{!?libtnsrinfra_dir:	%global  libtnsrinfra_dir            / }
 %{!?vpp_dir:		%global  vpp_dir     / }
+%{!?libyang_dir:	%global  libyang_dir     / }
 
 # path defines
-%define     configdir   %{_sysconfdir}/%{name}
+%define     configdir   %{_sysconfdir}/frr
 %define     _sbindir    /usr/lib/frr
-%define     zeb_src     %{_builddir}/%{name}-%{frrversion}
+%define     zeb_src     %{_builddir}/frr-%{frrversion}
 %define     zeb_rh_src  %{zeb_src}/redhat
 %define     zeb_docs    %{zeb_src}/doc
 %define     frr_tools   %{zeb_src}/tools
 
 # defines for configure
-%define     rundir  %{_localstatedir}/run/%{name}
+%define     rundir  %{_localstatedir}/run/frr
 
-# define for sphinx-build binary
-%if 0%{?rhel} && 0%{?rhel} < 7
-    %define sphinx sphinx-build2.7
-%else
-    %define sphinx sphinx-build
-%endif
 ############################################################################
 
 #### Version String tweak
@@ -74,6 +69,13 @@
 %else
     %{expand: %%global initsystem %(if [[ `/sbin/init --version 2> /dev/null` =~ upstart ]]; then echo upstart; elif [[ `readlink -f /sbin/init` = /usr/lib/systemd/systemd ]]; then echo systemd; elif [[ `systemctl` =~ -\.mount ]]; then echo systemd; fi)}
 %endif
+%endif
+
+# Check for python version - use python2.7 on CentOS 6, otherwise python3
+%if 0%{?rhel} && 0%{?rhel} < 7
+    %global use_python2 1
+%else
+    %global use_python2 0
 %endif
 
 # If init system is systemd, then always enable watchfrr
@@ -94,7 +96,7 @@
 %{!?frr_gid:            %global  frr_gid            92 }
 %{!?vty_gid:            %global  vty_gid            85 }
 
-%define daemon_list zebra ripd ospfd bgpd isisd ripngd ospf6d pbrd staticd bfdd
+%define daemon_list zebra ripd ospfd bgpd isisd ripngd ospf6d pbrd staticd bfdd fabricd
 
 %if %{with_ldpd}
     %define daemon_ldpd ldpd
@@ -132,6 +134,12 @@
     %define daemon_babeld ""
 %endif
 
+%if %{with_vrrpd}
+    %define daemon_vrrpd vrrpd
+%else
+    %define daemon_vrrpd ""
+%endif
+
 %if %{with_watchfrr}
     %define daemon_watchfrr watchfrr
 %else
@@ -144,19 +152,22 @@
     %define daemon_bfdd ""
 %endif
 
-%define all_daemons %{daemon_list} %{daemon_ldpd} %{daemon_pimd} %{daemon_nhrpd} %{daemon_eigrpd} %{daemon_babeld} %{daemon_watchfrr} %{daemon_pbrd} %{daemon_bfdd}
+%define all_daemons %{daemon_list} %{daemon_ldpd} %{daemon_pimd} %{daemon_nhrpd} %{daemon_eigrpd} %{daemon_babeld} %{daemon_watchfrr} %{daemon_pbrd} %{daemon_bfdd} %{daemon_vrrpd}
 
 #release sub-revision (the two digits after the CONFDATE)
 %{!?release_rev:        %global  release_rev        01 }
 
 Summary: Routing daemon
-Name:           frr
+Name:           netgate-frr
 Version:        %{_version}
-Release:        %{_release}
+Release:	%{_release}%{?dist}
 License:        GPLv2+
+Provides:       frr
+Obsoletes:      frr
+Requires:       tnsr-dataplane-netns
 Group:          System Environment/Daemons
-Source:         %{name}-%{version}-%{release}.tar.gz
-URL:            http://www.frrouting.org
+Source0:        frr-%{version}-%{_release}.tar.gz
+URL:            https://www.frrouting.org
 Requires(pre):  shadow-utils
 Requires(preun): info
 Requires(post): info
@@ -170,19 +181,27 @@ BuildRequires:  make
 BuildRequires:  ncurses-devel
 BuildRequires:  readline-devel
 BuildRequires:  texinfo
+%if "%{libyang_dir}" == "/"
+BuildRequires:  libyang-devel >= 0.16.74
+%endif
 %if 0%{?rhel} && 0%{?rhel} < 7
 #python27-devel is available from ius community repo for RedHat/CentOS 6
 BuildRequires:  python27-devel
 BuildRequires:  python27-sphinx
 %else
-%if 0%{?rhel} && 0%{?rhel} > 7
-BuildRequires:  python36-devel
-BuildRequires:  python3-sphinx
-%else
+%if %{use_python2}
 BuildRequires:  python-devel >= 2.7
 BuildRequires:  python-sphinx
+%else
+BuildRequires:  python3-devel
+BuildRequires:  python3-sphinx
 %endif
 %endif
+%if 0%{?rhel} > 7
+#platform-python-devel is needed for /usr/bin/pathfix.py
+BuildRequires:  platform-python-devel
+%endif
+Requires:       initscripts
 %if %{with_pam}
 BuildRequires:  pam-devel
 %endif
@@ -200,7 +219,6 @@ Requires(post):     chkconfig
 Requires(preun):    chkconfig
 # Initscripts > 5.60 is required for IPv6 support
 Requires(pre):      initscripts >= 5.60
-Requires:           initscripts
 %endif
 Provides:           routingdaemon = %{version}-%{release}
 Obsoletes:          gated mrt zebra frr-sysvinit
@@ -221,6 +239,8 @@ FRRouting is a fork of Quagga.
 %package contrib
 Summary: contrib tools for frr
 Group: System Environment/Daemons
+Provides: frr-contrib
+Obsoletes: frr-contrib
 
 %description contrib
 Contributed/3rd party tools which may be of use with frr.
@@ -228,14 +248,21 @@ Contributed/3rd party tools which may be of use with frr.
 
 %package pythontools
 Summary: python tools for frr
-%if 0%{?rhel} && 0%{?rhel} > 7
-BuildRequires: python2
-Requires: python2-ipaddress
+%if 0%{?rhel} && 0%{?rhel} < 7
+#python27 is available from ius community repo for RedHat/CentOS 6
+BuildRequires:  python27
+Requires:  python27-ipaddress
 %else
-BuildRequires: python
-Requires: python-ipaddress
+%if %{use_python2}
+BuildRequires:  python2
+Requires:  python2-ipaddress
+%else
+BuildRequires:  python3
+%endif
 %endif
 Group: System Environment/Daemons
+Provides: frr-pythontools
+Obsoletes: frr-pythontools
 
 %description pythontools
 Contributed python 2.7 tools which may be of use with frr.
@@ -245,6 +272,8 @@ Contributed python 2.7 tools which may be of use with frr.
 Summary: Header and object files for frr development
 Group: System Environment/Daemons
 Requires: %{name} = %{version}-%{release}
+Provides: frr-devel
+Obsoletes: frr-devel
 
 %description devel
 The frr-devel package contains the header and object files neccessary for
@@ -323,6 +352,11 @@ developing OSPF-API and frr applications.
 %else
     --disable-babeld \
 %endif
+%if %{with_vrrpd}
+	--enable-vrrpd \
+%else
+	--disable-vrrpd \
+%endif
 %if %{with_pam}
     --with-libpam \
 %endif
@@ -374,14 +408,22 @@ developing OSPF-API and frr applications.
 %if "%{vpp_dir}" != "/"
     --with-vppdir=%vpp_dir \
 %endif
-%if %{with_caps}
-    --enable-capabilities \
-%else
-    --disable-capabilities \
+%if "%{libyang_dir}" != "/"
+    --with-libyangdir=%libyang_dir \
 %endif
-    SPHINXBUILD=%{sphinx}
+    # end
 
 make %{?_smp_mflags} MAKEINFO="makeinfo --no-split"
+
+%if %{use_python2}
+# Change frr-reload.py to use python2.7
+sed -e '1c #!/usr/bin/python2.7' -i %{zeb_src}/tools/frr-reload.py
+sed -e '1c #!/usr/bin/python2.7' -i %{zeb_src}/tools/generate_support_bundle.py
+%else
+# Change frr-reload.py to use python3
+sed -e '1c #!/usr/bin/python3' -i %{zeb_src}/tools/frr-reload.py
+sed -e '1c #!/usr/bin/python3' -i %{zeb_src}/tools/generate_support_bundle.py
+%endif
 
 pushd doc
 make info
@@ -402,19 +444,19 @@ rm -f %{buildroot}%{_sbindir}/frr
 # kill bogus libtool files
 rm -vf %{buildroot}%{_libdir}/frr/modules/*.la
 rm -vf %{buildroot}%{_libdir}/*.la
+rm -vf %{buildroot}%{_libdir}/frr/libyang_plugins/*.la
 
 # install /etc sources
 %if "%{initsystem}" == "systemd"
 mkdir -p %{buildroot}%{_unitdir}
-install -m644 %{zeb_rh_src}/frr.service %{buildroot}%{_unitdir}/frr.service
-install %{zeb_rh_src}/frr.init %{buildroot}%{_sbindir}/frr
+install -m644 %{zeb_src}/tools/frr.service %{buildroot}%{_unitdir}/frr.service
+install -m644 %{zeb_src}/tools/frr-dataplane.service %{buildroot}%{_unitdir}/frr-dataplane.service
 %else
 mkdir -p %{buildroot}%{_initddir}
-install %{zeb_rh_src}/frr.init %{buildroot}%{_sbindir}/frr
-ln -s %{_sbindir}/frr %{buildroot}%{_initddir}/frr
+ln -s %{_sbindir}/frrinit.sh %{buildroot}%{_initddir}/frr
 %endif
 
-install %{zeb_rh_src}/daemons %{buildroot}%{_sysconfdir}/frr
+install %{zeb_src}/tools/etc/frr/daemons %{buildroot}%{_sysconfdir}/frr
 # add rpki module to daemon
 %if %{with_rpki}
     sed -i -e 's/^\(bgpd_options=\)\(.*\)\(".*\)/\1\2 -M rpki\3/' %{buildroot}%{_sysconfdir}/frr/daemons
@@ -423,6 +465,13 @@ install -m644 %{zeb_rh_src}/frr.pam %{buildroot}%{_sysconfdir}/pam.d/frr
 install -m644 %{zeb_rh_src}/frr.logrotate %{buildroot}%{_sysconfdir}/logrotate.d/frr
 install -d -m750 %{buildroot}%{rundir}
 
+%if 0%{?rhel} > 7 || 0%{?fedora} > 29
+# avoid `ERROR: ambiguous python shebang in` errors
+pathfix.py -pni "%{__python3} %{py3_shbang_opts}" %{buildroot}/usr/lib/frr/*.py
+%py_byte_compile %{__python3} %{buildroot}/usr/lib/frr/*.py
+%endif
+
+%clean
 
 %pre
 # add vty_group
@@ -460,7 +509,7 @@ zebra_spec_add_service ()
 {
     # Add port /etc/services entry if it isn't already there
     if [ -f %{_sysconfdir}/services ] && \
-        ! %__sed -e 's/#.*$//' %{_sysconfdir}/services | %__grep -wq $1 ; then
+        ! %__sed -e 's/#.*$//' %{_sysconfdir}/services 2>/dev/null | %__grep -wq $1 ; then
         echo "$1        $2          # $3"  >> %{_sysconfdir}/services
     fi
 }
@@ -498,10 +547,15 @@ zebra_spec_add_service isisd    2608/tcp "ISISd vty"
 %if %{with_bfdd}
     zebra_spec_add_service bfdd     2617/tcp "BFDd vty"
 %endif
+zebra_spec_add_service fabricd	2618/tcp "Fabricd vty"
+%if %{with_vrrpd}
+    zebra_spec_add_service vrrpd    2619/tcp "VRRPd vty"
+%endif
 
 %if "%{initsystem}" == "systemd"
     for daemon in %all_daemons ; do
         %systemd_post frr.service
+        %systemd_post frr-dataplane.service
     done
 %else
     /sbin/chkconfig --add frr
@@ -509,7 +563,7 @@ zebra_spec_add_service isisd    2608/tcp "ISISd vty"
 
 # Fix bad path in previous config files
 #  Config files won't get replaced by default, so we do this ugly hack to fix it
-%__sed -i 's|/etc/init.d/|%{_sbindir}/|g' %{configdir}/daemons 2> /dev/null || true
+%__sed -i 's|watchfrr_options=|#watchfrr_options=|g' %{configdir}/daemons 2> /dev/null || true
 
 # With systemd, watchfrr is mandatory. Fix config to make sure it's enabled if
 # we install or upgrade to a frr built with systemd
@@ -567,6 +621,7 @@ if [ "$1" -ge 1 ]; then
         ## Systemd Version
         ##
         %systemd_postun_with_restart frr.service
+        %systemd_postun_with_restart frr-dataplane.service
     %else
         ##
         ## init.d Version
@@ -584,6 +639,7 @@ fi
     ##
     if [ $1 -eq 0 ] ; then
         %systemd_preun frr.service
+        %systemd_preun frr-dataplane.service
     fi
 %else
     ##
@@ -601,6 +657,7 @@ fi
 %doc */*.sample* COPYING
 %doc doc/mpls
 %doc README.md
+/usr/share/yang/*.yang
 %if 0%{?frr_user:1}
     %dir %attr(751,%{frr_user},%{frr_user}) %{configdir}
     %dir %attr(750,%{frr_user},%{frr_user}) %{_localstatedir}/log/frr
@@ -632,7 +689,11 @@ fi
 %if %{with_pbrd}
     %{_sbindir}/pbrd
 %endif
+%if %{with_vrrpd}
+    %{_sbindir}/vrrpd
+%endif
 %{_sbindir}/isisd
+%{_sbindir}/fabricd
 %if %{with_ldpd}
     %{_sbindir}/ldpd
 %endif
@@ -656,16 +717,18 @@ fi
 %if %{with_rpki}
     %{_libdir}/frr/modules/bgpd_rpki.so
 %endif
+%{_libdir}/frr/modules/zebra_cumulus_mlag.so
 %{_libdir}/frr/modules/zebra_irdp.so
+%{_libdir}/frr/modules/bgpd_bmp.so
 %{_bindir}/*
 %config(noreplace) %{configdir}/[!v]*.conf*
 %config(noreplace) %attr(750,%{frr_user},%{frr_user}) %{configdir}/daemons
 %if "%{initsystem}" == "systemd"
     %{_unitdir}/frr.service
+    %{_unitdir}/frr-dataplane.service
 %else
     %{_initddir}/frr
 %endif
-%{_sbindir}/frr
 %config(noreplace) %{_sysconfdir}/pam.d/frr
 %config(noreplace) %{_sysconfdir}/logrotate.d/frr
 %{_sbindir}/frr-reload
@@ -679,8 +742,14 @@ fi
 
 
 %files pythontools
+%{_sbindir}/generate_support_bundle.py
 %{_sbindir}/frr-reload.py
-%if 0%{?rhel} && 0%{?rhel} <= 7
+%if 0%{?rhel} > 7 || 0%{?fedora} > 29
+%{_sbindir}/__pycache__/*
+%else
+%{_sbindir}/generate_support_bundle.pyc
+%{_sbindir}/generate_support_bundle.pyo
+%{_sbindir}/frr-reload.py
 %{_sbindir}/frr-reload.pyc
 %{_sbindir}/frr-reload.pyo
 %endif
@@ -688,34 +757,242 @@ fi
 
 %files devel
 %{_libdir}/lib*.so
-%dir %{_includedir}/%{name}
-%{_includedir}/%{name}/*.h
-%dir %{_includedir}/%{name}/ospfd
-%{_includedir}/%{name}/ospfd/*.h
+%dir %{_includedir}/frr
+%{_includedir}/frr/*.h
+%dir %{_includedir}/frr/ospfd
+%{_includedir}/frr/ospfd/*.h
 %if %{with_ospfapi}
-    %dir %{_includedir}/%{name}/ospfapi
-    %{_includedir}/%{name}/ospfapi/*.h
+    %dir %{_includedir}/frr/ospfapi
+    %{_includedir}/frr/ospfapi/*.h
 %endif
 %if %{with_eigrpd}
-    %dir %{_includedir}/%{name}/eigrpd
-    %{_includedir}/%{name}/eigrpd/*.h
+    %dir %{_includedir}/frr/eigrpd
+    %{_includedir}/frr/eigrpd/*.h
 %endif
 
 
 %changelog
-* Tue Jan  8 2019 Martin Winter <mwinter@opensourcerouting.org> - %{version}
-- Security Issue (Denial of Service): Fix BGP Attribute 255 (experimental VNC)
-  handling
+* Wed May 06 2020 David Lamparter <equinox@opensourcerouting.org> - %{version}
+- upstream 7.3.1
 
-* Sat Dec 29 2018 Martin Winter <mwinter@opensourcerouting.org> - 6.0.1
-- Various fixes for label manager
-- Fix BGP unnumbered peer setup
-- Various other fixes
+* Fri Feb 14 2020 Martin Winter <mwinter@opensourcerouting.org> - 7.3
+- BGPd
+-    EVPN PIP Support
+-    Route Aggregation code speed ups
+-    BGP Vector I/O speed ups
+-    New CLI: `set distance XXX`
+-    New CLI: `aggregate-address A.B.C.D/M route-map WORD`
+-    New CLI: `bgp reject-as-sets`
+-    New CLI: `advertise pip ...`
+-    New CLI: `match evpn rd ASN:NN_OR_IP-ADDRESS:NN`
+-    New CLI: `show bgp l2vpn evpn community|large-community X`
+-    New CLI: `show bgp l2vpn evpn A.B.C.D`
+-    Auto-completion for clear bgp command
+-    Add ability to set tcp socket buffer size
+- OSPFd
+-    Partial MPLS TE support
+- PBRd
+-    New CLI: `set vrf unchanged|NAME`
+- BFDd
+-    VRF Support
+-    New CLI: 'show bfd peers brief'
+-    New CLI: 'clear bfd peer ...'
+- PIMd
+-    Significant Speedups in accessing Internal Data for higher scale
+-    Support for joining any-source Multicast
+-    Updated CLI: 'show ip pim upstream-join-desired'
+-    New CLI: 'show ip pim channel'
+-    Debug Cleanup
+-    MLAG experimental support
+- VRRPd
+-    VRF Support
+-    Northbound Conversion- NHRPd
+- LDPd
+- vtysh
+-    New CLI: `banner motd line LINE...`
+- yang
+-    New CLI: `show yang operational-data XPATH`
+-    New CLI: `debug northbound`
+- Zebra
+-    Nexthop Group support
+-    New CLI: 'debug zebra nexthop [detail]'
+-    New CLI: 'show router-id'
+-    MLAG experimental support
+- watchfrr
+-    Additional status messages of system state to systemd
+-    New CLI: `watchfrr ignore DAEMON`
+- Others
+-    As always all daemons have received too many bug fixes to fully list
+-    There has been a significant focus on increasing test coverage
+- Change in Behavior:
+-    ISISd
+-       All areas created default automatically to level-1-2
+-    Zebra
+-       Nexthop Group Installation in Kernel is turned on by default
+        if the kernel supports-    New CLI: 'show nexthop-group rib [singleton]'
+-    Man Pages
+-       Renamed to frr-* to remove collision with other packages
+
+* Fri Jan 17 2020 Martin Winter <mwinter@opensourcerouting.org> - 7.2.1
+- BGPd
+-   Fix Addpath issue
+-   Do not apply eBGP policy for iBGP peers
+-   Show `ip` and `fqdn` in json output for `show [ip] bgp <route> json`
+-   Fix large route-distinguisher's format
+-   Fix `no bgp listen range ...` configuration command
+-   Autocomplete neighbor for clear bgp
+-   Reflect the distance in RIB when it is changed for an arbitrary afi/safi
+-   Notify "Peer De-configured" after entering 'no neighbor <neighbor> cmd
+-   Fix per afi/safi addpath peer counting
+-   Rework BGP dampening to be per AFI/SAFI
+-   Do not send next-hop as :: in MP_REACH_NLRI if no link-local exists
+-   Override peer's TTL only if peer-group is configured with TTL
+-   Remove error message for unkown afi/safi combination
+-   Keep the session down if maximum-prefix is reached
+- OSPFd
+-   Fix BFD down not tearing down OSPF adjacency for point-to-point net
+- BFDd
+-   Fix multiple VRF handling
+-   VRF security improvement
+- PIMd
+-   Fix rp crash
+- NHRPd
+-   Make sure `no ip nhrp map <something>` works as expected
+- LDPd
+-   Add missing sanity check in the parsing of label messages
+- Zebra
+-   Use correct state when installing evpn macs
+-   Capture dplane plugin flags
+- lib
+-   Fix interface config when vrf changes
+-   Fix Interface Infinite Loop Walk (for special interfaces such as bond)
+- snapcraft
+-   fix missing vrrpd daemon
+- Others
+-   Rename man pages (to avoid conflicts with other packages)
+-   Various other fixes for code cleanup and memory leaks 
+
+* Fri Dec 27 2019 Donatas Abraitis <donatas.abraitis@gmail.com>
+- Add CentOS 8 support
+
+* Tue Oct 15 2019 Martin Winter <mwinter@opensourcerouting.org> - 7.2
+- ALL Daemons
+-   -N <namespace> to allow for config file locating when running FRR inside
+     of a namespace
+-   Impoved Testing across all daemons
+- BFD
+-   VRF Support
+-   Conversion to Northbound interface
+- BGP
+-   Aggregate-address add route-map support
+-   BMP Support
+-   Improved JSON output for many commands
+-   `show bgp afi safi summary failed` command
+-   `clear bop *` clears all peers
+-   Show FQDN for `show bgp ipv4 uni` commands
+-   Display BestPath selection reason as part of show commands
+- EIGRP
+-   Infrastructure changes to allow VRF's
+-   SIGHUP signals the config reload
+-   Conversion to Northbound interface
+- ISIS
+-   BFD Support
+-   Support for circuits with MTU > 8192
+- PBRD
+-   fwmark support as part of match criteria
+-   autocompletion of PBRMAPS
+-   Improved Nexthop Support
+- PIMD
+-   PIM-BSM receive support
+-   Improved debugging support
+-   Store ECMP paths that are not currently legal for use
+-   Disallow igmp query from a non-connected source
+-   Many new cli improvements and changes
+- VRRPD
+-   Add Support for RFC 3768 and RFC 5798
+- Route-Maps
+-   Add sequence numbers to access-lists
+-   Add `match ip next-hop type blackhole`
+-   Improved ability to notice dependency changes
+- SHARPD
+-   `sharp watch [import|nexthop]` you can now specify a prefix instead
+    of assuming a /32
+- STATICD
+-   Significantly Improved NHT
+- ZEBRA
+-   Many dataplane improvements for routes, neighbor table and EVPN
+-   NHT cli can now be specified per VRF and improved ability to control
+    NHT data being shown
+-   Removed duplicate processing of routes
+-   Improved debugablility
+-   RMAC and VxLan support for the FPM
+- LIB
+-   RCU support
+-   Nexthop Group Improvements
+-   `log-filter WORD` added
+- Building
+-   openssl support
+-   libcap should be used as part of build or significant slowdowns
+    will be experienced
+-   Lua builds have been fixed
+-   Improved Cross building
+
+* Mon Jun 17 2019 David Lamparter <equinox@opensourcerouting.org> - 7.1
+- gRPC northbound plugin
+- "table NNN" removed from zebra
+- more dataplane MT work
+- EVPN in non-default VRFs
+- RFC 8212 (default deny policy for eBGP)
+- RFC 8106 (IPv6 RA DNS options)
+
+* Wed May  8 2019 Martin Winter <mwinter@opensourcerouting.org> - 7.0.1
+- bgp:
+-   Don't send Updates with BGP Max-Prefix Overflow
+-   Make sure `next-hop-self all` backward compatible with force
+-   Fix as-path validation in "show bgp regexp"
+-   Fix interface-based peers to override peergroups
+-   Fix removing private AS numbers if local-as is used
+-   Fix show bgp labeled_unicast
+-   Add command to lookup prefixes in rpki table
+-   Fix peer count in "show bgp ipv6 summary"
+-   Add missing ipv6 only peer flag action
+-   Fix address family output in "show bgp [ipv4|ipv6] neighbors"
+-   Add missing checks for vpnv6 nexthops
+-   Fix nexthop for ipv6 vpn case
+- rip: Fix removal of passive interfaces
+- ospf:
+-   Fix json timer output
+-   Fix milliseconds in json output
+- bfd:
+-   Fix source port according RFC 5881, Sec 4
+-   Fix IPv6 link-local peer removal
+-   Fix interface clean up when deleting interface
+- pim: Fix interface clean up when deleting interface
+- nhrp: Fix interface clean up when deleting interface
+- lib:
+-   Workaround to get FRR building with libyang 0.x and 1.x
+-   Fix in priv handling
+-   Make priv elevation thread-safe
+- zebra:
+-   Pseudowire event recovery
+-   Fix race condition in label manager
+-   Fix system routes selection and next-hop tracking
+-   Set connected route metric based on devaddr metric
+-   Display metric for connected routes
+-   Add selected fib details to json output
+-   Always use replace if installing new route
+- watchfrr: Silently ignore declare failures (for backward compatibility)
+- RPM packages: Switch to new init script
+
+* Thu Feb 28 2019 Martin Winter <mwinter@opensourcerouting.org> - 7.0
+- Added libyang dependency: New work for northbound interface based on libyang
+- Fabricd: New Daemon based on https://datatracker.ietf.org/doc/draft-white-openfabric/
+- various bug fixes and other enhancements
 
 * Sun Oct  7 2018 Martin Winter <mwinter@opensourcerouting.org> - 6.0
 - Staticd: New daemon responsible for management of static routes
 - ISISd: Implement dst-src routing as per draft-ietf-isis-ipv6-dst-src-routing
-- BFDd: new daemon for BFD (Bidrectional Forwarding Detection). Responsiblei
+- BFDd: new daemon for BFD (Bidrectional Forwarding Detection). Responsible
   for notifying link changes to make routing protocols converge faster.
 - various bug fixes
 
@@ -740,24 +1017,11 @@ fi
 - BGPD: Flowspec
 - PBRD: Add a new Policy Based Routing Daemon
 
-* Sun May 28 2018 Rafael Zalamena <rzalamena@opensourcerouting.org> - 4.0.1
+* Mon May 28 2018 Rafael Zalamena <rzalamena@opensourcerouting.org>
 - Add BFDd support
 
-* Sun May 20 2018 Martin Winter <mwinter@opensourcerouting.org> - 4.0.1
+* Sun May 20 2018 Martin Winter <mwinter@opensourcerouting.org>
 - Fixed RPKI RPM build
-
-* Sun Mar 11 2018 Martin Winter <mwinter@opensourcerouting.org> - 4.0
-- ISIS-MT - https://tools.ietf.org/html/rfc5120
-- BGP - RPKI (RFC 6810)
-- BGP - v4 labeled unicast as per RFC 3107
-- BGP/Zebra - Type 2 and 3 EVPN with symmetric and asymmetric routing
-- EIGRP - https://tools.ietf.org/html/rfc7868
-- FRR - Tab completion for iface names, prefix-lists, route-maps, BGP peers
-- BABEL - https://tools.ietf.org/html/rfc6126
-- PIM VRF - Added the ability to work with VRF’s to PIM
-- OSPFv2 VRF - Added the ability to work with VRF’s to OSPFv2
-- OSPFv2 Experimental SR - draft-ietf-ospf-segment-routing-extensions-24
-- ZEBRA - Add ability to create a static route that leaks across VRF’s.
 
 * Sun Mar  4 2018 Martin Winter <mwinter@opensourcerouting.org>
 - Add option to build with RPKI (default: disabled)

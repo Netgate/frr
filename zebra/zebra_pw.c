@@ -27,7 +27,7 @@
 
 #include "zebra/debug.h"
 #include "zebra/rib.h"
-#include "zebra/zserv.h"
+#include "zebra/zebra_router.h"
 #include "zebra/zapi_msg.h"
 #include "zebra/zebra_rnh.h"
 #include "zebra/zebra_vrf.h"
@@ -41,8 +41,6 @@ DEFINE_HOOK(pw_install, (struct zebra_pw * pw), (pw))
 DEFINE_HOOK(pw_uninstall, (struct zebra_pw * pw), (pw))
 
 #define MPLS_NO_LABEL MPLS_INVALID_LABEL
-
-extern struct zebra_t zebrad;
 
 static int zebra_pw_enabled(struct zebra_pw *);
 static void zebra_pw_install(struct zebra_pw *);
@@ -98,9 +96,10 @@ void zebra_pw_del(struct zebra_vrf *zvrf, struct zebra_pw *pw)
 	zebra_deregister_rnh_pseudowire(pw->vrf_id, pw);
 
 	/* uninstall */
-	if (pw->status == PW_STATUS_UP)
+	if (pw->status == PW_STATUS_UP) {
 		hook_call(pw_uninstall, pw);
-	else if (pw->install_retry_timer)
+		dplane_pw_uninstall(pw);
+	} else if (pw->install_retry_timer)
 		THREAD_TIMER_OFF(pw->install_retry_timer);
 
 	/* unlink and release memory */
@@ -154,6 +153,7 @@ void zebra_pw_update(struct zebra_pw *pw)
 {
 	if (zebra_pw_check_reachability(pw) < 0) {
 		zebra_pw_uninstall(pw);
+		zebra_pw_install_failure(pw);
 		/* wait for NHT and try again later */
 	} else {
 		/*
@@ -171,7 +171,8 @@ static void zebra_pw_install(struct zebra_pw *pw)
 			   pw->vrf_id, pw->ifname,
 			   zebra_route_string(pw->protocol));
 
-	if (hook_call(pw_install, pw)) {
+	hook_call(pw_install, pw);
+	if (dplane_pw_install(pw) == ZEBRA_DPLANE_REQUEST_FAILURE) {
 		zebra_pw_install_failure(pw);
 		return;
 	}
@@ -192,6 +193,7 @@ static void zebra_pw_uninstall(struct zebra_pw *pw)
 
 	/* ignore any possible error */
 	hook_call(pw_uninstall, pw);
+	dplane_pw_uninstall(pw);
 
 	if (zebra_pw_enabled(pw))
 		zebra_pw_update_status(pw, PW_STATUS_DOWN);
@@ -213,7 +215,7 @@ void zebra_pw_install_failure(struct zebra_pw *pw)
 
 	/* schedule to retry later */
 	THREAD_TIMER_OFF(pw->install_retry_timer);
-	thread_add_timer(zebrad.master, zebra_pw_install_retry, pw,
+	thread_add_timer(zrouter.master, zebra_pw_install_retry, pw,
 			 PW_INSTALL_RETRY_INTERVAL, &pw->install_retry_timer);
 
 	zebra_pw_update_status(pw, PW_STATUS_DOWN);
@@ -248,8 +250,8 @@ static int zebra_pw_check_reachability(struct zebra_pw *pw)
 		       &pw->nexthop, NULL);
 	if (!re) {
 		if (IS_ZEBRA_DEBUG_PW)
-			zlog_warn("%s: no route found for %s", __func__,
-				  pw->ifname);
+			zlog_debug("%s: no route found for %s", __func__,
+				   pw->ifname);
 		return -1;
 	}
 
@@ -257,11 +259,11 @@ static int zebra_pw_check_reachability(struct zebra_pw *pw)
 	 * Need to ensure that there's a label binding for all nexthops.
 	 * Otherwise, ECMP for this route could render the pseudowire unusable.
 	 */
-	for (ALL_NEXTHOPS(re->ng, nexthop)) {
+	for (ALL_NEXTHOPS_PTR(re->nhe->nhg, nexthop)) {
 		if (!nexthop->nh_label) {
 			if (IS_ZEBRA_DEBUG_PW)
-				zlog_warn("%s: unlabeled route for %s",
-					  __func__, pw->ifname);
+				zlog_debug("%s: unlabeled route for %s",
+					   __func__, pw->ifname);
 			return -1;
 		}
 	}

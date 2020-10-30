@@ -24,6 +24,10 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -82,7 +86,7 @@ static inline void del_sid_nhlfe(struct sr_nhlfe nhlfe);
  */
 
 /* Hash function for Segment Routing entry */
-static unsigned int sr_hash(void *p)
+static unsigned int sr_hash(const void *p)
 {
 	const struct in_addr *rid = p;
 
@@ -90,7 +94,7 @@ static unsigned int sr_hash(void *p)
 }
 
 /* Compare 2 Router ID hash entries based on SR Node */
-static int sr_cmp(const void *p1, const void *p2)
+static bool sr_cmp(const void *p1, const void *p2)
 {
 	const struct sr_node *srn = p1;
 	const struct in_addr *rid = p2;
@@ -161,10 +165,10 @@ static void sr_node_del(struct sr_node *srn)
 		return;
 
 	/* Clean Extended Link */
-	list_delete_and_null(&srn->ext_link);
+	list_delete(&srn->ext_link);
 
 	/* Clean Prefix List */
-	list_delete_and_null(&srn->ext_prefix);
+	list_delete(&srn->ext_prefix);
 
 	XFREE(MTYPE_OSPF_SR_PARAMS, srn);
 }
@@ -233,10 +237,6 @@ static int ospf_sr_start(struct ospf *ospf)
 	srn = hash_get(OspfSR.neighbors, (void *)&(ospf->router_id),
 		       (void *)sr_node_new);
 
-	/* Sanity Check */
-	if (srn == NULL)
-		return rc;
-
 	/* Complete & Store self SR Node */
 	srn->srgb.range_size = OspfSR.srgb.range_size;
 	srn->srgb.lower_bound = OspfSR.srgb.lower_bound;
@@ -283,7 +283,7 @@ static void ospf_sr_stop(void)
 
 	/*
 	 * Remove all SR Nodes from the Hash table. Prefix and Link SID will
-	 * be remove though list_delete_and_null() call. See sr_node_del()
+	 * be remove though list_delete() call. See sr_node_del()
 	 */
 	hash_clean(OspfSR.neighbors, (void *)sr_node_del);
 }
@@ -608,26 +608,8 @@ static int compute_prefix_nhlfe(struct sr_prefix *srp)
 /* Send MPLS Label entry to Zebra for installation or deletion */
 static int ospf_zebra_send_mpls_labels(int cmd, struct sr_nhlfe nhlfe)
 {
-	struct stream *s;
-
-	/* Reset stream. */
-	s = zclient->obuf;
-	stream_reset(s);
-
-	zclient_create_header(s, cmd, VRF_DEFAULT);
-	stream_putc(s, ZEBRA_LSP_SR);
-	/* OSPF Segment Routing currently support only IPv4 */
-	stream_putl(s, nhlfe.prefv4.family);
-	stream_put_in_addr(s, &nhlfe.prefv4.prefix);
-	stream_putc(s, nhlfe.prefv4.prefixlen);
-	stream_put_in_addr(s, &nhlfe.nexthop);
-	stream_putl(s, nhlfe.ifindex);
-	stream_putc(s, OSPF_SR_PRIORITY_DEFAULT);
-	stream_putl(s, nhlfe.label_in);
-	stream_putl(s, nhlfe.label_out);
-
-	/* Put length at the first point of the stream. */
-	stream_putw_at(s, 0, stream_get_endp(s));
+	struct zapi_labels zl = {};
+	struct zapi_nexthop_label *znh;
 
 	if (IS_DEBUG_OSPF_SR)
 		zlog_debug("    |-  %s LSP %u/%u for %s/%u via %u",
@@ -636,70 +618,39 @@ static int ospf_zebra_send_mpls_labels(int cmd, struct sr_nhlfe nhlfe)
 			   inet_ntoa(nhlfe.prefv4.prefix),
 			   nhlfe.prefv4.prefixlen, nhlfe.ifindex);
 
-	return zclient_send_message(zclient);
-}
+	zl.type = ZEBRA_LSP_OSPF_SR;
+	zl.local_label = nhlfe.label_in;
 
-/* Request zebra to install/remove FEC in FIB */
-static int ospf_zebra_send_mpls_ftn(int cmd, struct sr_nhlfe nhlfe)
-{
-	struct zapi_route api;
-	struct zapi_nexthop *api_nh;
+	SET_FLAG(zl.message, ZAPI_LABELS_FTN);
+	zl.route.prefix.family = nhlfe.prefv4.family;
+	zl.route.prefix.prefixlen = nhlfe.prefv4.prefixlen;
+	zl.route.prefix.u.prefix4 = nhlfe.prefv4.prefix;
+	zl.route.type = ZEBRA_ROUTE_OSPF;
+	zl.route.instance = 0;
 
-	/* Support only IPv4 */
-	if (nhlfe.prefv4.family != AF_INET)
-		return -1;
+	zl.nexthop_num = 1;
+	znh = &zl.nexthops[0];
+	znh->type = NEXTHOP_TYPE_IPV4_IFINDEX;
+	znh->family = AF_INET;
+	znh->address.ipv4 = nhlfe.nexthop;
+	znh->ifindex = nhlfe.ifindex;
+	znh->label = nhlfe.label_out;
 
-	memset(&api, 0, sizeof(api));
-	api.vrf_id = VRF_DEFAULT;
-	api.type = ZEBRA_ROUTE_OSPF;
-	api.safi = SAFI_UNICAST;
-	memcpy(&api.prefix, &nhlfe.prefv4, sizeof(struct prefix_ipv4));
-
-	if (cmd == ZEBRA_ROUTE_ADD) {
-		/* Metric value. */
-		SET_FLAG(api.message, ZAPI_MESSAGE_METRIC);
-		api.metric = OSPF_SR_DEFAULT_METRIC;
-		/* Nexthop */
-		SET_FLAG(api.message, ZAPI_MESSAGE_NEXTHOP);
-		api_nh = &api.nexthops[0];
-		IPV4_ADDR_COPY(&api_nh->gate.ipv4, &nhlfe.nexthop);
-		api_nh->type = NEXTHOP_TYPE_IPV4_IFINDEX;
-		api_nh->ifindex = nhlfe.ifindex;
-		/* MPLS labels */
-		SET_FLAG(api.message, ZAPI_MESSAGE_LABEL);
-		api_nh->labels[0] = nhlfe.label_out;
-		api_nh->label_num = 1;
-		api_nh->vrf_id = VRF_DEFAULT;
-		api.nexthop_num = 1;
-	}
-
-	if (IS_DEBUG_OSPF_SR)
-		zlog_debug("    |-  %s FEC %u for %s/%u via %u",
-			   cmd == ZEBRA_ROUTE_ADD ? "Add" : "Delete",
-			   nhlfe.label_out, inet_ntoa(nhlfe.prefv4.prefix),
-			   nhlfe.prefv4.prefixlen, nhlfe.ifindex);
-
-	return zclient_route_send(cmd, zclient, &api);
+	return zebra_send_mpls_labels(zclient, cmd, &zl);
 }
 
 /* Add new NHLFE entry for SID */
 static inline void add_sid_nhlfe(struct sr_nhlfe nhlfe)
 {
-	if ((nhlfe.label_in != 0) && (nhlfe.label_out != 0)) {
+	if ((nhlfe.label_in != 0) && (nhlfe.label_out != 0))
 		ospf_zebra_send_mpls_labels(ZEBRA_MPLS_LABELS_ADD, nhlfe);
-		if (nhlfe.label_out != MPLS_LABEL_IMPLICIT_NULL)
-			ospf_zebra_send_mpls_ftn(ZEBRA_ROUTE_ADD, nhlfe);
-	}
 }
 
 /* Remove NHLFE entry for SID */
 static inline void del_sid_nhlfe(struct sr_nhlfe nhlfe)
 {
-	if ((nhlfe.label_in != 0) && (nhlfe.label_out != 0)) {
+	if ((nhlfe.label_in != 0) && (nhlfe.label_out != 0))
 		ospf_zebra_send_mpls_labels(ZEBRA_MPLS_LABELS_DELETE, nhlfe);
-		if (nhlfe.label_out != MPLS_LABEL_IMPLICIT_NULL)
-			ospf_zebra_send_mpls_ftn(ZEBRA_ROUTE_DELETE, nhlfe);
-	}
 }
 
 /* Update NHLFE entry for SID */
@@ -821,9 +772,9 @@ static struct sr_prefix *get_ext_prefix_sid(struct tlv_header *tlvh)
 		case EXT_SUBTLV_PREFIX_SID:
 			psid = (struct ext_subtlv_prefix_sid *)sub_tlvh;
 			if (psid->algorithm != SR_ALGORITHM_SPF) {
-				flog_err(OSPF_ERR_SR_INVALID_ALGORITHM,
-					  "SR (%s): Unsupported Algorithm",
-					  __func__);
+				flog_err(EC_OSPF_INVALID_ALGORITHM,
+					 "SR (%s): Unsupported Algorithm",
+					 __func__);
 				XFREE(MTYPE_OSPF_SR_PARAMS, srp);
 				return NULL;
 			}
@@ -1020,10 +971,10 @@ static void update_ext_prefix_sid(struct sr_node *srn, struct sr_prefix *srp)
  * When change the FRR Self SRGB, update the NHLFE Input Label
  * for all Extended Prefix with SID index through hash_iterate()
  */
-static void update_in_nhlfe(struct hash_backet *backet, void *args)
+static void update_in_nhlfe(struct hash_bucket *bucket, void *args)
 {
 	struct listnode *node;
-	struct sr_node *srn = (struct sr_node *)backet->data;
+	struct sr_node *srn = (struct sr_node *)bucket->data;
 	struct sr_prefix *srp;
 	struct sr_nhlfe new;
 
@@ -1052,10 +1003,10 @@ static void update_in_nhlfe(struct hash_backet *backet, void *args)
  * When SRGB has changed, update NHLFE Output Label for all Extended Prefix
  * with SID index which use the given SR-Node as nexthop though hash_iterate()
  */
-static void update_out_nhlfe(struct hash_backet *backet, void *args)
+static void update_out_nhlfe(struct hash_bucket *bucket, void *args)
 {
 	struct listnode *node;
-	struct sr_node *srn = (struct sr_node *)backet->data;
+	struct sr_node *srn = (struct sr_node *)bucket->data;
 	struct sr_node *srnext = (struct sr_node *)args;
 	struct sr_prefix *srp;
 	struct sr_nhlfe new;
@@ -1102,8 +1053,8 @@ void ospf_sr_ri_lsa_update(struct ospf_lsa *lsa)
 		return;
 
 	if (OspfSR.neighbors == NULL) {
-		flog_err(OSPF_ERR_SR_INVALID_DB,
-			  "SR (%s): Abort! no valid SR DataBase", __func__);
+		flog_err(EC_OSPF_SR_INVALID_DB,
+			 "SR (%s): Abort! no valid SR DataBase", __func__);
 		return;
 	}
 
@@ -1113,18 +1064,18 @@ void ospf_sr_ri_lsa_update(struct ospf_lsa *lsa)
 
 	/* Sanity check */
 	if (srn == NULL) {
-		flog_err(OSPF_ERR_SR_NODE_CREATE,
-			  "SR (%s): Abort! can't create SR node in hash table",
-			  __func__);
+		flog_err(EC_OSPF_SR_NODE_CREATE,
+			 "SR (%s): Abort! can't create SR node in hash table",
+			 __func__);
 		return;
 	}
 
 	if ((srn->instance != 0) && (srn->instance != ntohl(lsah->id.s_addr))) {
-		flog_err(OSPF_ERR_SR_INVALID_LSA_ID,
-			  "SR (%s): Abort! Wrong "
-			  "LSA ID 4.0.0.%u for SR node %s/%u",
-			  __func__, GET_OPAQUE_ID(ntohl(lsah->id.s_addr)),
-			  inet_ntoa(lsah->adv_router), srn->instance);
+		flog_err(EC_OSPF_SR_INVALID_LSA_ID,
+			 "SR (%s): Abort! Wrong "
+			 "LSA ID 4.0.0.%u for SR node %s/%u",
+			 __func__, GET_OPAQUE_ID(ntohl(lsah->id.s_addr)),
+			 inet_ntoa(lsah->adv_router), srn->instance);
 		return;
 	}
 
@@ -1167,8 +1118,9 @@ void ospf_sr_ri_lsa_update(struct ospf_lsa *lsa)
 	/* Check that we collect mandatory parameters */
 	if (srn->algo[0] == SR_ALGORITHM_UNSET || srgb.range_size == 0
 	    || srgb.lower_bound == 0) {
-		zlog_warn("SR (%s): Missing mandatory parameters. Abort!",
-			  __func__);
+		flog_err(EC_OSPF_SR_NODE_CREATE,
+			 "SR (%s): Missing mandatory parameters. Abort!",
+			 __func__);
 		hash_release(OspfSR.neighbors, &(srn->adv_router));
 		XFREE(MTYPE_OSPF_SR_PARAMS, srn);
 		return;
@@ -1191,7 +1143,7 @@ void ospf_sr_ri_lsa_update(struct ospf_lsa *lsa)
 		/* Update NHLFE if it is a neighbor SR node */
 		if (srn->neighbor == OspfSR.self)
 			hash_iterate(OspfSR.neighbors,
-				     (void (*)(struct hash_backet *,
+				     (void (*)(struct hash_bucket *,
 					       void *))update_out_nhlfe,
 				     (void *)srn);
 	}
@@ -1213,8 +1165,8 @@ void ospf_sr_ri_lsa_delete(struct ospf_lsa *lsa)
 
 	/* Sanity check */
 	if (OspfSR.neighbors == NULL) {
-		flog_err(OSPF_ERR_SR_INVALID_DB,
-			  "SR (%s): Abort! no valid SR Data Base", __func__);
+		flog_err(EC_OSPF_SR_INVALID_DB,
+			 "SR (%s): Abort! no valid SR Data Base", __func__);
 		return;
 	}
 
@@ -1223,18 +1175,17 @@ void ospf_sr_ri_lsa_delete(struct ospf_lsa *lsa)
 
 	/* Sanity check */
 	if (srn == NULL) {
-		flog_err(OSPF_ERR_SR_NODE_CREATE,
-			  "SR (%s): Abort! no entry in SRDB for SR Node %s",
-			  __func__, inet_ntoa(lsah->adv_router));
+		flog_err(EC_OSPF_SR_NODE_CREATE,
+			 "SR (%s): Abort! no entry in SRDB for SR Node %s",
+			 __func__, inet_ntoa(lsah->adv_router));
 		return;
 	}
 
 	if ((srn->instance != 0) && (srn->instance != ntohl(lsah->id.s_addr))) {
-		flog_err(
-			OSPF_ERR_SR_INVALID_LSA_ID,
-			"SR (%s): Abort! Wrong LSA ID 4.0.0.%u for SR node %s",
-			__func__, GET_OPAQUE_ID(ntohl(lsah->id.s_addr)),
-			inet_ntoa(lsah->adv_router));
+		flog_err(EC_OSPF_SR_INVALID_LSA_ID,
+			 "SR (%s): Abort! Wrong LSA ID 4.0.0.%u for SR node %s",
+			 __func__, GET_OPAQUE_ID(ntohl(lsah->id.s_addr)),
+			 inet_ntoa(lsah->adv_router));
 		return;
 	}
 
@@ -1260,8 +1211,8 @@ void ospf_sr_ext_link_lsa_update(struct ospf_lsa *lsa)
 
 	/* Sanity check */
 	if (OspfSR.neighbors == NULL) {
-		flog_err(OSPF_ERR_SR_INVALID_DB,
-			  "SR (%s): Abort! no valid SR DataBase", __func__);
+		flog_err(EC_OSPF_SR_INVALID_DB,
+			 "SR (%s): Abort! no valid SR DataBase", __func__);
 		return;
 	}
 
@@ -1272,9 +1223,9 @@ void ospf_sr_ext_link_lsa_update(struct ospf_lsa *lsa)
 
 	/* Sanity check */
 	if (srn == NULL) {
-		flog_err(OSPF_ERR_SR_NODE_CREATE,
-			  "SR (%s): Abort! can't create SR node in hash table",
-			  __func__);
+		flog_err(EC_OSPF_SR_NODE_CREATE,
+			 "SR (%s): Abort! can't create SR node in hash table",
+			 __func__);
 		return;
 	}
 
@@ -1312,8 +1263,8 @@ void ospf_sr_ext_link_lsa_delete(struct ospf_lsa *lsa)
 
 	/* Sanity check */
 	if (OspfSR.neighbors == NULL) {
-		flog_err(OSPF_ERR_SR_INVALID_DB,
-			  "SR (%s): Abort! no valid SR DataBase", __func__);
+		flog_err(EC_OSPF_SR_INVALID_DB,
+			 "SR (%s): Abort! no valid SR DataBase", __func__);
 		return;
 	}
 
@@ -1326,8 +1277,9 @@ void ospf_sr_ext_link_lsa_delete(struct ospf_lsa *lsa)
 	 * processing Router Information LSA deletion
 	 */
 	if (srn == NULL) {
-		zlog_warn("SR (%s): Stop! no entry in SRDB for SR Node %s",
-			  __func__, inet_ntoa(lsah->adv_router));
+		flog_err(EC_OSPF_SR_INVALID_DB,
+			 "SR (%s): Stop! no entry in SRDB for SR Node %s",
+			 __func__, inet_ntoa(lsah->adv_router));
 		return;
 	}
 
@@ -1343,11 +1295,11 @@ void ospf_sr_ext_link_lsa_delete(struct ospf_lsa *lsa)
 		listnode_delete(srn->ext_link, srl);
 		XFREE(MTYPE_OSPF_SR_PARAMS, srl);
 	} else {
-		zlog_warn(
-			"SR (%s): Didn't found corresponding SR Link 8.0.0.%u "
-			"for SR Node %s",
-			__func__, GET_OPAQUE_ID(ntohl(lsah->id.s_addr)),
-			inet_ntoa(lsah->adv_router));
+		flog_err(EC_OSPF_SR_INVALID_DB,
+			 "SR (%s): Didn't found corresponding SR Link 8.0.0.%u "
+			 "for SR Node %s",
+			 __func__, GET_OPAQUE_ID(ntohl(lsah->id.s_addr)),
+			 inet_ntoa(lsah->adv_router));
 	}
 }
 
@@ -1370,8 +1322,8 @@ void ospf_sr_ext_prefix_lsa_update(struct ospf_lsa *lsa)
 
 	/* Sanity check */
 	if (OspfSR.neighbors == NULL) {
-		flog_err(OSPF_ERR_SR_INVALID_DB,
-			  "SR (%s): Abort! no valid SR DataBase", __func__);
+		flog_err(EC_OSPF_SR_INVALID_DB,
+			 "SR (%s): Abort! no valid SR DataBase", __func__);
 		return;
 	}
 
@@ -1382,9 +1334,9 @@ void ospf_sr_ext_prefix_lsa_update(struct ospf_lsa *lsa)
 
 	/* Sanity check */
 	if (srn == NULL) {
-		flog_err(OSPF_ERR_SR_NODE_CREATE,
-			  "SR (%s): Abort! can't create SR node in hash table",
-			  __func__);
+		flog_err(EC_OSPF_SR_NODE_CREATE,
+			 "SR (%s): Abort! can't create SR node in hash table",
+			 __func__);
 		return;
 	}
 
@@ -1423,8 +1375,8 @@ void ospf_sr_ext_prefix_lsa_delete(struct ospf_lsa *lsa)
 
 	/* Sanity check */
 	if (OspfSR.neighbors == NULL) {
-		flog_err(OSPF_ERR_SR_INVALID_DB,
-			  "SR (%s): Abort! no valid SR DataBase", __func__);
+		flog_err(EC_OSPF_SR_INVALID_DB,
+			 "SR (%s): Abort! no valid SR DataBase", __func__);
 		return;
 	}
 
@@ -1437,8 +1389,9 @@ void ospf_sr_ext_prefix_lsa_delete(struct ospf_lsa *lsa)
 	 * processing Router Information LSA deletion
 	 */
 	if (srn == NULL) {
-		zlog_warn("SR (%s):  Stop! no entry in SRDB for SR Node %s",
-			  __func__, inet_ntoa(lsah->adv_router));
+		flog_err(EC_OSPF_SR_INVALID_DB,
+			 "SR (%s):  Stop! no entry in SRDB for SR Node %s",
+			 __func__, inet_ntoa(lsah->adv_router));
 		return;
 	}
 
@@ -1453,9 +1406,9 @@ void ospf_sr_ext_prefix_lsa_delete(struct ospf_lsa *lsa)
 		listnode_delete(srn->ext_link, srp);
 		XFREE(MTYPE_OSPF_SR_PARAMS, srp);
 	} else {
-		zlog_warn(
-			"SR (%s): Didn't found corresponding SR Prefix "
-			"7.0.0.%u for SR Node %s",
+		flog_err(
+			EC_OSPF_SR_INVALID_DB,
+			"SR (%s): Didn't found corresponding SR Prefix 7.0.0.%u for SR Node %s",
 			__func__, GET_OPAQUE_ID(ntohl(lsah->id.s_addr)),
 			inet_ntoa(lsah->adv_router));
 	}
@@ -1529,10 +1482,10 @@ void ospf_sr_update_prefix(struct interface *ifp, struct prefix *p)
  * Following functions are used to update MPLS LFIB after a SPF run
  */
 
-static void ospf_sr_nhlfe_update(struct hash_backet *backet, void *args)
+static void ospf_sr_nhlfe_update(struct hash_bucket *bucket, void *args)
 {
 
-	struct sr_node *srn = (struct sr_node *)backet->data;
+	struct sr_node *srn = (struct sr_node *)bucket->data;
 	struct listnode *node;
 	struct sr_prefix *srp;
 	struct sr_nhlfe old;
@@ -1591,14 +1544,14 @@ static int ospf_sr_update_schedule(struct thread *t)
 	if (IS_DEBUG_OSPF_SR)
 		zlog_debug("SR (%s): Start SPF update", __func__);
 
-	hash_iterate(OspfSR.neighbors, (void (*)(struct hash_backet *,
+	hash_iterate(OspfSR.neighbors, (void (*)(struct hash_bucket *,
 						 void *))ospf_sr_nhlfe_update,
 		     NULL);
 
 	monotime(&stop_time);
 
 	if (IS_DEBUG_OSPF_SR)
-		zlog_debug("SR (%s): SPF Processing Time(usecs): %lld\n",
+		zlog_debug("SR (%s): SPF Processing Time(usecs): %lld",
 			   __func__,
 			   (stop_time.tv_sec - start_time.tv_sec) * 1000000LL
 				   + (stop_time.tv_usec - start_time.tv_usec));
@@ -1702,10 +1655,7 @@ DEFUN(ospf_sr_enable,
 
 	/* Start Segment Routing */
 	OspfSR.enabled = true;
-	if (!ospf_sr_start(ospf)) {
-		zlog_warn("SR: Unable to start Segment Routing. Abort!");
-		return CMD_WARNING;
-	}
+	ospf_sr_start(ospf);
 
 	/* Set Router Information SR parameters */
 	if (IS_DEBUG_OSPF_EVENT)
@@ -1819,7 +1769,7 @@ DEFUN (sr_sid_label_range,
 
 	/* Update NHLFE entries */
 	hash_iterate(OspfSR.neighbors,
-		     (void (*)(struct hash_backet *, void *))update_in_nhlfe,
+		     (void (*)(struct hash_bucket *, void *))update_in_nhlfe,
 		     NULL);
 
 	return CMD_SUCCESS;
@@ -1851,7 +1801,7 @@ DEFUN (no_sr_sid_label_range,
 
 	/* Update NHLFE entries */
 	hash_iterate(OspfSR.neighbors,
-		     (void (*)(struct hash_backet *, void *))update_in_nhlfe,
+		     (void (*)(struct hash_bucket *, void *))update_in_nhlfe,
 		     NULL);
 
 	return CMD_SUCCESS;
@@ -1990,7 +1940,7 @@ DEFUN (sr_prefix_sid,
 		 * update of this Extended Prefix
 		 */
 		listnode_add(OspfSR.self->ext_prefix, new);
-		zlog_warn(
+		zlog_info(
 			"Interface for prefix %s/%u not found. Deferred LSA "
 			"flooding",
 			inet_ntoa(p.u.prefix4), p.prefixlen);
@@ -2282,18 +2232,18 @@ static void show_sr_node(struct vty *vty, struct json_object *json,
 		vty_out(vty, "\n");
 }
 
-static void show_vty_srdb(struct hash_backet *backet, void *args)
+static void show_vty_srdb(struct hash_bucket *bucket, void *args)
 {
 	struct vty *vty = (struct vty *)args;
-	struct sr_node *srn = (struct sr_node *)backet->data;
+	struct sr_node *srn = (struct sr_node *)bucket->data;
 
 	show_sr_node(vty, NULL, srn);
 }
 
-static void show_json_srdb(struct hash_backet *backet, void *args)
+static void show_json_srdb(struct hash_bucket *bucket, void *args)
 {
 	struct json_object *json = (struct json_object *)args;
-	struct sr_node *srn = (struct sr_node *)backet->data;
+	struct sr_node *srn = (struct sr_node *)bucket->data;
 
 	show_sr_node(NULL, json, srn);
 }
@@ -2314,7 +2264,7 @@ DEFUN (show_ip_opsf_srdb,
 	int idx = 0;
 	struct in_addr rid;
 	struct sr_node *srn;
-	uint8_t uj = use_json(argc, argv);
+	bool uj = use_json(argc, argv);
 	json_object *json = NULL, *json_node_array = NULL;
 
 	if (!OspfSR.enabled) {
@@ -2367,14 +2317,14 @@ DEFUN (show_ip_opsf_srdb,
 
 	/* No parameters have been provided, Iterate through all the SRDB */
 	if (uj) {
-		hash_iterate(OspfSR.neighbors, (void (*)(struct hash_backet *,
+		hash_iterate(OspfSR.neighbors, (void (*)(struct hash_bucket *,
 							 void *))show_json_srdb,
 			     (void *)json_node_array);
 		vty_out(vty, "%s\n", json_object_to_json_string_ext(
 					     json, JSON_C_TO_STRING_PRETTY));
 		json_object_free(json);
 	} else {
-		hash_iterate(OspfSR.neighbors, (void (*)(struct hash_backet *,
+		hash_iterate(OspfSR.neighbors, (void (*)(struct hash_bucket *,
 							 void *))show_vty_srdb,
 			     (void *)vty);
 	}

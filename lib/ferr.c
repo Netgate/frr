@@ -14,6 +14,10 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
 #include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
@@ -29,6 +33,7 @@
 #include "command.h"
 #include "json.h"
 #include "linklist.h"
+#include "frr_pthread.h"
 
 DEFINE_MTYPE_STATIC(LIB, ERRINFO, "error information")
 
@@ -57,10 +62,10 @@ static void err_key_fini(void)
 /*
  * Global shared hash table holding reference text for all defined errors.
  */
-pthread_mutex_t refs_mtx = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t refs_mtx = PTHREAD_MUTEX_INITIALIZER;
 struct hash *refs;
 
-static int ferr_hash_cmp(const void *a, const void *b)
+static bool ferr_hash_cmp(const void *a, const void *b)
 {
 	const struct log_ref *f_a = a;
 	const struct log_ref *f_b = b;
@@ -68,9 +73,9 @@ static int ferr_hash_cmp(const void *a, const void *b)
 	return f_a->code == f_b->code;
 }
 
-static inline unsigned int ferr_hash_key(void *a)
+static inline unsigned int ferr_hash_key(const void *a)
 {
-	struct log_ref *f = a;
+	const struct log_ref *f = a;
 
 	return f->code;
 }
@@ -79,14 +84,12 @@ void log_ref_add(struct log_ref *ref)
 {
 	uint32_t i = 0;
 
-	pthread_mutex_lock(&refs_mtx);
-	{
+	frr_with_mutex(&refs_mtx) {
 		while (ref[i].code != END_FERR) {
 			hash_get(refs, &ref[i], hash_alloc_intern);
 			i++;
 		}
 	}
-	pthread_mutex_unlock(&refs_mtx);
 }
 
 struct log_ref *log_ref_get(uint32_t code)
@@ -95,11 +98,9 @@ struct log_ref *log_ref_get(uint32_t code)
 	struct log_ref *ref;
 
 	holder.code = code;
-	pthread_mutex_lock(&refs_mtx);
-	{
+	frr_with_mutex(&refs_mtx) {
 		ref = hash_lookup(refs, &holder);
 	}
-	pthread_mutex_unlock(&refs_mtx);
 
 	return ref;
 }
@@ -114,18 +115,14 @@ void log_ref_display(struct vty *vty, uint32_t code, bool json)
 	if (json)
 		top = json_object_new_object();
 
-	pthread_mutex_lock(&refs_mtx);
-	{
+	frr_with_mutex(&refs_mtx) {
 		errlist = code ? list_new() : hash_to_list(refs);
 	}
-	pthread_mutex_unlock(&refs_mtx);
 
 	if (code) {
 		ref = log_ref_get(code);
-		if (!ref) {
-			vty_out(vty, "Code %"PRIu32" - Unknown\n", code);
+		if (!ref)
 			return;
-		}
 		listnode_add(errlist, ref);
 	}
 
@@ -148,7 +145,7 @@ void log_ref_display(struct vty *vty, uint32_t code, bool json)
 			snprintf(pbuf, sizeof(pbuf), "\nError %"PRIu32" - %s",
 				 ref->code, ref->title);
 			memset(ubuf, '=', strlen(pbuf));
-			ubuf[sizeof(ubuf) - 1] = '\0';
+			ubuf[strlen(pbuf)] = '\0';
 
 			vty_out(vty, "%s\n%s\n", pbuf, ubuf);
 			vty_out(vty, "Description:\n%s\n\n", ref->description);
@@ -163,12 +160,12 @@ void log_ref_display(struct vty *vty, uint32_t code, bool json)
 		json_object_free(top);
 	}
 
-	list_delete_and_null(&errlist);
+	list_delete(&errlist);
 }
 
 DEFUN_NOSH(show_error_code,
 	   show_error_code_cmd,
-	   "show error <(1-4294967296)|all> [json]",
+	   "show error <(1-4294967295)|all> [json]",
 	   SHOW_STR
 	   "Information on errors\n"
 	   "Error code to get info about\n"
@@ -187,26 +184,26 @@ DEFUN_NOSH(show_error_code,
 
 void log_ref_init(void)
 {
-	pthread_mutex_lock(&refs_mtx);
-	{
+	frr_with_mutex(&refs_mtx) {
 		refs = hash_create(ferr_hash_key, ferr_hash_cmp,
 				   "Error Reference Texts");
 	}
-	pthread_mutex_unlock(&refs_mtx);
-
-	install_element(VIEW_NODE, &show_error_code_cmd);
 }
 
 void log_ref_fini(void)
 {
-	pthread_mutex_lock(&refs_mtx);
-	{
+	frr_with_mutex(&refs_mtx) {
 		hash_clean(refs, NULL);
 		hash_free(refs);
 		refs = NULL;
 	}
-	pthread_mutex_unlock(&refs_mtx);
 }
+
+void log_ref_vty_init(void)
+{
+	install_element(VIEW_NODE, &show_error_code_cmd);
+}
+
 
 const struct ferr *ferr_get_last(ferr_r errval)
 {

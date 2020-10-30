@@ -40,6 +40,7 @@
 #include "zebra/kernel_netlink.h"
 #include "zebra/rule_netlink.h"
 #include "zebra/zebra_pbr.h"
+#include "zebra/zebra_errors.h"
 
 /* definitions */
 
@@ -53,6 +54,7 @@
  */
 static int netlink_rule_update(int cmd, struct zebra_pbr_rule *rule)
 {
+	uint8_t protocol = RTPROT_ZEBRA;
 	int family;
 	int bytelen;
 	struct {
@@ -77,13 +79,15 @@ static int netlink_rule_update(int cmd, struct zebra_pbr_rule *rule)
 	req.frh.family = family;
 	req.frh.action = FR_ACT_TO_TBL;
 
+	addattr_l(&req.n, sizeof(req),
+		  FRA_PROTOCOL, &protocol, sizeof(protocol));
+
 	/* rule's pref # */
 	addattr32(&req.n, sizeof(req), FRA_PRIORITY, rule->rule.priority);
 
 	/* interface on which applied */
-	if (rule->ifp)
-		addattr_l(&req.n, sizeof(req), FRA_IFNAME, rule->ifp->name,
-			  strlen(rule->ifp->name) + 1);
+	addattr_l(&req.n, sizeof(req), FRA_IFNAME, rule->ifname,
+		  strlen(rule->ifname) + 1);
 
 	/* source IP, if specified */
 	if (IS_RULE_FILTERING_ON_SRC_IP(rule)) {
@@ -115,10 +119,10 @@ static int netlink_rule_update(int cmd, struct zebra_pbr_rule *rule)
 
 	if (IS_ZEBRA_DEBUG_KERNEL)
 		zlog_debug(
-			"Tx %s family %s IF %s(%u) Pref %u Src %s Dst %s Table %u",
+			"Tx %s family %s IF %s(%u) Pref %u Fwmark %u Src %s Dst %s Table %u",
 			nl_msg_type_to_str(cmd), nl_family_to_str(family),
-			rule->ifp ? rule->ifp->name : "Unknown",
-			rule->ifp ? rule->ifp->ifindex : 0, rule->rule.priority,
+			rule->ifname, rule->rule.ifindex, rule->rule.priority,
+			rule->rule.filter.fwmark,
 			prefix2str(&rule->rule.filter.src_ip, buf1,
 				   sizeof(buf1)),
 			prefix2str(&rule->rule.filter.dst_ip, buf2,
@@ -142,31 +146,31 @@ static int netlink_rule_update(int cmd, struct zebra_pbr_rule *rule)
  * goes in the rule to denote relative ordering; it may or may not be the
  * same as the rule's user-defined sequence number.
  */
-enum dp_req_result kernel_add_pbr_rule(struct zebra_pbr_rule *rule)
+enum zebra_dplane_result kernel_add_pbr_rule(struct zebra_pbr_rule *rule)
 {
 	int ret = 0;
 
 	ret = netlink_rule_update(RTM_NEWRULE, rule);
 	kernel_pbr_rule_add_del_status(rule,
-				       (!ret) ? DP_INSTALL_SUCCESS
-					      : DP_INSTALL_FAILURE);
+				       (!ret) ? ZEBRA_DPLANE_INSTALL_SUCCESS
+					      : ZEBRA_DPLANE_INSTALL_FAILURE);
 
-	return DP_REQUEST_SUCCESS;
+	return ZEBRA_DPLANE_REQUEST_SUCCESS;
 }
 
 /*
  * Uninstall specified rule for a specific interface.
  */
-enum dp_req_result kernel_del_pbr_rule(struct zebra_pbr_rule *rule)
+enum zebra_dplane_result kernel_del_pbr_rule(struct zebra_pbr_rule *rule)
 {
 	int ret = 0;
 
 	ret = netlink_rule_update(RTM_DELRULE, rule);
 	kernel_pbr_rule_add_del_status(rule,
-				       (!ret) ? DP_DELETE_SUCCESS
-					      : DP_DELETE_FAILURE);
+				       (!ret) ? ZEBRA_DPLANE_DELETE_SUCCESS
+					      : ZEBRA_DPLANE_DELETE_FAILURE);
 
-	return DP_REQUEST_SUCCESS;
+	return ZEBRA_DPLANE_REQUEST_SUCCESS;
 }
 
 /*
@@ -183,7 +187,7 @@ int netlink_rule_change(struct nlmsghdr *h, ns_id_t ns_id, int startup)
 	struct rtattr *tb[FRA_MAX + 1];
 	int len;
 	char *ifname;
-	struct zebra_pbr_rule rule;
+	struct zebra_pbr_rule rule = {};
 	char buf1[PREFIX_STRLEN];
 	char buf2[PREFIX_STRLEN];
 
@@ -205,7 +209,8 @@ int netlink_rule_change(struct nlmsghdr *h, ns_id_t ns_id, int startup)
 
 	frh = NLMSG_DATA(h);
 	if (frh->family != AF_INET && frh->family != AF_INET6) {
-		zlog_warn(
+		flog_warn(
+			EC_ZEBRA_NETLINK_INVALID_AF,
 			"Invalid address family: %u received from kernel rule change: %u",
 			frh->family, h->nlmsg_type);
 		return 0;
@@ -220,14 +225,15 @@ int netlink_rule_change(struct nlmsghdr *h, ns_id_t ns_id, int startup)
 	if (tb[FRA_IFNAME] == NULL)
 		return 0;
 
-	/* If we don't know the interface, we don't care. */
 	ifname = (char *)RTA_DATA(tb[FRA_IFNAME]);
 	zns = zebra_ns_lookup(ns_id);
-	rule.ifp = if_lookup_by_name_per_ns(zns, ifname);
-	if (!rule.ifp)
+
+	/* If we don't know the interface, we don't care. */
+	if (!if_lookup_by_name_per_ns(zns, ifname))
 		return 0;
 
-	memset(&rule, 0, sizeof(rule));
+	strlcpy(rule.ifname, ifname, sizeof(rule.ifname));
+
 	if (tb[FRA_PRIORITY])
 		rule.rule.priority = *(uint32_t *)RTA_DATA(tb[FRA_PRIORITY]);
 
@@ -262,8 +268,8 @@ int netlink_rule_change(struct nlmsghdr *h, ns_id_t ns_id, int startup)
 		zlog_debug(
 			"Rx %s family %s IF %s(%u) Pref %u Src %s Dst %s Table %u",
 			nl_msg_type_to_str(h->nlmsg_type),
-			nl_family_to_str(frh->family), rule.ifp->name,
-			rule.ifp->ifindex, rule.rule.priority,
+			nl_family_to_str(frh->family), rule.ifname,
+			rule.rule.ifindex, rule.rule.priority,
 			prefix2str(&rule.rule.filter.src_ip, buf1,
 				   sizeof(buf1)),
 			prefix2str(&rule.rule.filter.dst_ip, buf2,

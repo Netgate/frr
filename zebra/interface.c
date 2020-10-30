@@ -41,14 +41,18 @@
 #include "zebra/interface.h"
 #include "zebra/rib.h"
 #include "zebra/rt.h"
-#include "zebra/zserv.h"
+#include "zebra/zebra_router.h"
 #include "zebra/redistribute.h"
 #include "zebra/debug.h"
 #include "zebra/irdp.h"
 #include "zebra/zebra_ptm.h"
 #include "zebra/rt_netlink.h"
+#include "zebra/if_netlink.h"
 #include "zebra/interface.h"
 #include "zebra/zebra_vxlan.h"
+#include "zebra/zebra_errors.h"
+
+DEFINE_MTYPE_STATIC(ZEBRA, ZINFO, "Zebra Interface Information")
 
 #define ZEBRA_PTM_SUPPORT
 
@@ -65,18 +69,32 @@ static int if_zebra_speed_update(struct thread *thread)
 	struct interface *ifp = THREAD_ARG(thread);
 	struct zebra_if *zif = ifp->info;
 	uint32_t new_speed;
+	bool changed = false;
+	int error = 0;
 
 	zif->speed_update = NULL;
 
-	new_speed = kernel_get_speed(ifp);
+	new_speed = kernel_get_speed(ifp, &error);
+
+	/* error may indicate vrf not available or
+	 * interfaces not available.
+	 * note that loopback & virtual interfaces can return 0 as speed
+	 */
+	if (error < 0)
+		return 1;
+
 	if (new_speed != ifp->speed) {
 		zlog_info("%s: %s old speed: %u new speed: %u",
 			  __PRETTY_FUNCTION__, ifp->name, ifp->speed,
 			  new_speed);
 		ifp->speed = new_speed;
 		if_add_update(ifp);
+		changed = true;
 	}
 
+	if (changed || new_speed == UINT32_MAX)
+		thread_add_timer(zrouter.master, if_zebra_speed_update, ifp, 5,
+				 &zif->speed_update);
 	return 1;
 }
 
@@ -85,9 +103,20 @@ static void zebra_if_node_destroy(route_table_delegate_t *delegate,
 				  struct route_node *node)
 {
 	if (node->info)
-		list_delete_and_null((struct list **)&node->info);
+		list_delete((struct list **)&node->info);
 	route_node_destroy(delegate, table, node);
 }
+
+static void zebra_if_nhg_dependents_free(struct zebra_if *zebra_if)
+{
+	nhg_connected_tree_free(&zebra_if->nhg_dependents);
+}
+
+static void zebra_if_nhg_dependents_init(struct zebra_if *zebra_if)
+{
+	nhg_connected_tree_init(&zebra_if->nhg_dependents);
+}
+
 
 route_table_delegate_t zebra_if_table_delegate = {
 	.create_node = route_node_create,
@@ -98,10 +127,13 @@ static int if_zebra_new_hook(struct interface *ifp)
 {
 	struct zebra_if *zebra_if;
 
-	zebra_if = XCALLOC(MTYPE_TMP, sizeof(struct zebra_if));
+	zebra_if = XCALLOC(MTYPE_ZINFO, sizeof(struct zebra_if));
 
 	zebra_if->multicast = IF_ZEBRA_MULTICAST_UNSPEC;
 	zebra_if->shutdown = IF_ZEBRA_SHUTDOWN_OFF;
+
+	zebra_if_nhg_dependents_init(zebra_if);
+
 	zebra_ptm_if_init(zebra_if);
 
 	ifp->ptm_enable = zebra_ptm_get_enable_state();
@@ -129,11 +161,16 @@ static int if_zebra_new_hook(struct interface *ifp)
 		rtadv->HomeAgentLifetime =
 			-1; /* derive from AdvDefaultLifetime */
 		rtadv->AdvIntervalOption = 0;
+		rtadv->UseFastRexmit = true;
 		rtadv->DefaultPreference = RTADV_PREF_MEDIUM;
 
 		rtadv->AdvPrefixList = list_new();
+		rtadv->AdvRDNSSList = list_new();
+		rtadv->AdvDNSSLList = list_new();
 	}
 #endif /* HAVE_RTADV */
+
+	memset(&zebra_if->neigh_mac[0], 0, 6);
 
 	/* Initialize installed address chains tree. */
 	zebra_if->ipv4_subnets =
@@ -148,9 +185,37 @@ static int if_zebra_new_hook(struct interface *ifp)
 	 * of seconds and ask again.  Hopefully it's all settled
 	 * down upon startup.
 	 */
-	thread_add_timer(zebrad.master, if_zebra_speed_update, ifp, 15,
+	thread_add_timer(zrouter.master, if_zebra_speed_update, ifp, 15,
 			 &zebra_if->speed_update);
 	return 0;
+}
+
+static void if_nhg_dependents_check_valid(struct nhg_hash_entry *nhe)
+{
+	zebra_nhg_check_valid(nhe);
+	if (!CHECK_FLAG(nhe->flags, NEXTHOP_GROUP_VALID))
+		/* Assuming uninstalled as well here */
+		UNSET_FLAG(nhe->flags, NEXTHOP_GROUP_INSTALLED);
+}
+
+static void if_down_nhg_dependents(const struct interface *ifp)
+{
+	struct nhg_connected *rb_node_dep = NULL;
+	struct zebra_if *zif = (struct zebra_if *)ifp->info;
+
+	frr_each(nhg_connected_tree, &zif->nhg_dependents, rb_node_dep)
+		if_nhg_dependents_check_valid(rb_node_dep->nhe);
+}
+
+static void if_nhg_dependents_release(const struct interface *ifp)
+{
+	struct nhg_connected *rb_node_dep = NULL;
+	struct zebra_if *zif = (struct zebra_if *)ifp->info;
+
+	frr_each(nhg_connected_tree, &zif->nhg_dependents, rb_node_dep) {
+		rb_node_dep->nhe->ifp = NULL; /* Null it out */
+		if_nhg_dependents_check_valid(rb_node_dep->nhe);
+	}
 }
 
 /* Called when interface is deleted. */
@@ -169,12 +234,19 @@ static int if_zebra_delete_hook(struct interface *ifp)
 		struct rtadvconf *rtadv;
 
 		rtadv = &zebra_if->rtadv;
-		list_delete_and_null(&rtadv->AdvPrefixList);
+		list_delete(&rtadv->AdvPrefixList);
+		list_delete(&rtadv->AdvRDNSSList);
+		list_delete(&rtadv->AdvDNSSLList);
 #endif /* HAVE_RTADV */
+
+		if_nhg_dependents_release(ifp);
+		zebra_if_nhg_dependents_free(zebra_if);
+
+		XFREE(MTYPE_TMP, zebra_if->desc);
 
 		THREAD_OFF(zebra_if->speed_update);
 
-		XFREE(MTYPE_TMP, zebra_if);
+		XFREE(MTYPE_ZINFO, zebra_if);
 	}
 
 	return 0;
@@ -202,7 +274,6 @@ struct interface *if_link_per_ns(struct zebra_ns *ns, struct interface *ifp)
 	if (rn->info) {
 		ifp = (struct interface *)rn->info;
 		route_unlock_node(rn); /* get */
-		ifp->node = rn;
 		return ifp;
 	}
 
@@ -246,34 +317,12 @@ struct interface *if_lookup_by_name_per_ns(struct zebra_ns *ns,
 
 	for (rn = route_top(ns->if_table); rn; rn = route_next(rn)) {
 		ifp = (struct interface *)rn->info;
-		if (ifp && strcmp(ifp->name, ifname) == 0)
+		if (ifp && strcmp(ifp->name, ifname) == 0) {
+			route_unlock_node(rn);
 			return (ifp);
+		}
 	}
 
-	return NULL;
-}
-
-/* this function must be used only if the vrf backend
- * is a netns backend
- */
-struct interface *if_lookup_by_name_not_ns(ns_id_t ns_id,
-					   const char *ifname)
-{
-	struct interface *ifp;
-	struct ns *ns;
-
-	RB_FOREACH (ns, ns_head, &ns_tree) {
-		if (ns->ns_id == ns_id)
-			continue;
-		/* if_delete_update has removed interface
-		 * from zns->if_table
-		 * so to look for interface, use the vrf list
-		 */
-		ifp = if_lookup_by_name(ifname, (vrf_id_t)ns->ns_id);
-		if (!ifp)
-			continue;
-		return ifp;
-	}
 	return NULL;
 }
 
@@ -336,9 +385,9 @@ int if_subnet_delete(struct interface *ifp, struct connected *ifc)
 	/* Get address derived subnet node. */
 	rn = route_node_lookup(zebra_if->ipv4_subnets, &cp);
 	if (!(rn && rn->info)) {
-		zlog_warn(
-			"Trying to remove an address from an unknown subnet."
-			" (please report this bug)");
+		flog_warn(EC_ZEBRA_REMOVE_ADDR_UNKNOWN_SUBNET,
+			  "Trying to remove an address from an unknown subnet."
+			  " (please report this bug)");
 		return -1;
 	}
 	route_unlock_node(rn);
@@ -350,7 +399,8 @@ int if_subnet_delete(struct interface *ifp, struct connected *ifc)
 	 * In any case, we shouldn't decrement the lock counter if the address
 	 * is unknown. */
 	if (!listnode_lookup(addr_list, ifc)) {
-		zlog_warn(
+		flog_warn(
+			EC_ZEBRA_REMOVE_UNREGISTERED_ADDR,
 			"Trying to remove an address from a subnet where it is not"
 			" currently registered. (please report this bug)");
 		return -1;
@@ -380,7 +430,7 @@ int if_subnet_delete(struct interface *ifp, struct connected *ifc)
 	}
 
 	/* Otherwise, free list and route node. */
-	list_delete_and_null(&addr_list);
+	list_delete(&addr_list);
 	rn->info = NULL;
 	route_unlock_node(rn);
 
@@ -456,7 +506,7 @@ static void if_addr_wakeup(struct interface *ifp)
 	struct listnode *node, *nnode;
 	struct connected *ifc;
 	struct prefix *p;
-	int ret;
+	enum zebra_dplane_result dplane_res;
 
 	for (ALL_LIST_ELEMENTS(ifp->connected, node, nnode, ifc)) {
 		p = ifc->address;
@@ -494,11 +544,13 @@ static void if_addr_wakeup(struct interface *ifp)
 					if_refresh(ifp);
 				}
 
-				ret = if_set_prefix(ifp, ifc);
-				if (ret < 0) {
-					zlog_warn(
+				dplane_res = dplane_intf_addr_set(ifp, ifc);
+				if (dplane_res ==
+				    ZEBRA_DPLANE_REQUEST_FAILURE) {
+					flog_err_sys(
+						EC_ZEBRA_IFACE_ADDR_ADD_FAILED,
 						"Can't set interface's address: %s",
-						safe_strerror(errno));
+						dplane_res2str(dplane_res));
 					continue;
 				}
 
@@ -516,11 +568,14 @@ static void if_addr_wakeup(struct interface *ifp)
 					if_refresh(ifp);
 				}
 
-				ret = if_prefix_add_ipv6(ifp, ifc);
-				if (ret < 0) {
-					zlog_warn(
+
+				dplane_res = dplane_intf_addr_set(ifp, ifc);
+				if (dplane_res ==
+				    ZEBRA_DPLANE_REQUEST_FAILURE) {
+					flog_err_sys(
+						EC_ZEBRA_IFACE_ADDR_ADD_FAILED,
 						"Can't set interface's address: %s",
-						safe_strerror(errno));
+						dplane_res2str(dplane_res));
 					continue;
 				}
 
@@ -684,13 +739,13 @@ static void if_delete_connected(struct interface *ifp)
 							ZEBRA_IFC_CONFIGURED)) {
 						listnode_delete(ifp->connected,
 								ifc);
-						connected_free(ifc);
+						connected_free(&ifc);
 					} else
 						last = node;
 				}
 
 			/* Free chain list and respective route node. */
-			list_delete_and_null(&addr_list);
+			list_delete(&addr_list);
 			rn->info = NULL;
 			route_unlock_node(rn);
 		} else if (cp.family == AF_INET6) {
@@ -705,7 +760,7 @@ static void if_delete_connected(struct interface *ifp)
 				last = node;
 			else {
 				listnode_delete(ifp->connected, ifc);
-				connected_free(ifc);
+				connected_free(&ifc);
 			}
 		} else {
 			last = node;
@@ -720,7 +775,7 @@ void if_delete_update(struct interface *ifp)
 
 	if (if_is_up(ifp)) {
 		flog_err(
-			LIB_ERR_INTERFACE,
+			EC_LIB_INTERFACE,
 			"interface %s vrf %u index %d is still up while being deleted.",
 			ifp->name, ifp->vrf_id, ifp->ifindex);
 		return;
@@ -753,8 +808,12 @@ void if_delete_update(struct interface *ifp)
 	ifp->node = NULL;
 
 	/* if the ifp is in a vrf, move it to default so vrf can be deleted if
-	 * desired */
-	if (ifp->vrf_id)
+	 * desired. This operation is not done for netns implementation to avoid
+	 * collision with interface with the same name in the default vrf (can
+	 * occur with this implementation whereas it is not possible with
+	 * vrf-lite).
+	 */
+	if (ifp->vrf_id && !vrf_is_backend_netns())
 		if_handle_vrf_change(ifp, VRF_DEFAULT);
 
 	/* Reset some zebra interface params to default values. */
@@ -765,6 +824,13 @@ void if_delete_update(struct interface *ifp)
 		memset(&zif->l2info, 0, sizeof(union zebra_l2if_info));
 		memset(&zif->brslave_info, 0,
 		       sizeof(struct zebra_l2info_brslave));
+	}
+
+	if (!ifp->configured) {
+		if (IS_ZEBRA_DEBUG_KERNEL)
+			zlog_debug("interface %s is being deleted from the system",
+				   ifp->name);
+		if_delete(&ifp);
 	}
 }
 
@@ -798,15 +864,6 @@ void if_handle_vrf_change(struct interface *ifp, vrf_id_t vrf_id)
 	/* Install connected routes (in new VRF). */
 	if (if_is_operative(ifp))
 		if_install_connected(ifp);
-
-	/* Due to connected route change, schedule RIB processing for both old
-	 * and new VRF.
-	 */
-	if (IS_ZEBRA_DEBUG_RIB_DETAILED)
-		zlog_debug("%u: IF %s VRF change, scheduling RIB processing",
-			   ifp->vrf_id, ifp->name);
-	rib_update(old_vrf_id, RIB_UPDATE_IF_CHANGE);
-	rib_update(ifp->vrf_id, RIB_UPDATE_IF_CHANGE);
 }
 
 static void ipv6_ll_address_to_mac(struct in6_addr *address, uint8_t *mac)
@@ -819,31 +876,41 @@ static void ipv6_ll_address_to_mac(struct in6_addr *address, uint8_t *mac)
 	mac[5] = address->s6_addr[15];
 }
 
-void if_nbr_ipv6ll_to_ipv4ll_neigh_update(struct interface *ifp,
-					  struct in6_addr *address, int add)
+void if_nbr_mac_to_ipv4ll_neigh_update(struct interface *ifp,
+				       char mac[6],
+				       struct in6_addr *address,
+				       int add)
 {
 	struct zebra_vrf *zvrf = vrf_info_lookup(ifp->vrf_id);
 	struct zebra_if *zif = ifp->info;
 	char buf[16] = "169.254.0.1";
 	struct in_addr ipv4_ll;
-	char mac[6];
 	ns_id_t ns_id;
 
 	inet_pton(AF_INET, buf, &ipv4_ll);
 
-	ipv6_ll_address_to_mac(address, (uint8_t *)mac);
 	ns_id = zvrf->zns->ns_id;
 
 	/*
-	 * Remove existed arp record for the interface as netlink
-	 * protocol does not have update message types
-	 *
-	 * supported message types are RTM_NEWNEIGH and RTM_DELNEIGH
+	 * Remove and re-add any existing neighbor entry for this address,
+	 * since Netlink doesn't currently offer update message types.
 	 */
 	kernel_neigh_update(0, ifp->ifindex, ipv4_ll.s_addr, mac, 6, ns_id);
 
-	/* Add arp record */
-	kernel_neigh_update(add, ifp->ifindex, ipv4_ll.s_addr, mac, 6, ns_id);
+	/* Add new neighbor entry.
+	 *
+	 * We force installation even if current neighbor entry is the same.
+	 * Since this function is used to refresh our MAC entries after an
+	 * interface flap, if we don't force in our custom entries with their
+	 * state set to PERMANENT or REACHABLE then the kernel will attempt to
+	 * resolve our leftover entries, fail, mark them unreachable and then
+	 * they'll be useless to us.
+	 */
+	if (add)
+		kernel_neigh_update(add, ifp->ifindex, ipv4_ll.s_addr, mac, 6,
+				    ns_id);
+
+	memcpy(&zif->neigh_mac[0], &mac[0], 6);
 
 	/*
 	 * We need to note whether or not we originated a v6
@@ -855,6 +922,16 @@ void if_nbr_ipv6ll_to_ipv4ll_neigh_update(struct interface *ifp,
 	memcpy(&zif->v6_2_v4_ll_addr6, address, sizeof(*address));
 
 	zvrf->neigh_updates++;
+}
+
+void if_nbr_ipv6ll_to_ipv4ll_neigh_update(struct interface *ifp,
+					  struct in6_addr *address, int add)
+{
+
+	char mac[6];
+
+	ipv6_ll_address_to_mac(address, (uint8_t *)mac);
+	if_nbr_mac_to_ipv4ll_neigh_update(ifp, mac, address, add);
 }
 
 static void if_nbr_ipv6ll_to_ipv4ll_neigh_add_all(struct interface *ifp)
@@ -895,6 +972,47 @@ static void if_down_del_nbr_connected(struct interface *ifp)
 	}
 }
 
+void if_nhg_dependents_add(struct interface *ifp, struct nhg_hash_entry *nhe)
+{
+	if (ifp->info) {
+		struct zebra_if *zif = (struct zebra_if *)ifp->info;
+
+		nhg_connected_tree_add_nhe(&zif->nhg_dependents, nhe);
+	}
+}
+
+void if_nhg_dependents_del(struct interface *ifp, struct nhg_hash_entry *nhe)
+{
+	if (ifp->info) {
+		struct zebra_if *zif = (struct zebra_if *)ifp->info;
+
+		nhg_connected_tree_del_nhe(&zif->nhg_dependents, nhe);
+	}
+}
+
+unsigned int if_nhg_dependents_count(const struct interface *ifp)
+{
+	if (ifp->info) {
+		struct zebra_if *zif = (struct zebra_if *)ifp->info;
+
+		return nhg_connected_tree_count(&zif->nhg_dependents);
+	}
+
+	return 0;
+}
+
+
+bool if_nhg_dependents_is_empty(const struct interface *ifp)
+{
+	if (ifp->info) {
+		struct zebra_if *zif = (struct zebra_if *)ifp->info;
+
+		return nhg_connected_tree_is_empty(&zif->nhg_dependents);
+	}
+
+	return false;
+}
+
 /* Interface is up. */
 void if_up(struct interface *ifp)
 {
@@ -908,7 +1026,8 @@ void if_up(struct interface *ifp)
 
 	/* Notify the protocol daemons. */
 	if (ifp->ptm_enable && (ifp->ptm_status == ZEBRA_PTM_STATUS_DOWN)) {
-		zlog_warn("%s: interface %s hasn't passed ptm check\n",
+		flog_warn(EC_ZEBRA_PTM_NOT_READY,
+			  "%s: interface %s hasn't passed ptm check\n",
 			  __func__, ifp->name);
 		return;
 	}
@@ -919,7 +1038,8 @@ void if_up(struct interface *ifp)
 #if defined(HAVE_RTADV)
 	/* Enable fast tx of RA if enabled && RA interval is not in msecs */
 	if (zif->rtadv.AdvSendAdvertisements
-	    && (zif->rtadv.MaxRtrAdvInterval >= 1000)) {
+	    && (zif->rtadv.MaxRtrAdvInterval >= 1000)
+	    && zif->rtadv.UseFastRexmit) {
 		zif->rtadv.inFastRexmit = 1;
 		zif->rtadv.NumFastReXmitsRemain = RTADV_NUM_FAST_REXMITS;
 	}
@@ -927,11 +1047,6 @@ void if_up(struct interface *ifp)
 
 	/* Install connected routes to the kernel. */
 	if_install_connected(ifp);
-
-	if (IS_ZEBRA_DEBUG_RIB_DETAILED)
-		zlog_debug("%u: IF %s up, scheduling RIB processing",
-			   ifp->vrf_id, ifp->name);
-	rib_update(ifp->vrf_id, RIB_UPDATE_IF_CHANGE);
 
 	/* Handle interface up for specific types for EVPN. Non-VxLAN interfaces
 	 * are checked to see if (remote) neighbor entries need to be installed
@@ -947,7 +1062,9 @@ void if_up(struct interface *ifp)
 						    zif->link_ifindex);
 		if (link_if)
 			zebra_vxlan_svi_up(ifp, link_if);
-	}
+	} else if (IS_ZEBRA_IF_MACVLAN(ifp))
+		zebra_vxlan_macvlan_up(ifp);
+
 }
 
 /* Interface goes down.  We have to manage different behavior of based
@@ -961,6 +1078,8 @@ void if_down(struct interface *ifp)
 	zif = ifp->info;
 	zif->down_count++;
 	quagga_timestamp(2, zif->down_last, sizeof(zif->down_last));
+
+	if_down_nhg_dependents(ifp);
 
 	/* Handle interface down for specific types for EVPN. Non-VxLAN
 	 * interfaces
@@ -977,7 +1096,8 @@ void if_down(struct interface *ifp)
 						    zif->link_ifindex);
 		if (link_if)
 			zebra_vxlan_svi_down(ifp, link_if);
-	}
+	} else if (IS_ZEBRA_IF_MACVLAN(ifp))
+		zebra_vxlan_macvlan_down(ifp);
 
 
 	/* Notify to the protocol daemons. */
@@ -985,11 +1105,6 @@ void if_down(struct interface *ifp)
 
 	/* Uninstall connected routes from the kernel. */
 	if_uninstall_connected(ifp);
-
-	if (IS_ZEBRA_DEBUG_RIB_DETAILED)
-		zlog_debug("%u: IF %s down, scheduling RIB processing",
-			   ifp->vrf_id, ifp->name);
-	rib_update(ifp->vrf_id, RIB_UPDATE_IF_CHANGE);
 
 	if_nbr_ipv6ll_to_ipv4ll_neigh_del_all(ifp);
 
@@ -1002,16 +1117,59 @@ void if_refresh(struct interface *ifp)
 	if_get_flags(ifp);
 }
 
-void zebra_if_update_link(struct interface *ifp, ifindex_t link_ifindex)
+void zebra_if_update_link(struct interface *ifp, ifindex_t link_ifindex,
+			  ns_id_t ns_id)
 {
 	struct zebra_if *zif;
 
+	if (IS_ZEBRA_IF_VETH(ifp))
+		return;
 	zif = (struct zebra_if *)ifp->info;
 	zif->link_ifindex = link_ifindex;
-	zif->link = if_lookup_by_index_per_ns(zebra_ns_lookup(NS_DEFAULT),
+	zif->link = if_lookup_by_index_per_ns(zebra_ns_lookup(ns_id),
 					      link_ifindex);
 }
 
+/*
+ * during initial link dump kernel does not order lower devices before
+ * upper devices so we need to fixup link dependencies at the end of dump
+ */
+void zebra_if_update_all_links(void)
+{
+	struct route_node *rn;
+	struct interface *ifp;
+	struct zebra_if *zif;
+	struct zebra_ns *ns;
+
+	if (IS_ZEBRA_DEBUG_KERNEL)
+		zlog_info("fixup link dependencies");
+
+	ns = zebra_ns_lookup(NS_DEFAULT);
+	for (rn = route_top(ns->if_table); rn; rn = route_next(rn)) {
+		ifp = (struct interface *)rn->info;
+		if (!ifp)
+			continue;
+		zif = ifp->info;
+		if ((zif->link_ifindex != IFINDEX_INTERNAL) && !zif->link) {
+			zif->link = if_lookup_by_index_per_ns(ns,
+							 zif->link_ifindex);
+			if (IS_ZEBRA_DEBUG_KERNEL)
+				zlog_debug("interface %s/%d's lower fixup to %s/%d",
+						ifp->name, ifp->ifindex,
+						zif->link?zif->link->name:"unk",
+						zif->link_ifindex);
+		}
+	}
+}
+
+void zebra_if_set_protodown(struct interface *ifp, bool down)
+{
+#ifdef HAVE_NETLINK
+	netlink_protodown(ifp, down);
+#else
+	zlog_warn("Protodown is not supported on this platform");
+#endif
+}
 
 /* Output prefix string to vty. */
 static int prefix_vty_out(struct vty *vty, struct prefix *p)
@@ -1035,12 +1193,10 @@ static void connected_dump_vty(struct vty *vty, struct connected *connected)
 	vty_out(vty, "/%d", p->prefixlen);
 
 	/* If there is destination address, print it. */
-	if (connected->destination) {
-		vty_out(vty,
-			(CONNECTED_PEER(connected) ? " peer " : " broadcast "));
+	if (CONNECTED_PEER(connected) && connected->destination) {
+		vty_out(vty, " peer ");
 		prefix_vty_out(vty, connected->destination);
-		if (CONNECTED_PEER(connected))
-			vty_out(vty, "/%d", connected->destination->prefixlen);
+		vty_out(vty, "/%d", connected->destination->prefixlen);
 	}
 
 	if (CHECK_FLAG(connected->flags, ZEBRA_IFA_SECONDARY))
@@ -1093,10 +1249,123 @@ static const char *zebra_ziftype_2str(zebra_iftype_t zif_type)
 		return "VRF";
 		break;
 
+	case ZEBRA_IF_VETH:
+		return "VETH";
+		break;
+
+	case ZEBRA_IF_BOND:
+		return "bond";
+
+	case ZEBRA_IF_BOND_SLAVE:
+		return "bond_slave";
+
+	case ZEBRA_IF_MACVLAN:
+		return "macvlan";
+
 	default:
 		return "Unknown";
 		break;
 	}
+}
+
+/* Interface's brief information print out to vty interface. */
+static void ifs_dump_brief_vty(struct vty *vty, struct vrf *vrf)
+{
+	struct connected *connected;
+	struct listnode *node;
+	struct route_node *rn;
+	struct zebra_if *zebra_if;
+	struct prefix *p;
+	struct interface *ifp;
+	bool print_header = true;
+
+	FOR_ALL_INTERFACES (vrf, ifp) {
+		char global_pfx[PREFIX_STRLEN] = {0};
+		char buf[PREFIX_STRLEN] = {0};
+		bool first_pfx_printed = false;
+
+		if (print_header) {
+			vty_out(vty, "%-16s%-8s%-16s%s\n", "Interface",
+				"Status", "VRF", "Addresses");
+			vty_out(vty, "%-16s%-8s%-16s%s\n", "---------",
+				"------", "---", "---------");
+			print_header = false; /* We have at least 1 iface */
+		}
+		zebra_if = ifp->info;
+
+		vty_out(vty, "%-16s", ifp->name);
+
+		if (if_is_up(ifp))
+			vty_out(vty, "%-8s", "up");
+		else
+			vty_out(vty, "%-8s", "down");
+
+		vty_out(vty, "%-16s", vrf->name);
+
+		for (rn = route_top(zebra_if->ipv4_subnets); rn;
+		     rn = route_next(rn)) {
+			if (!rn->info)
+				continue;
+			uint32_t list_size = listcount((struct list *)rn->info);
+
+			for (ALL_LIST_ELEMENTS_RO((struct list *)rn->info, node,
+						  connected)) {
+				if (!CHECK_FLAG(connected->flags,
+						ZEBRA_IFA_SECONDARY)) {
+					p = connected->address;
+					prefix2str(p, buf, sizeof(buf));
+					if (first_pfx_printed) {
+						/* padding to prepare row only for ip addr */
+						vty_out(vty, "%-40s", "");
+						if (list_size > 1)
+							vty_out(vty, "+ ");
+						vty_out(vty, "%s\n", buf);
+					} else {
+						if (list_size > 1)
+							vty_out(vty, "+ ");
+						vty_out(vty, "%s\n", buf);
+					}
+					first_pfx_printed = true;
+					break;
+				}
+			}
+		}
+
+		uint32_t v6_list_size = 0;
+		for (ALL_LIST_ELEMENTS_RO(ifp->connected, node, connected)) {
+			if (CHECK_FLAG(connected->conf, ZEBRA_IFC_REAL)
+				&& (connected->address->family == AF_INET6))
+				v6_list_size++;
+		}
+		for (ALL_LIST_ELEMENTS_RO(ifp->connected, node, connected)) {
+			if (CHECK_FLAG(connected->conf, ZEBRA_IFC_REAL)
+			    && !CHECK_FLAG(connected->flags,
+					   ZEBRA_IFA_SECONDARY)
+			    && (connected->address->family == AF_INET6)) {
+				p = connected->address;
+				/* Don't print link local pfx */
+				if (!IN6_IS_ADDR_LINKLOCAL(&p->u.prefix6)) {
+					prefix2str(p, global_pfx, PREFIX_STRLEN);
+					if (first_pfx_printed) {
+						/* padding to prepare row only for ip addr */
+						vty_out(vty, "%-40s", "");
+						if (v6_list_size > 1)
+							vty_out(vty, "+ ");
+						vty_out(vty, "%s\n", global_pfx);
+					} else {
+						if (v6_list_size > 1)
+							vty_out(vty, "+ ");
+						vty_out(vty, "%s\n", global_pfx);
+					}
+					first_pfx_printed = true;
+					break;
+				}
+			}
+		}
+		if (!first_pfx_printed)
+			vty_out(vty, "\n");
+	}
+	vty_out(vty, "\n");
 }
 
 /* Interface's information print out to vty interface. */
@@ -1139,6 +1408,9 @@ static void if_dump_vty(struct vty *vty, struct interface *ifp)
 
 	if (ifp->desc)
 		vty_out(vty, "  Description: %s\n", ifp->desc);
+	if (zebra_if->desc)
+		vty_out(vty, "  OS Description: %s\n", zebra_if->desc);
+
 	if (ifp->ifindex == IFINDEX_INTERNAL) {
 		vty_out(vty, "  pseudo interface\n");
 		return;
@@ -1208,8 +1480,11 @@ static void if_dump_vty(struct vty *vty, struct interface *ifp)
 			vty_out(vty, " VTEP IP: %s",
 				inet_ntoa(vxlan_info->vtep_ip));
 		if (vxlan_info->access_vlan)
-			vty_out(vty, " Access VLAN Id %u",
+			vty_out(vty, " Access VLAN Id %u\n",
 				vxlan_info->access_vlan);
+		if (vxlan_info->mcast_grp.s_addr != INADDR_ANY)
+			vty_out(vty, "  Mcast Group %s",
+					inet_ntoa(vxlan_info->mcast_grp));
 		vty_out(vty, "\n");
 	}
 
@@ -1217,17 +1492,35 @@ static void if_dump_vty(struct vty *vty, struct interface *ifp)
 		struct zebra_l2info_brslave *br_slave;
 
 		br_slave = &zebra_if->brslave_info;
-		if (br_slave->bridge_ifindex != IFINDEX_INTERNAL)
-			vty_out(vty, "  Master (bridge) ifindex %u\n",
-				br_slave->bridge_ifindex);
+		if (br_slave->bridge_ifindex != IFINDEX_INTERNAL) {
+			if (br_slave->br_if)
+				vty_out(vty, "  Master interface: %s\n",
+					br_slave->br_if->name);
+			else
+				vty_out(vty, "  Master ifindex: %u\n",
+					br_slave->bridge_ifindex);
+		}
+	}
+
+	if (IS_ZEBRA_IF_BOND_SLAVE(ifp)) {
+		struct zebra_l2info_bondslave *bond_slave;
+
+		bond_slave = &zebra_if->bondslave_info;
+		if (bond_slave->bond_ifindex != IFINDEX_INTERNAL) {
+			if (bond_slave->bond_if)
+				vty_out(vty, "  Master interface: %s\n",
+					bond_slave->bond_if->name);
+			else
+				vty_out(vty, "  Master ifindex: %u\n",
+					bond_slave->bond_ifindex);
+		}
 	}
 
 	if (zebra_if->link_ifindex != IFINDEX_INTERNAL) {
-		vty_out(vty, "  Link ifindex %u", zebra_if->link_ifindex);
 		if (zebra_if->link)
-			vty_out(vty, "(%s)\n", zebra_if->link->name);
+			vty_out(vty, "  Parent interface: %s\n", zebra_if->link->name);
 		else
-			vty_out(vty, "(Unknown)\n");
+			vty_out(vty, "  Parent ifindex: %d\n", zebra_if->link_ifindex);
 	}
 
 	if (HAS_LINK_PARAMS(ifp)) {
@@ -1329,7 +1622,6 @@ static void if_dump_vty(struct vty *vty, struct interface *ifp)
 #endif /* HAVE_PROC_NET_DEV */
 
 #ifdef HAVE_NET_RT_IFLIST
-#if defined(__bsdi__) || defined(__NetBSD__)
 	/* Statistics print out using sysctl (). */
 	vty_out(vty,
 		"    input packets %llu, bytes %llu, dropped %llu,"
@@ -1354,25 +1646,6 @@ static void if_dump_vty(struct vty *vty, struct interface *ifp)
 
 	vty_out(vty, "    collisions %llu\n",
 		(unsigned long long)ifp->stats.ifi_collisions);
-#else
-	/* Statistics print out using sysctl (). */
-	vty_out(vty,
-		"    input packets %lu, bytes %lu, dropped %lu,"
-		" multicast packets %lu\n",
-		ifp->stats.ifi_ipackets, ifp->stats.ifi_ibytes,
-		ifp->stats.ifi_iqdrops, ifp->stats.ifi_imcasts);
-
-	vty_out(vty, "    input errors %lu\n", ifp->stats.ifi_ierrors);
-
-	vty_out(vty,
-		"    output packets %lu, bytes %lu, multicast packets %lu\n",
-		ifp->stats.ifi_opackets, ifp->stats.ifi_obytes,
-		ifp->stats.ifi_omcasts);
-
-	vty_out(vty, "    output errors %lu\n", ifp->stats.ifi_oerrors);
-
-	vty_out(vty, "    collisions %lu\n", ifp->stats.ifi_collisions);
-#endif /* __bsdi__ || __NetBSD__ */
 #endif /* HAVE_NET_RT_IFLIST */
 }
 
@@ -1390,13 +1663,16 @@ static void interface_update_stats(void)
 
 struct cmd_node interface_node = {INTERFACE_NODE, "%s(config-if)# ", 1};
 
+#ifndef VTYSH_EXTRACT_PL
+#include "zebra/interface_clippy.c"
+#endif
 /* Show all interfaces to vty. */
-DEFUN (show_interface,
-       show_interface_cmd,
-       "show interface [vrf NAME]",
-       SHOW_STR
-       "Interface status and configuration\n"
-       VRF_CMD_HELP_STR)
+DEFPY(show_interface, show_interface_cmd,
+      "show interface [vrf NAME$vrf_name] [brief$brief]",
+      SHOW_STR
+      "Interface status and configuration\n"
+      VRF_CMD_HELP_STR
+      "Interface status and configuration summary\n")
 {
 	struct vrf *vrf;
 	struct interface *ifp;
@@ -1404,25 +1680,31 @@ DEFUN (show_interface,
 
 	interface_update_stats();
 
-	if (argc > 2)
-		VRF_GET_ID(vrf_id, argv[3]->arg, false);
+	if (vrf_name)
+		VRF_GET_ID(vrf_id, vrf_name, false);
 
 	/* All interface print. */
 	vrf = vrf_lookup_by_id(vrf_id);
-	FOR_ALL_INTERFACES (vrf, ifp)
-		if_dump_vty(vty, ifp);
+	if (brief) {
+		ifs_dump_brief_vty(vty, vrf);
+	} else {
+		FOR_ALL_INTERFACES (vrf, ifp) {
+			if_dump_vty(vty, ifp);
+		}
+	}
 
 	return CMD_SUCCESS;
 }
 
 
 /* Show all interfaces to vty. */
-DEFUN (show_interface_vrf_all,
+DEFPY (show_interface_vrf_all,
        show_interface_vrf_all_cmd,
-       "show interface vrf all",
+       "show interface vrf all [brief$brief]",
        SHOW_STR
        "Interface status and configuration\n"
-       VRF_ALL_CMD_HELP_STR)
+       VRF_ALL_CMD_HELP_STR
+       "Interface status and configuration summary\n")
 {
 	struct vrf *vrf;
 	struct interface *ifp;
@@ -1430,9 +1712,14 @@ DEFUN (show_interface_vrf_all,
 	interface_update_stats();
 
 	/* All interface print. */
-	RB_FOREACH (vrf, vrf_name_head, &vrfs_by_name)
-		FOR_ALL_INTERFACES (vrf, ifp)
-			if_dump_vty(vty, ifp);
+	RB_FOREACH (vrf, vrf_name_head, &vrfs_by_name) {
+		if (brief) {
+			ifs_dump_brief_vty(vty, vrf);
+		} else {
+			FOR_ALL_INTERFACES (vrf, ifp)
+				if_dump_vty(vty, ifp);
+		}
+	}
 
 	return CMD_SUCCESS;
 }
@@ -1512,6 +1799,10 @@ static void if_show_description(struct vty *vty, vrf_id_t vrf_id)
 	vty_out(vty, "Interface       Status  Protocol  Description\n");
 	FOR_ALL_INTERFACES (vrf, ifp) {
 		int len;
+		struct zebra_if *zif;
+		bool intf_desc;
+
+		intf_desc = false;
 
 		len = vty_out(vty, "%s", ifp->name);
 		vty_out(vty, "%*s", (16 - len), " ");
@@ -1531,8 +1822,19 @@ static void if_show_description(struct vty *vty, vrf_id_t vrf_id)
 			vty_out(vty, "down    down      ");
 		}
 
-		if (ifp->desc)
+		if (ifp->desc) {
+			intf_desc = true;
 			vty_out(vty, "%s", ifp->desc);
+		}
+		zif = ifp->info;
+		if (zif && zif->desc) {
+			vty_out(vty, "%s%s",
+				intf_desc
+					? "\n                                  "
+					: "",
+				zif->desc);
+		}
+
 		vty_out(vty, "\n");
 	}
 }
@@ -1675,6 +1977,8 @@ DEFUN (shutdown_if,
 	struct zebra_if *if_data;
 
 	if (ifp->ifindex != IFINDEX_INTERNAL) {
+		/* send RA lifetime of 0 before stopping. rfc4861/6.2.5 */
+		rtadv_stop_ra(ifp);
 		ret = if_unset_flags(ifp, IFF_UP);
 		if (ret < 0) {
 			vty_out(vty, "Can't shutdown interface\n");
@@ -1844,13 +2148,13 @@ DEFUN (link_params_enable,
 	/* This command could be issue at startup, when activate MPLS TE */
 	/* on a new interface or after a ON / OFF / ON toggle */
 	/* In all case, TE parameters are reset to their default factory */
-	if (IS_ZEBRA_DEBUG_EVENT)
+	if (IS_ZEBRA_DEBUG_EVENT || IS_ZEBRA_DEBUG_MPLS)
 		zlog_debug(
 			"Link-params: enable TE link parameters on interface %s",
 			ifp->name);
 
 	if (!if_link_params_get(ifp)) {
-		if (IS_ZEBRA_DEBUG_EVENT)
+		if (IS_ZEBRA_DEBUG_EVENT || IS_ZEBRA_DEBUG_MPLS)
 			zlog_debug(
 				"Link-params: failed to init TE link parameters  %s",
 				ifp->name);
@@ -1873,8 +2177,9 @@ DEFUN (no_link_params_enable,
 {
 	VTY_DECLVAR_CONTEXT(interface, ifp);
 
-	zlog_debug("MPLS-TE: disable TE link parameters on interface %s",
-		   ifp->name);
+	if (IS_ZEBRA_DEBUG_EVENT || IS_ZEBRA_DEBUG_MPLS)
+		zlog_debug("MPLS-TE: disable TE link parameters on interface %s",
+			   ifp->name);
 
 	if_link_params_free(ifp);
 
@@ -2448,6 +2753,7 @@ static int ip_address_install(struct vty *vty, struct interface *ifp,
 	struct connected *ifc;
 	struct prefix_ipv4 *p;
 	int ret;
+	enum zebra_dplane_result dplane_res;
 
 	if_data = ifp->info;
 
@@ -2491,12 +2797,6 @@ static int ip_address_install(struct vty *vty, struct interface *ifp,
 			p = prefix_ipv4_new();
 			*p = pp;
 			ifc->destination = (struct prefix *)p;
-		} else if (p->prefixlen <= IPV4_MAX_PREFIXLEN - 2) {
-			p = prefix_ipv4_new();
-			*p = lp;
-			p->prefix.s_addr = ipv4_broadcast_addr(p->prefix.s_addr,
-							       p->prefixlen);
-			ifc->destination = (struct prefix *)p;
 		}
 
 		/* Label. */
@@ -2521,10 +2821,10 @@ static int ip_address_install(struct vty *vty, struct interface *ifp,
 			if_refresh(ifp);
 		}
 
-		ret = if_set_prefix(ifp, ifc);
-		if (ret < 0) {
+		dplane_res = dplane_intf_addr_set(ifp, ifc);
+		if (dplane_res == ZEBRA_DPLANE_REQUEST_FAILURE) {
 			vty_out(vty, "%% Can't set interface IP address: %s.\n",
-				safe_strerror(errno));
+				dplane_res2str(dplane_res));
 			return CMD_WARNING_CONFIG_FAILED;
 		}
 
@@ -2545,6 +2845,7 @@ static int ip_address_uninstall(struct vty *vty, struct interface *ifp,
 	struct prefix_ipv4 lp, pp;
 	struct connected *ifc;
 	int ret;
+	enum zebra_dplane_result dplane_res;
 
 	/* Convert to prefix structure. */
 	ret = str2prefix_ipv4(addr_str, &lp);
@@ -2584,15 +2885,15 @@ static int ip_address_uninstall(struct vty *vty, struct interface *ifp,
 	if (!CHECK_FLAG(ifc->conf, ZEBRA_IFC_QUEUED)
 	    || !CHECK_FLAG(ifp->status, ZEBRA_INTERFACE_ACTIVE)) {
 		listnode_delete(ifp->connected, ifc);
-		connected_free(ifc);
+		connected_free(&ifc);
 		return CMD_WARNING_CONFIG_FAILED;
 	}
 
 	/* This is real route. */
-	ret = if_unset_prefix(ifp, ifc);
-	if (ret < 0) {
+	dplane_res = dplane_intf_addr_unset(ifp, ifc);
+	if (dplane_res == ZEBRA_DPLANE_REQUEST_FAILURE) {
 		vty_out(vty, "%% Can't unset interface IP address: %s.\n",
-			safe_strerror(errno));
+			dplane_res2str(dplane_res));
 		return CMD_WARNING_CONFIG_FAILED;
 	}
 	UNSET_FLAG(ifc->conf, ZEBRA_IFC_QUEUED);
@@ -2692,13 +2993,14 @@ DEFUN (no_ip_address_label,
 
 static int ipv6_address_install(struct vty *vty, struct interface *ifp,
 				const char *addr_str, const char *peer_str,
-				const char *label, int secondary)
+				const char *label)
 {
 	struct zebra_if *if_data;
 	struct prefix_ipv6 cp;
 	struct connected *ifc;
 	struct prefix_ipv6 *p;
 	int ret;
+	enum zebra_dplane_result dplane_res;
 
 	if_data = ifp->info;
 
@@ -2723,10 +3025,6 @@ static int ipv6_address_install(struct vty *vty, struct interface *ifp,
 		*p = cp;
 		ifc->address = (struct prefix *)p;
 
-		/* Secondary. */
-		if (secondary)
-			SET_FLAG(ifc->flags, ZEBRA_IFA_SECONDARY);
-
 		/* Label. */
 		if (label)
 			ifc->label = XSTRDUP(MTYPE_CONNECTED_LABEL, label);
@@ -2749,11 +3047,10 @@ static int ipv6_address_install(struct vty *vty, struct interface *ifp,
 			if_refresh(ifp);
 		}
 
-		ret = if_prefix_add_ipv6(ifp, ifc);
-
-		if (ret < 0) {
+		dplane_res = dplane_intf_addr_set(ifp, ifc);
+		if (dplane_res == ZEBRA_DPLANE_REQUEST_FAILURE) {
 			vty_out(vty, "%% Can't set interface IP address: %s.\n",
-				safe_strerror(errno));
+				dplane_res2str(dplane_res));
 			return CMD_WARNING_CONFIG_FAILED;
 		}
 
@@ -2782,11 +3079,12 @@ int ipv6_address_configured(struct interface *ifp)
 
 static int ipv6_address_uninstall(struct vty *vty, struct interface *ifp,
 				  const char *addr_str, const char *peer_str,
-				  const char *label, int secondry)
+				  const char *label)
 {
 	struct prefix_ipv6 cp;
 	struct connected *ifc;
 	int ret;
+	enum zebra_dplane_result dplane_res;
 
 	/* Convert to prefix structure. */
 	ret = str2prefix_ipv6(addr_str, &cp);
@@ -2812,15 +3110,15 @@ static int ipv6_address_uninstall(struct vty *vty, struct interface *ifp,
 	if (!CHECK_FLAG(ifc->conf, ZEBRA_IFC_QUEUED)
 	    || !CHECK_FLAG(ifp->status, ZEBRA_INTERFACE_ACTIVE)) {
 		listnode_delete(ifp->connected, ifc);
-		connected_free(ifc);
+		connected_free(&ifc);
 		return CMD_WARNING_CONFIG_FAILED;
 	}
 
 	/* This is real route. */
-	ret = if_prefix_delete_ipv6(ifp, ifc);
-	if (ret < 0) {
+	dplane_res = dplane_intf_addr_unset(ifp, ifc);
+	if (dplane_res == ZEBRA_DPLANE_REQUEST_FAILURE) {
 		vty_out(vty, "%% Can't unset interface IP address: %s.\n",
-			safe_strerror(errno));
+			dplane_res2str(dplane_res));
 		return CMD_WARNING_CONFIG_FAILED;
 	}
 
@@ -2840,7 +3138,7 @@ DEFUN (ipv6_address,
 	int idx_ipv6_prefixlen = 2;
 	VTY_DECLVAR_CONTEXT(interface, ifp);
 	return ipv6_address_install(vty, ifp, argv[idx_ipv6_prefixlen]->arg,
-				    NULL, NULL, 0);
+				    NULL, NULL);
 }
 
 DEFUN (no_ipv6_address,
@@ -2854,7 +3152,7 @@ DEFUN (no_ipv6_address,
 	int idx_ipv6_prefixlen = 3;
 	VTY_DECLVAR_CONTEXT(interface, ifp);
 	return ipv6_address_uninstall(vty, ifp, argv[idx_ipv6_prefixlen]->arg,
-				      NULL, NULL, 0);
+				      NULL, NULL);
 }
 
 static int link_params_config_write(struct vty *vty, struct interface *ifp)
@@ -2910,13 +3208,13 @@ static int link_params_config_write(struct vty *vty, struct interface *ifp)
 
 static int if_config_write(struct vty *vty)
 {
-	struct vrf *vrf;
+	struct vrf *vrf0;
 	struct interface *ifp;
 
 	zebra_ptm_write(vty);
 
-	RB_FOREACH (vrf, vrf_name_head, &vrfs_by_name)
-		FOR_ALL_INTERFACES (vrf, ifp) {
+	RB_FOREACH (vrf0, vrf_name_head, &vrfs_by_name)
+		FOR_ALL_INTERFACES (vrf0, ifp) {
 			struct zebra_if *if_data;
 			struct listnode *addrnode;
 			struct connected *ifc;
@@ -3012,6 +3310,11 @@ void zebra_if_init(void)
 	install_node(&interface_node, if_config_write);
 	install_node(&link_params_node, NULL);
 	if_cmd_init();
+	/*
+	 * This is *intentionally* setting this to NULL, signaling
+	 * that interface creation for zebra acts differently
+	 */
+	if_zapi_callbacks(NULL, NULL, NULL, NULL);
 
 	install_element(VIEW_NODE, &show_interface_cmd);
 	install_element(VIEW_NODE, &show_interface_vrf_all_cmd);
