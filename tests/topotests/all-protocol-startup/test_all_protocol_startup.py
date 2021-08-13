@@ -120,6 +120,10 @@ def setup_module(module):
         if net['r%s' % i].daemon_available('ldpd'):
             # Only test LDPd if it's installed and Kernel >= 4.5
             net['r%s' % i].loadConf('ldpd', '%s/r%s/ldpd.conf' % (thisDir, i))
+        net['r%s' % i].loadConf('sharpd')
+        net['r%s' % i].loadConf('nhrpd', '%s/r%s/nhrpd.conf' % (thisDir, i))
+        net['r%s' % i].loadConf('babeld', '%s/r%s/babeld.conf' % (thisDir, i))
+        net['r%s' % i].loadConf('pbrd', '%s/r%s/pbrd.conf' % (thisDir, i))
         net['r%s' % i].startRouter()
 
     # For debugging after starting Quagga/FRR daemons, uncomment the next line
@@ -259,6 +263,22 @@ def test_error_messages_daemons():
             if log:
                 error_logs += "r%s LDPd StdErr Output:\n" % i
                 error_logs += log
+
+        log = net['r1'].getStdErr('nhrpd')
+        if log:
+            error_logs += "r%s NHRPd StdErr Output:\n" % i
+            error_logs += log
+
+        log = net['r1'].getStdErr('babeld')
+        if log:
+            error_logs += "r%s BABELd StdErr Output:\n" % i
+            error_logs += log
+
+        log = net['r1'].getStdErr('pbrd')
+        if log:
+            error_logs += "r%s PBRd StdErr Output:\n" % i
+            error_logs += log
+
         log = net['r%s' % i].getStdErr('zebra')
         if log:
             error_logs += "r%s Zebra StdErr Output:\n"
@@ -346,6 +366,117 @@ def test_converge_protocols():
     # For debugging after starting FRR/Quagga daemons, uncomment the next line
     ## CLI(net)
 
+def route_get_nhg_id(route_str):
+    output = net["r1"].cmd('vtysh -c "show ip route %s nexthop-group"' % route_str)
+    match = re.search(r"Nexthop Group ID: (\d+)", output)
+    assert match is not None, "Nexthop Group ID not found for sharpd route %s" % route_str
+
+    nhg_id = int(match.group(1))
+    return nhg_id
+
+def verify_nexthop_group(nhg_id, recursive=False):
+    # Verify NHG is valid/installed
+    output = net["r1"].cmd('vtysh -c "show nexthop-group rib %d"' % nhg_id)
+
+    match = re.search(r"Valid", output)
+    assert match is not None, "Nexthop Group ID=%d not marked Valid" % nhg_id
+
+    # If recursive, we need to look at its resolved group
+    if recursive:
+        match = re.search(r"Depends: \((\d+)\)", output)
+        resolved_id = int(match.group(1))
+        verify_nexthop_group(resolved_id, False)
+    else:
+        match = re.search(r"Installed", output)
+        assert match is not None, "Nexthop Group ID=%d not marked Installed" % nhg_id
+
+def verify_route_nexthop_group(route_str, recursive=False):
+    # Verify route and that zebra created NHGs for and they are valid/installed
+    nhg_id = route_get_nhg_id(route_str)
+    verify_nexthop_group(nhg_id, recursive)
+
+def test_nexthop_groups():
+    global fatal_error
+    global net
+
+    # Skip if previous fatal error condition is raised
+    if (fatal_error != ""):
+        pytest.skip(fatal_error)
+
+    print("\n\n** Verifying Nexthop Groups")
+    print("******************************************\n")
+
+    ### Nexthop Group Tests
+
+    ## Basic test
+
+    # Create a lib nexthop-group
+    net["r1"].cmd('vtysh -c "c t" -c "nexthop-group basic" -c "nexthop 1.1.1.1" -c "nexthop 1.1.1.2"')
+
+    # Create with sharpd using nexthop-group
+    net["r1"].cmd('vtysh -c "sharp install routes 2.2.2.1 nexthop-group basic 1"')
+
+    verify_route_nexthop_group("2.2.2.1/32")
+
+    ## Connected
+
+    net["r1"].cmd('vtysh -c "c t" -c "nexthop-group connected" -c "nexthop r1-eth1" -c "nexthop r1-eth2"')
+
+    net["r1"].cmd('vtysh -c "sharp install routes 2.2.2.2 nexthop-group connected 1"')
+
+    verify_route_nexthop_group("2.2.2.2/32")
+
+    ## Recursive
+
+    net["r1"].cmd('vtysh -c "c t" -c "nexthop-group basic-recursive" -c "nexthop 2.2.2.1"')
+
+    net["r1"].cmd('vtysh -c "sharp install routes 3.3.3.1 nexthop-group basic-recursive 1"')
+
+    verify_route_nexthop_group("3.3.3.1/32", True)
+
+    ## Duplicate
+
+    net["r1"].cmd('vtysh -c "c t" -c "nexthop-group duplicate" -c "nexthop 2.2.2.1" -c "nexthop 1.1.1.1"')
+
+    net["r1"].cmd('vtysh -c "sharp install routes 3.3.3.2 nexthop-group duplicate 1"')
+
+    verify_route_nexthop_group("3.3.3.2/32")
+
+    ## Two 4-Way ECMP
+
+    net["r1"].cmd('vtysh -c "c t" -c "nexthop-group fourA" -c "nexthop 1.1.1.1" -c "nexthop 1.1.1.2" \
+            -c "nexthop 1.1.1.3" -c "nexthop 1.1.1.4"')
+
+    net["r1"].cmd('vtysh -c "sharp install routes 4.4.4.1 nexthop-group fourA 1"')
+
+    verify_route_nexthop_group("4.4.4.1/32")
+
+    net["r1"].cmd('vtysh -c "c t" -c "nexthop-group fourB" -c "nexthop 1.1.1.5" -c "nexthop 1.1.1.6" \
+            -c "nexthop 1.1.1.7" -c "nexthop 1.1.1.8"')
+
+    net["r1"].cmd('vtysh -c "sharp install routes 4.4.4.2 nexthop-group fourB 1"')
+
+    verify_route_nexthop_group("4.4.4.2/32")
+
+    ## Recursive to 8-Way ECMP
+
+    net["r1"].cmd('vtysh -c "c t" -c "nexthop-group eight-recursive" -c "nexthop 4.4.4.1" -c "nexthop 4.4.4.2"')
+
+    net["r1"].cmd('vtysh -c "sharp install routes 5.5.5.1 nexthop-group eight-recursive 1"')
+
+    verify_route_nexthop_group("5.5.5.1/32")
+
+    ##CLI(net)
+
+    ## Remove all NHG routes
+
+    net["r1"].cmd('vtysh -c "sharp remove routes 2.2.2.1 1"')
+    net["r1"].cmd('vtysh -c "sharp remove routes 2.2.2.2 1"')
+    net["r1"].cmd('vtysh -c "sharp remove routes 3.3.3.1 1"')
+    net["r1"].cmd('vtysh -c "sharp remove routes 3.3.3.2 1"')
+    net["r1"].cmd('vtysh -c "sharp remove routes 4.4.4.1 1"')
+    net["r1"].cmd('vtysh -c "sharp remove routes 4.4.4.2 1"')
+    net["r1"].cmd('vtysh -c "sharp remove routes 5.5.5.1 1"')
 
 def test_rip_status():
     global fatal_error
@@ -484,6 +615,7 @@ def test_ospfv2_interfaces():
 
             # Drop time in next due 
             actual = re.sub(r"Hello due in [0-9\.]+s", "Hello due in XX.XXXs", actual)
+            actual = re.sub(r"Hello due in [0-9\.]+ usecs", "Hello due in XX.XXXs", actual)
             # Fix 'MTU mismatch detection: enabled' vs 'MTU mismatch detection:enabled' - accept both
             actual = re.sub(r"MTU mismatch detection:([a-z]+.*)", r"MTU mismatch detection: \1", actual)
             # Fix newlines (make them all the same)
@@ -546,7 +678,8 @@ def test_isis_interfaces():
             # Mask out SNPA mac address portion. They are random...
             actual = re.sub(r"SNPA: [0-9a-f\.]+", "SNPA: XXXX.XXXX.XXXX", actual)
             # Mask out Circuit ID number
-            actual = re.sub(r"Circuit Id: 0x[0-9]+", "Circuit Id: 0xXX", actual)
+            actual = re.sub(r"Circuit Id: 0x[0-9a-f]+", "Circuit Id: 0xXX",
+                            actual)
             # Fix newlines (make them all the same)
             actual = ('\n'.join(actual.splitlines()) + '\n').splitlines(1)
 
@@ -860,7 +993,114 @@ def test_bgp_ipv6():
     # For debugging after starting FRR/Quagga daemons, uncomment the next line
     # CLI(net)
 
+def test_route_map():
+    global fatal_error
+    global net
 
+    if (fatal_error != ""):
+        pytest.skip(fatal_error)
+
+    thisDir = os.path.dirname(os.path.realpath(__file__))
+
+    print("\n\n** Verifying some basic routemap forward references\n")
+    print("*******************************************************\n")
+    failures = 0
+    for i in range(1, 2):
+        refroutemap = '%s/r%s/show_route_map.ref' % (thisDir, i)
+        if os.path.isfile(refroutemap):
+            expected = open(refroutemap).read().rstrip()
+            expected = ('\n'.join(expected.splitlines()) + '\n').splitlines(1)
+
+            actual = net['r%s' %i].cmd('vtysh -c "show route-map" 2> /dev/null').rstrip()
+            actual = ('\n'.join(actual.splitlines()) + '\n').splitlines(1)
+
+            diff = topotest.get_textdiff(actual, expected,
+                                         title1="actual show route-map",
+                                         title2="expected show route-map")
+
+            if diff:
+                sys.stderr.write('r%s failed show route-map command Check:\n%s\n' % (i, diff))
+                failures += 1
+            else:
+                print("r%s ok" %i)
+
+            assert failures == 0, "Show route-map command failed for router r%s:\n%s" % (i, diff)
+
+def test_nexthop_groups_with_route_maps():
+    global fatal_error
+    global net
+
+    # Skip if previous fatal error condition is raised
+    if (fatal_error != ""):
+        pytest.skip(fatal_error)
+
+    print("\n\n** Verifying Nexthop Groups With Route-Maps")
+    print("******************************************\n")
+
+    ### Nexthop Group With Route-Map Tests
+
+    # Create a lib nexthop-group
+    net["r1"].cmd('vtysh -c "c t" -c "nexthop-group test" -c "nexthop 1.1.1.1" -c "nexthop 1.1.1.2"')
+
+    ## Route-Map Proto Source
+
+    route_str = "2.2.2.1"
+    src_str = "192.168.0.1"
+
+    net["r1"].cmd('vtysh -c "c t" -c "route-map NH-SRC permit 111" -c "set src %s"' % src_str)
+    net["r1"].cmd('vtysh -c "c t" -c "ip protocol sharp route-map NH-SRC"')
+
+    net["r1"].cmd('vtysh -c "sharp install routes %s nexthop-group test 1"' % route_str)
+
+    verify_route_nexthop_group("%s/32" % route_str)
+
+    # Only a valid test on linux using nexthop objects
+    if sys.platform.startswith("linux"):
+        output = net["r1"].cmd('ip route show %s/32' % route_str)
+        match = re.search(r"src %s" % src_str, output)
+        assert match is not None, "Route %s/32 not installed with src %s" % (route_str, src_str)
+
+    # Remove NHG routes and route-map
+    net["r1"].cmd('vtysh -c "sharp remove routes %s 1"' % route_str)
+    net["r1"].cmd('vtysh -c "c t" -c "no ip protocol sharp route-map NH-SRC"')
+    net["r1"].cmd('vtysh -c "c t" -c "no route-map NH-SRC permit 111" -c "set src %s"' % src_str)
+    net["r1"].cmd('vtysh -c "c t" -c "no route-map NH-SRC"')
+
+    ## Route-Map Deny/Permit with same nexthop group
+
+    permit_route_str = "3.3.3.1"
+    deny_route_str = "3.3.3.2"
+
+    net["r1"].cmd('vtysh -c "c t" -c "ip prefix-list NOPE seq 5 permit %s/32"' % permit_route_str)
+    net["r1"].cmd('vtysh -c "c t" -c "route-map NOPE permit 111" -c "match ip address prefix-list NOPE"')
+    net["r1"].cmd('vtysh -c "c t" -c "route-map NOPE deny 222"')
+    net["r1"].cmd('vtysh -c "c t" -c "ip protocol sharp route-map NOPE"')
+
+    # This route should be permitted
+    net["r1"].cmd('vtysh -c "sharp install routes %s nexthop-group test 1"' % permit_route_str)
+
+    verify_route_nexthop_group("%s/32" % permit_route_str)
+
+    # This route should be denied
+    net["r1"].cmd('vtysh -c "sharp install routes %s nexthop-group test 1"' % deny_route_str)
+
+    nhg_id = route_get_nhg_id(deny_route_str)
+    output = net["r1"].cmd('vtysh -c "show nexthop-group rib %d"' % nhg_id)
+
+    match = re.search(r"Valid", output)
+    assert match is None, "Nexthop Group ID=%d should not be marked Valid" % nhg_id
+
+    match = re.search(r"Installed", output)
+    assert match is None, "Nexthop Group ID=%d should not be marked Installed" % nhg_id
+
+    # Remove NHG routes and route-map
+    net["r1"].cmd('vtysh -c "sharp remove routes %s 1"' % permit_route_str)
+    net["r1"].cmd('vtysh -c "sharp remove routes %s 1"' % deny_route_str)
+    net["r1"].cmd('vtysh -c "c t" -c "no ip protocol sharp route-map NOPE"')
+    net["r1"].cmd('vtysh -c "c t" -c "no route-map NOPE permit 111"')
+    net["r1"].cmd('vtysh -c "c t" -c "no route-map NOPE deny 222"')
+    net["r1"].cmd('vtysh -c "c t" -c "no route-map NOPE"')
+    net["r1"].cmd('vtysh -c "c t" -c "no ip prefix-list NOPE seq 5 permit %s/32"' % permit_route_str)
 
 def test_mpls_interfaces():
     global fatal_error
@@ -959,6 +1199,19 @@ def test_shutdown_check_stderr():
     log = net['r1'].getStdErr('bgpd')
     if log:
         print("\nBGPd StdErr Log:\n" + log)
+
+    log = net['r1'].getStdErr('nhrpd')
+    if log:
+        print("\nNHRPd StdErr Log:\n" + log)
+
+    log = net['r1'].getStdErr('pbrd')
+    if log:
+        print("\nPBRd StdErr Log:\n" + log)
+
+    log = net['r1'].getStdErr('babeld')
+    if log:
+        print("\nBABELd StdErr Log:\n" + log)
+
     if (net['r1'].daemon_available('ldpd')):
         log = net['r1'].getStdErr('ldpd')
         if log:

@@ -52,7 +52,6 @@ override_dh_auto_configure:
 		--with-libpam \
 		--enable-doc \
 		--enable-doc-html \
-		--enable-snmp \
 		--enable-fpm \
 		--disable-protobuf \
 		--disable-zeromq \
@@ -66,6 +65,7 @@ override_dh_auto_configure:
 		--enable-configfile-mask=0640 \
 		--enable-logfile-mask=0640 \
 		--disable-nhrpd \
+		--with-libyangdir=${LIBYANG_DIR} \
 		# end
 
 override_dh_auto_install:
@@ -76,7 +76,8 @@ override_dh_auto_install:
 
 # let dh_systemd_* and dh_installinit do their thing automatically
 ifeq ($(filter pkg.frr.nosystemd,$(DEB_BUILD_PROFILES)),)
-	cp tools/frr.service debian/frr.service
+	cp tools/frr.service debian/netgate-frr.frr.service
+	cp tools/frr-dataplane.service debian/netgate-frr.frr-dataplane.service
 endif
 	cp tools/frrinit.sh debian/frr.init
 	-rm -f debian/tmp/usr/lib/frr/frr
@@ -102,18 +103,16 @@ endif
 override_dh_shlibdeps:
 	dh_shlibdeps -- \
 		--ignore-missing-info \
-		-l${LIBVPPMGMT_DIR}/usr/lib \
-		-l${LIBTNSRINFRA_DIR}/build-root/build-vpp-native/vpp/lib \
-		-l${LIBTNSRINFRA_DIR}/lib64
+		-l${LIBVPPMGMT_DIR}/usr/lib/${DEB_HOST_MULTIARCH} \
+		-l${LIBTNSRINFRA_DIR}/usr/lib/${DEB_HOST_MULTIARCH} \
+		-l${LIBYANG_DIR}/usr/lib/${DEB_HOST_MULTIARCH}
 
 override_dh_auto_build:
 	dh_auto_build -- $(MAKE_SILENT)
 
 override_dh_installinit:
-	dh_installinit -r
-
-override_dh_installsystemd:
-	dh_installsystemd -r
+	dh_installinit -r --name=frr
+	dh_installinit -r --name=frr-dataplane
 
 override_dh_makeshlibs:
 	dh_makeshlibs -n
@@ -126,4 +125,17 @@ override_dh_auto_clean:
 # debian/changelog and config.version
 	if test -f Makefile; then make redistclean; fi
 	-rm -f debian/frr.init
-	-rm -f debian/frr.service
+	-rm -f debian/netgate-frr.frr.service
+	-rm -f debian/netgate-frr.frr-dataplane.service
+
+override_dh_strip:
+	dh_strip --dbg-package=netgate-frr-dbg
+
+override_dh_auto_test:
+
+# vtysh tries to authenticate against a pam service name of frr. When we
+# change the package names to netgate-frr*, the pam service gets installed
+# at /etc/pam.d/netgate-frr. Override that so it installs to /etc/pam.d/frr.
+override_dh_installpam:
+	install -d debian/netgate-frr/etc/pam.d
+	install -p -m0644 debian/netgate-frr.pam debian/netgate-frr/etc/pam.d/frr

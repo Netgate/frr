@@ -19,9 +19,11 @@
 #include "if.h"
 #include "stream.h"
 #include "vrf.h"
+#include "workqueue.h"
 
 #include "zebra/debug.h"
 #include "zebra/zserv.h"
+#include "zebra/zebra_router.h"
 #include "zebra/zebra_ptm_vpp.h"
 
 #include <tnsrinfra/types.h>
@@ -29,9 +31,6 @@
 
 #include <vppmgmt/vpp_mgmt_api.h>
 #include <vnet/bfd/bfd_protocol.h>
-
-
-extern struct zebra_privs_t zserv_privs;
 
 
 /*
@@ -277,8 +276,28 @@ static struct stream *zebra_ptm_vpp_make_msg(struct vpp_bfd_peer *bfd_peer,
  * BFD events processing
  */
 
-static void zebra_ptm_vpp_bfd_event_process(struct bfd_session *bfd_sess)
+static struct work_queue *bfd_event_wq;
+
+
+static void zebra_ptm_vpp_bfd_event_add(struct bfd_session *bfd_sess)
 {
+	struct bfd_session *bfd_sess_copy;
+
+	bfd_sess_copy = malloc(sizeof(struct bfd_session));
+	if (!bfd_sess_copy) {
+		return;
+	}
+
+	memcpy(bfd_sess_copy, bfd_sess, sizeof(struct bfd_session));
+
+	work_queue_add(bfd_event_wq, bfd_sess_copy);
+}
+
+
+static wq_item_status zebra_ptm_vpp_bfd_event_process(struct work_queue *wq,
+						      void *data)
+{
+	struct bfd_session *bfd_sess = data;
 	struct vpp_bfd_peer *bfd_peer;
 
 	bfd_peer = zebra_ptm_vpp_bfd_get_peer(bfd_sess->peer_addr,
@@ -286,7 +305,7 @@ static void zebra_ptm_vpp_bfd_event_process(struct bfd_session *bfd_sess)
 
 	if (bfd_peer == NULL) {
 		zlog_debug("%s: unknown bfd peer", __func__);
-		return;
+		return WQ_SUCCESS;
 	}
 
 	struct stream *msg_upd;
@@ -294,6 +313,14 @@ static void zebra_ptm_vpp_bfd_event_process(struct bfd_session *bfd_sess)
 	msg_upd = zebra_ptm_vpp_make_msg(bfd_peer, bfd_sess->state);
 
 	zebra_ptm_send_clients_proxy(msg_upd);
+
+	return WQ_SUCCESS;
+}
+
+
+static void zebra_ptm_vpp_bfd_event_clear(struct work_queue *wq, void *data)
+{
+	free(data);
 }
 
 
@@ -406,12 +433,19 @@ void zebra_ptm_vpp_reroute(struct zserv *zs, struct zebra_vrf *zvrf,
 
 void zebra_ptm_vpp_init(void)
 {
-	vmgmt_bfd_events_register(zebra_ptm_vpp_bfd_event_process, 1);
+	vmgmt_bfd_events_register(zebra_ptm_vpp_bfd_event_add, 1);
+
+	bfd_event_wq = work_queue_new(zrouter.master, "bfd_event_wq");
+	bfd_event_wq->spec.workfunc = zebra_ptm_vpp_bfd_event_process;
+	bfd_event_wq->spec.del_item_data = zebra_ptm_vpp_bfd_event_clear;
+	bfd_event_wq->spec.hold = 0;
+	bfd_event_wq->spec.max_retries = 0;
 }
 
 
 void zebra_ptm_vpp_finish(void)
 {
-	vmgmt_bfd_events_register(zebra_ptm_vpp_bfd_event_process, 0);
+	vmgmt_bfd_events_register(zebra_ptm_vpp_bfd_event_add, 0);
 	tnsr_vec_free(bfd_peers_to_monitor);
+	work_queue_free_and_null(&bfd_event_wq);
 }

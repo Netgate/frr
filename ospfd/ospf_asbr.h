@@ -46,12 +46,16 @@ struct external_info {
 	/* Additional Route tag. */
 	route_tag_t tag;
 
+	/* Actual tag received from zebra*/
+	route_tag_t orig_tag;
+
 	struct route_map_set_values route_map_set;
 #define ROUTEMAP_METRIC(E)      (E)->route_map_set.metric
 #define ROUTEMAP_METRIC_TYPE(E) (E)->route_map_set.metric_type
 };
 
 #define OSPF_ASBR_CHECK_DELAY 30
+#define OSPF_ASBR_NSSA_REDIST_UPDATE_DELAY 9
 
 extern void ospf_external_route_remove(struct ospf *, struct prefix_ipv4 *);
 extern struct external_info *ospf_external_info_new(uint8_t, unsigned short);
@@ -69,6 +73,7 @@ extern struct external_info *ospf_external_info_lookup(struct ospf *, uint8_t,
 						       unsigned short,
 						       struct prefix_ipv4 *);
 extern void ospf_asbr_status_update(struct ospf *, uint8_t);
+extern void ospf_schedule_asbr_nssa_redist_update(struct ospf *ospf);
 
 extern void ospf_redistribute_withdraw(struct ospf *, uint8_t, unsigned short);
 extern void ospf_asbr_check(void);

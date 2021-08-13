@@ -1,5 +1,4 @@
 {
-    "vrfId": 0,
     "vrfName": "default",
     "routerId": "10.254.254.3",
     "localAS": 102,
@@ -13,7 +12,6 @@
                 "prefix": "2001:db8:6::",
                 "prefixLen": 64,
                 "network": "2001:db8:6::\/64",
-                "med": 0,
                 "metric": 0,
                 "weight": 32768,
                 "peerId": "(unspec)",
@@ -36,7 +34,6 @@
                 "prefix": "2001:db8:7::",
                 "prefixLen": 64,
                 "network": "2001:db8:7::\/64",
-                "med": 0,
                 "metric": 0,
                 "weight": 32768,
                 "peerId": "(unspec)",

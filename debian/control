@@ -1,4 +1,4 @@
-Source: frr
+Source: netgate-frr
 Section: net
 Priority: optional
 Maintainer: David Lamparter <equinox-debian@diac24.net>
@@ -8,44 +8,42 @@ Build-Depends:
  bison,
  chrpath,
  debhelper (>= 9),
- debhelper (>= 9.20160709) <!pkg.frr.nosystemd> | dh-systemd <!pkg.frr.nosystemd>,
  dh-autoreconf,
  flex,
  gawk,
  install-info,
  libc-ares-dev,
  libcap-dev,
- libjson-c-dev | libjson0-dev,
- libpam0g-dev | libpam-dev,
+ libjson-c-dev,
+ libpam0g-dev,
  libpcre3-dev,
  libpython3-dev,
  libreadline-dev,
  librtr-dev <!pkg.frr.nortrlib>,
- libsnmp-dev,
  libssh-dev <!pkg.frr.nortrlib>,
  libsystemd-dev <!pkg.frr.nosystemd>,
- libyang-dev (>= 0.16.74),
  pkg-config,
  python3,
  python3-dev,
  python3-sphinx,
  python3-pytest <!nocheck>,
  texinfo (>= 4.7)
-Standards-Version: 4.2.1
+Standards-Version: 4.4.1
 Homepage: https://www.frrouting.org/
-Vcs-Browser: https://github.com/FRRouting/frr/
-Vcs-Git: https://github.com/FRRouting/frr.git
+Vcs-Browser: https://github.com/FRRouting/frr/tree/debian/master
+Vcs-Git: https://github.com/FRRouting/frr.git -b debian/master
 
-Package: frr
+Package: netgate-frr
 Architecture: linux-any
 Depends:
  ${misc:Depends},
  ${shlibs:Depends},
  iproute2 | iproute,
- logrotate (>= 3.2-11)
+ logrotate (>= 3.2-11),
+ libyang
 Pre-Depends: adduser
-Recommends: frr-pythontools
-Suggests: frr-doc
+Recommends: netgate-frr-pythontools
+Suggests: netgate-frr-doc
 Conflicts:
  zebra,
  zebra-pj,
@@ -75,24 +73,24 @@ Description: FRRouting suite of internet protocols (BGP, OSPF, IS-IS, ...)
  git lives on https://github.com/frrouting/frr.git and the project name
  is commonly abbreviated as "FRR."
 
-Package: frr-snmp
-Architecture: linux-any
-Depends:
- ${misc:Depends},
- ${shlibs:Depends},
- frr (= ${binary:Version})
-Recommends: snmpd
-Description: FRRouting suite - SNMP support
- Adds SNMP support to FRR's daemons by attaching to net-snmp's snmpd
- through the AgentX protocol.  Provides read-only access to current
- routing state through standard SNMP MIBs.
+#Package: netgate-frr-snmp
+#Architecture: linux-any
+#Depends:
+# ${misc:Depends},
+# ${shlibs:Depends},
+# netgate-frr (= ${binary:Version})
+#Recommends: snmpd
+#Description: FRRouting suite - SNMP support
+# Adds SNMP support to FRR's daemons by attaching to net-snmp's snmpd
+# through the AgentX protocol.  Provides read-only access to current
+# routing state through standard SNMP MIBs.
 
-Package: frr-rpki-rtrlib
+Package: netgate-frr-rpki-rtrlib
 Architecture: linux-any
 Depends:
  ${misc:Depends},
  ${shlibs:Depends},
- frr (= ${binary:Version})
+ netgate-frr (= ${binary:Version})
 Description: FRRouting suite - BGP RPKI support (rtrlib)
  Adds RPKI support to FRR's bgpd, allowing validation of BGP routes
  against cryptographic information stored in WHOIS databases.  This is
@@ -101,26 +99,27 @@ Description: FRRouting suite - BGP RPKI support (rtrlib)
  number.
 Build-Profiles: <!pkg.frr.nortrlib>
 
-Package: frr-doc
+Package: netgate-frr-doc
 Section: doc
 Architecture: all
+Multi-Arch: foreign
 Depends:
  ${misc:Depends},
  libjs-jquery,
  libjs-underscore
-Suggests: frr
+Suggests: netgate-frr
 Conflicts: quagga-doc
 Description: FRRouting suite - user manual
  This provides the FRR user manual in HTML form.  This is the official
  manual maintained as part of the package and is also available online
  at https://frrouting.readthedocs.io/
 
-Package: frr-pythontools
+Package: netgate-frr-pythontools
 Architecture: all
 Depends:
  ${misc:Depends},
- frr (<< ${source:Upstream-Version}.0-~),
- frr (>= ${source:Version}~),
+ netgate-frr (<< ${source:Upstream-Version}.0-~),
+ netgate-frr (>= ${source:Version}~),
  python3:any
 Description: FRRouting suite - Python tools
  The FRRouting suite uses a small Python tool to provide configuration
@@ -129,3 +128,8 @@ Description: FRRouting suite - Python tools
  .
  Without this package installed, "reload" (as a systemd or init script
  invocation) will not work for the FRR daemons.
+
+Package: netgate-frr-dbg
+Architecture: any
+Depends: ${misc:Depends}
+Description: FRRouting suite debug symbols
