@@ -1319,6 +1319,9 @@ int bgp_stop(struct peer *peer)
 		peer->fd = -1;
 	}
 
+	/* Reset capabilities. */
+	peer->cap = 0;
+
 	FOREACH_AFI_SAFI (afi, safi) {
 		/* Reset all negotiated variables */
 		peer->afc_nego[afi][safi] = 0;

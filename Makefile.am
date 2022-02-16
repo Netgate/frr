@@ -234,17 +234,15 @@ EXTRA_DIST += \
 	# end
 
 #### include version information in the distibution tarball
-EXTRA_DIST += extras/scripts/version extras/scripts/.version
+EXTRA_DIST += extras/scripts/version
 
-extras/scripts/.version:
-	rm -f extras/scripts/.version
+extras/scripts/.tmpversion:
 	sh extras/scripts/version > extras/scripts/.tmpversion
-	mv extras/scripts/.tmpversion extras/scripts/.version
 
-dist-hook:
-	rm -f extras/scripts/.version
+DISTCLEANFILES += extras/scripts/.tmpversion *.tar.gz
 
-DISTCLEANFILES += extras/scripts/.version *.tar.gz
+dist-hook: extras/scripts/.tmpversion
+	mv $(srcdir)/extras/scripts/.tmpversion $(distdir)/extras/scripts/.version
 
 clean-local-build:
 	@rm -rf build-root

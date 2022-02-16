@@ -76,16 +76,16 @@ override_dh_auto_install:
 
 # let dh_systemd_* and dh_installinit do their thing automatically
 ifeq ($(filter pkg.frr.nosystemd,$(DEB_BUILD_PROFILES)),)
-	cp tools/frr.service debian/netgate-frr.frr.service
 	cp tools/frr-dataplane.service debian/netgate-frr.frr-dataplane.service
 endif
-	cp tools/frrinit.sh debian/frr.init
 	-rm -f debian/tmp/usr/lib/frr/frr
 
 # install config files
 	mkdir -p debian/tmp/etc
 	cp -r tools/etc/* debian/tmp/etc/
 	-rm debian/tmp/etc/frr/daemons.conf
+	# eliminate conflicts with generated file by omitting daemons from pkg
+	-rm debian/tmp/etc/frr/daemons
 
 	sed -e 's#^!log file #!log file /var/log/frr/#' -i debian/tmp/usr/share/doc/frr/examples/*sample*
 
@@ -111,7 +111,6 @@ override_dh_auto_build:
 	dh_auto_build -- $(MAKE_SILENT)
 
 override_dh_installinit:
-	dh_installinit -r --name=frr
 	dh_installinit -r --name=frr-dataplane
 
 override_dh_makeshlibs:
@@ -125,7 +124,6 @@ override_dh_auto_clean:
 # debian/changelog and config.version
 	if test -f Makefile; then make redistclean; fi
 	-rm -f debian/frr.init
-	-rm -f debian/netgate-frr.frr.service
 	-rm -f debian/netgate-frr.frr-dataplane.service
 
 override_dh_strip:

@@ -2,6 +2,7 @@
 #
 # Obtained from VPP - https://wiki.fd.io/view/VPP
 #
+# ex: tabstop=4 shiftwidth=4 softtabstop=4 expandtab
 
 path=$( cd "$(dirname "${BASH_SOURCE}")" ; pwd -P )
 
@@ -9,50 +10,52 @@ cd "$path"
 
 if [ -f .version ]; then
     vstring=$(cat .version)
+    TAG=$(echo ${vstring} | cut -d- -f1)
+    ADD=$(echo ${vstring} | sed 's/^[^-]*-//')
 else
     vstring=$(git describe --match 'frr-*')
     if [ $? != 0 ]; then
       exit 1
     fi
-fi
+    vstring=$(echo "${vstring}" | sed 's/^frr-//')
 
-vstring=$(echo "${vstring}" | sed 's/^frr-//')
+    TAG=$(echo ${vstring} | cut -d- -f1)
+    ADD=$(echo ${vstring} | cut -s -d- -f2)
 
-TAG=$(echo ${vstring} | cut -d- -f1)
-ADD=$(echo ${vstring} | cut -s -d- -f2)
+    git rev-parse 2> /dev/null
+    if [ $? == 0 ]; then
+        CMT=$(git describe --match 'frr-*' --dirty | cut -s -d- -f4,5)
+    else
+        CMT=$(echo ${vstring} | cut -s -d- -f3,4)
+    fi
+    CMTR=$(echo $CMT | sed 's/-/_/')
 
-if [ ! -f .version ] && git rev-parse 2>/dev/null; then
-    CMT=$(git describe --dirty --match 'frr-*'| cut -s -d- -f4,5)
-else
-    CMT=$(echo ${vstring} | cut -s -d- -f3,4)
-fi
-CMTR=$(echo $CMT | sed 's/-/_/')
+    if [ -n "${BUILD_VER_TIMESTAMP}" ]; then
+        BLD="~d${BUILD_VER_TIMESTAMP}"
+    fi
 
-if [ -n "${BUILD_VER_TIMESTAMP}" ]; then
-    BLD="~d${BUILD_VER_TIMESTAMP}"
-fi
-
-if [ -n "${BUILD_NUMBER}" ]; then
-       BLD="~b${BUILD_NUMBER}"
+    if [ -n "${BUILD_NUMBER}" ]; then
+        BLD="~b${BUILD_NUMBER}"
+    fi
 fi
 
 if [ "$1" = "rpm-version" ]; then
-  echo -n ${TAG}
-  exit
+    echo -n ${TAG}
+    exit
 fi
 
 if [ "$1" = "rpm-release" ]; then
-  [ -z "${ADD}" ] && echo -n release && exit
-  echo -n ${ADD}${CMTR:+~${CMTR}}${BLD}
-  exit
+    [ -z "${ADD}" ] && echo -n release && exit
+    echo -n ${ADD}${CMTR:+~${CMTR}}${BLD}
+    exit
 fi
 
-  if [ -n "${ADD}" ]; then
+if [ -n "${ADD}" ]; then
     if [ "$1" = "rpm-string" ]; then
-      echo -n ${TAG}-${ADD}${CMTR:+~${CMTR}}${BLD}
+        echo -n ${TAG}-${ADD}${CMTR:+~${CMTR}}${BLD}
     else
-      echo -n ${TAG}-${ADD}${CMT:+~${CMT}}${BLD}
+        echo -n ${TAG}-${ADD}${CMT:+~${CMT}}${BLD}
     fi
-  else
+else
     echo -n ${TAG}-1${BLD:+${BLD}}
 fi
