@@ -71,7 +71,7 @@ endif
 
 if VPP_DIR_SET
 VPP_INCLUDE_DIR	= ${VPP_DIR}/build-root/install-vpp-native/vpp/include
-VPP_LIB_DIR	= ${VPP_DIR}/build-root/install-vpp-native/vpp/lib
+VPP_LIB_DIR	= ${VPP_DIR}/build-root/install-vpp-native/vpp/$(strip $(OS_LIB_DIR))
 AM_CFLAGS		+= -I${VPP_INCLUDE_DIR}
 zebra_zebra_LDADD	+= -L${VPP_LIB_DIR}
 zebra_zebra_LDFLAGS	+= -Wl,-rpath-link ${VPP_LIB_DIR}

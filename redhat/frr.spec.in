@@ -32,22 +32,16 @@
 %{!?frr_user:           %global  frr_user           frr }
 %{!?vty_group:          %global  vty_group          frrvty }
 
-# VPP attachments
-%{!?libvppmgmt_dir:	%global  libvppmgmt_dir     / }
-%{!?libtnsrinfra_dir:	%global  libtnsrinfra_dir            / }
-%{!?vpp_dir:		%global  vpp_dir     / }
-%{!?libyang_dir:	%global  libyang_dir     / }
-
 # path defines
-%define     configdir   %{_sysconfdir}/frr
+%define     configdir   %{_sysconfdir}/%{name}
 %define     _sbindir    /usr/lib/frr
-%define     zeb_src     %{_builddir}/frr-%{frrversion}
+%define     zeb_src     %{_builddir}/%{name}-%{frrversion}
 %define     zeb_rh_src  %{zeb_src}/redhat
 %define     zeb_docs    %{zeb_src}/doc
 %define     frr_tools   %{zeb_src}/tools
 
 # defines for configure
-%define     rundir  %{_localstatedir}/run/frr
+%define     rundir  %{_localstatedir}/run/%{name}
 
 ############################################################################
 
@@ -155,15 +149,12 @@
 %{!?release_rev:        %global  release_rev        01 }
 
 Summary: Routing daemon
-Name:           netgate-frr
-Version:        %{_version}
-Release:	%{_release}%{?dist}
+Name:           frr
+Version:        %{rpmversion}
+Release:        %{release_rev}%{?dist}
 License:        GPLv2+
-Provides:       frr
-Obsoletes:      frr
-Requires:       tnsr-dataplane-netns
 Group:          System Environment/Daemons
-Source0:        frr-%{version}-%{_release}.tar.gz
+Source0:        https://github.com/FRRouting/frr/archive/%{name}-%{frrversion}.tar.gz
 URL:            https://www.frrouting.org
 Requires(pre):  shadow-utils
 Requires(preun): info
@@ -178,9 +169,7 @@ BuildRequires:  make
 BuildRequires:  ncurses-devel
 BuildRequires:  readline-devel
 BuildRequires:  texinfo
-%if "%{libyang_dir}" == "/"
-BuildRequires:  netgate-libyang-devel >= 1.0.184
-%endif
+BuildRequires:  libyang-devel >= 1.0.184
 %if 0%{?rhel} && 0%{?rhel} < 7
 #python27-devel is available from ius community repo for RedHat/CentOS 6
 BuildRequires:  python27-devel
@@ -233,8 +222,6 @@ FRRouting is a fork of Quagga.
 %package contrib
 Summary: contrib tools for frr
 Group: System Environment/Daemons
-Provides: frr-contrib
-Obsoletes: frr-contrib
 
 %description contrib
 Contributed/3rd party tools which may be of use with frr.
@@ -255,8 +242,6 @@ BuildRequires:  python3
 %endif
 %endif
 Group: System Environment/Daemons
-Provides: frr-pythontools
-Obsoletes: frr-pythontools
 
 %description pythontools
 Contributed python 2.7 tools which may be of use with frr.
@@ -266,8 +251,6 @@ Contributed python 2.7 tools which may be of use with frr.
 Summary: Header and object files for frr development
 Group: System Environment/Daemons
 Requires: %{name} = %{version}-%{release}
-Provides: frr-devel
-Obsoletes: frr-devel
 
 %description devel
 The frr-devel package contains the header and object files neccessary for
@@ -286,6 +269,18 @@ against cryptographic information stored in WHOIS databases.  This is
 used to prevent hijacking of networks on the wider internet.  It is only
 relevant to internet service providers using their own autonomous system
 number.
+
+
+%package snmp
+Summary: SNMP support
+Group: System Environment/Daemons
+BuildRequires: net-snmp-devel
+Requires: %{name} = %{version}-%{release}
+
+%description snmp
+Adds SNMP support to FRR's daemons by attaching to net-snmp's snmpd
+through the AgentX protocol.  Provides read-only access to current
+routing state through standard SNMP MIBs.
 
 
 %prep
@@ -403,18 +398,7 @@ number.
 %else
     --disable-bfdd \
 %endif
-%if "%{libtnsrinfra_dir}" != "/"
-    --with-libtnsrinfradir=%libtnsrinfra_dir \
-%endif
-%if "%{libvppmgmt_dir}" != "/"
-    --with-libvppmgmtdir=%libvppmgmt_dir \
-%endif
-%if "%{vpp_dir}" != "/"
-    --with-vppdir=%vpp_dir \
-%endif
-%if "%{libyang_dir}" != "/"
-    --with-libyangdir=%libyang_dir \
-%endif
+    --enable-snmp
     # end
 
 make %{?_smp_mflags} MAKEINFO="makeinfo --no-split"
@@ -454,7 +438,6 @@ rm -vf %{buildroot}%{_libdir}/frr/libyang_plugins/*.la
 %if "%{initsystem}" == "systemd"
 mkdir -p %{buildroot}%{_unitdir}
 install -m644 %{zeb_src}/tools/frr.service %{buildroot}%{_unitdir}/frr.service
-install -m644 %{zeb_src}/tools/frr-dataplane.service %{buildroot}%{_unitdir}/frr-dataplane.service
 %else
 mkdir -p %{buildroot}%{_initddir}
 ln -s %{_sbindir}/frrinit.sh %{buildroot}%{_initddir}/frr
@@ -471,8 +454,6 @@ pathfix.py -pni "%{__python3} %{py3_shbang_opts}" %{buildroot}/usr/lib/frr/*.py
 %py_byte_compile %{__python3} %{buildroot}/usr/lib/frr/*.py
 %endif
 
-%clean
-
 %pre
 # add vty_group
 %if 0%{?vty_group:1}
@@ -487,12 +468,6 @@ pathfix.py -pni "%{__python3} %{py3_shbang_opts}" %{buildroot}/usr/lib/frr/*.py
     useradd -r -u %{frr_uid} -g %{frr_user} \
         -s /sbin/nologin -c "FRRouting suite" \
         -d %{rundir} %{frr_user}
-
-    if getent passwd frr >/dev/null ; then \
-        /usr/sbin/groupadd -f -r vpp > /dev/null ; \
-        /usr/sbin/groupadd -f -r root > /dev/null ; \
-        /sbin/usermod -a -G vpp,root frr || : ; \
-    fi
 
     %if 0%{?vty_group:1}
         usermod -a -G %{vty_group} %{frr_user}
@@ -555,7 +530,6 @@ zebra_spec_add_service fabricd	2618/tcp "Fabricd vty"
 %if "%{initsystem}" == "systemd"
     for daemon in %all_daemons ; do
         %systemd_post frr.service
-        %systemd_post frr-dataplane.service
     done
 %else
     /sbin/chkconfig --add frr
@@ -621,7 +595,6 @@ if [ "$1" -ge 1 ]; then
         ## Systemd Version
         ##
         %systemd_postun_with_restart frr.service
-        %systemd_postun_with_restart frr-dataplane.service
     %else
         ##
         ## init.d Version
@@ -639,7 +612,6 @@ fi
     ##
     if [ $1 -eq 0 ] ; then
         %systemd_preun frr.service
-        %systemd_preun frr-dataplane.service
     fi
 %else
     ##
@@ -709,8 +681,9 @@ fi
 %if %{with_bfdd}
     %{_sbindir}/bfdd
 %endif
-%{_libdir}/lib*.so.0
-%{_libdir}/lib*.so.0.*
+%{_libdir}/libfrr.so*
+%{_libdir}/libfrrcares*
+%{_libdir}/libfrrospf*
 %if %{with_fpm}
     %{_libdir}/frr/modules/zebra_fpm.so
 %endif
@@ -723,7 +696,6 @@ fi
 %config(noreplace) %attr(750,%{frr_user},%{frr_user}) %{configdir}/daemons
 %if "%{initsystem}" == "systemd"
     %{_unitdir}/frr.service
-    %{_unitdir}/frr-dataplane.service
 %else
     %{_initddir}/frr
 %endif
@@ -747,7 +719,6 @@ fi
 %else
 %{_sbindir}/generate_support_bundle.pyc
 %{_sbindir}/generate_support_bundle.pyo
-%{_sbindir}/frr-reload.py
 %{_sbindir}/frr-reload.pyc
 %{_sbindir}/frr-reload.pyo
 %endif
@@ -765,19 +736,24 @@ sed -i 's/ -M rpki//' %{_sysconfdir}/frr/daemons
 %{_libdir}/frr/modules/bgpd_rpki.so
 
 
+%files snmp
+%{_libdir}/libfrrsnmp.so*
+%{_libdir}/frr/modules/*snmp.so
+
+
 %files devel
 %{_libdir}/lib*.so
-%dir %{_includedir}/frr
-%{_includedir}/frr/*.h
-%dir %{_includedir}/frr/ospfd
-%{_includedir}/frr/ospfd/*.h
+%dir %{_includedir}/%{name}
+%{_includedir}/%{name}/*.h
+%dir %{_includedir}/%{name}/ospfd
+%{_includedir}/%{name}/ospfd/*.h
 %if %{with_ospfapi}
-    %dir %{_includedir}/frr/ospfapi
-    %{_includedir}/frr/ospfapi/*.h
+    %dir %{_includedir}/%{name}/ospfapi
+    %{_includedir}/%{name}/ospfapi/*.h
 %endif
 %if %{with_eigrpd}
-    %dir %{_includedir}/frr/eigrpd
-    %{_includedir}/frr/eigrpd/*.h
+    %dir %{_includedir}/%{name}/eigrpd
+    %{_includedir}/%{name}/eigrpd/*.h
 %endif
 
 

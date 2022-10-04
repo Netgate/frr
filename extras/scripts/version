@@ -15,7 +15,7 @@ if [ -f .version ]; then
 else
     vstring=$(git describe --match 'frr-*')
     if [ $? != 0 ]; then
-      exit 1
+        exit 1
     fi
     vstring=$(echo "${vstring}" | sed 's/^frr-//')
 
@@ -23,39 +23,26 @@ else
     ADD=$(echo ${vstring} | cut -s -d- -f2)
 
     git rev-parse 2> /dev/null
-    if [ $? == 0 ]; then
+    if [ $? -eq 0 ]; then
         CMT=$(git describe --match 'frr-*' --dirty | cut -s -d- -f4,5)
     else
         CMT=$(echo ${vstring} | cut -s -d- -f3,4)
     fi
-    CMTR=$(echo $CMT | sed 's/-/_/')
-
-    if [ -n "${BUILD_VER_TIMESTAMP}" ]; then
-        BLD="~d${BUILD_VER_TIMESTAMP}"
-    fi
 
     if [ -n "${BUILD_NUMBER}" ]; then
-        BLD="~b${BUILD_NUMBER}"
+        BLD="b${BUILD_NUMBER}"
+    elif [ -n "${BUILD_VER_TIMESTAMP}" ]; then
+        BLD="d${BUILD_VER_TIMESTAMP}"
     fi
 fi
 
-if [ "$1" = "rpm-version" ]; then
-    echo -n ${TAG}
-    exit
-fi
+test -z "${ADD}" && ADD=1
 
-if [ "$1" = "rpm-release" ]; then
-    [ -z "${ADD}" ] && echo -n release && exit
-    echo -n ${ADD}${CMTR:+~${CMTR}}${BLD}
-    exit
-fi
-
-if [ -n "${ADD}" ]; then
-    if [ "$1" = "rpm-string" ]; then
-        echo -n ${TAG}-${ADD}${CMTR:+~${CMTR}}${BLD}
-    else
-        echo -n ${TAG}-${ADD}${CMT:+~${CMT}}${BLD}
-    fi
+SUFFIX="${CMT:++}${CMT}"
+if [ -z "${SUFFIX}" ]; then
+    SUFFIX="${BLD:++}${BLD}"
 else
-    echo -n ${TAG}-1${BLD:+${BLD}}
+    SUFFIX="${SUFFIX}${BLD:+-}${BLD}"
 fi
+
+echo ${TAG}-${ADD}${SUFFIX}

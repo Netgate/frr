@@ -247,12 +247,6 @@ dist-hook: extras/scripts/.tmpversion
 clean-local-build:
 	@rm -rf build-root
 
-pkg-srpm: dist
-	make -C extras/rpm srpm
-
-pkg-rpm: dist
-	make -C extras/rpm
-
 AM_V_LLVM_BC = $(am__v_LLVM_BC_$(V))
 am__v_LLVM_BC_ = $(am__v_LLVM_BC_$(AM_DEFAULT_VERBOSITY))
 am__v_LLVM_BC_0 = @echo "  LLVM.BC " $@;

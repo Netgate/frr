@@ -112,5 +112,4 @@ refix
 ### TNSR specific items
 .version
 build-root
-extras/rpm/Makefile
 *.rej

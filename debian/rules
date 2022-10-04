@@ -3,6 +3,7 @@
 # standard Debian options & profiles
 
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+export OS_VERSION_ID = $(shell sed -n '/VERSION_ID/ { s/^.*="//; s/"//; p  }' /etc/os-release)
 
 ifneq (,$(filter terse,$(DEB_BUILD_OPTIONS)))
   MAKE_SILENT="V=0"
@@ -30,6 +31,10 @@ else
 endif
 
 export PYTHON=python3
+
+ifeq ($(OS_VERSION_ID),20.04)
+export LIBYANG_CONFIGURE = --with-libyangdir=${LIBYANG_DIR}
+endif
 
 %:
 	dh $@ --with=$(DH_WITH_SYSTEMD)autoreconf --parallel
@@ -65,7 +70,7 @@ override_dh_auto_configure:
 		--enable-configfile-mask=0640 \
 		--enable-logfile-mask=0640 \
 		--disable-nhrpd \
-		--with-libyangdir=${LIBYANG_DIR} \
+		$(LIBYANG_CONFIGURE) \
 		# end
 
 override_dh_auto_install:
@@ -106,6 +111,13 @@ override_dh_shlibdeps:
 		-l${LIBVPPMGMT_DIR}/usr/lib/${DEB_HOST_MULTIARCH} \
 		-l${LIBTNSRINFRA_DIR}/usr/lib/${DEB_HOST_MULTIARCH} \
 		-l${LIBYANG_DIR}/usr/lib/${DEB_HOST_MULTIARCH}
+
+override_dh_gencontrol:
+ifeq ($(OS_VERSION_ID),20.04)
+	dh_gencontrol -- -Vnetgate:libyang=netgate-libyang
+else
+	dh_gencontrol -- '-Vnetgate:libyang=libyang1 (>=1.0.225)'
+endif
 
 override_dh_auto_build:
 	dh_auto_build -- $(MAKE_SILENT)

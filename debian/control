@@ -41,7 +41,7 @@ Depends:
  iproute2 | iproute,
  logrotate (>= 3.2-11),
  tnsr-dataplane-netns,
- netgate-libyang
+ ${netgate:libyang}
 Pre-Depends: adduser
 Recommends: netgate-frr-pythontools
 Suggests: netgate-frr-doc

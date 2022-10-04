@@ -7,7 +7,7 @@
 ##
 AC_PREREQ([2.60])
 
-AC_INIT(frr,[m4_esyscmd([./extras/scripts/version])])
+AC_INIT(frr,[m4_esyscmd([./extras/scripts/version | tr -d '\n'])])
 PACKAGE_URL="https://frrouting.org/"
 AC_SUBST([PACKAGE_URL])
 PACKAGE_FULLNAME="FRRouting"
@@ -2460,8 +2460,7 @@ AC_CONFIG_FILES([
 	  tests/lib/cli/test_cli.refout
 	  pkgsrc/bgpd.sh pkgsrc/ospf6d.sh pkgsrc/ospfd.sh
 	  pkgsrc/ripd.sh pkgsrc/ripngd.sh pkgsrc/zebra.sh
-	  pkgsrc/eigrpd.sh
-	  extras/rpm/Makefile])
+	  pkgsrc/eigrpd.sh])
 
 AC_CONFIG_FILES([vtysh/extract.pl], [chmod +x vtysh/extract.pl])
 AC_CONFIG_FILES([tools/frr], [chmod +x tools/frr])
