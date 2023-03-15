@@ -150,7 +150,9 @@ bool pim_is_group_filtered(struct pim_interface *pim_ifp, pim_addr *grp)
 	pim_addr_to_prefix(&grp_pfx, *grp);
 
 	pl = prefix_list_lookup(PIM_AFI, pim_ifp->boundary_oil_plist);
-	return pl ? prefix_list_apply(pl, &grp_pfx) == PREFIX_DENY : false;
+	return pl ? prefix_list_apply_ext(pl, NULL, &grp_pfx, true) ==
+			       PREFIX_DENY
+		  : false;
 }
 
 
@@ -165,4 +167,16 @@ int pim_get_all_mcast_group(struct prefix *prefix)
 		return 0;
 #endif
 	return 1;
+}
+
+bool pim_addr_is_multicast(pim_addr addr)
+{
+#if PIM_IPV == 4
+	if (IN_MULTICAST(addr.s_addr))
+		return true;
+#else
+	if (IN6_IS_ADDR_MULTICAST(&addr))
+		return true;
+#endif
+	return false;
 }
