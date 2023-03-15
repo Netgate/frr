@@ -25,13 +25,22 @@
 
 struct attr;
 
-union gw_addr {
-	struct in_addr ipv4;
-	struct in6_addr ipv6;
+enum overlay_index_type {
+	OVERLAY_INDEX_TYPE_NONE,
+	OVERLAY_INDEX_GATEWAY_IP,
+	OVERLAY_INDEX_ESI,
+	OVERLAY_INDEX_MAC,
 };
 
+/*
+ * Structure to store ovrelay index for EVPN type-5 route
+ * This structure stores ESI and Gateway IP overlay index.
+ * MAC overlay index is stored in the RMAC attribute.
+ */
 struct bgp_route_evpn {
-	union gw_addr gw_ip;
+	enum overlay_index_type type;
+	esi_t eth_s_id;
+	struct ipaddr gw_ip;
 };
 
 extern bool str2esi(const char *str, esi_t *id);
@@ -48,7 +57,9 @@ extern uint8_t bgp_attr_default_gw(struct attr *attr);
 
 extern void bgp_attr_evpn_na_flag(struct attr *attr, uint8_t *router_flag,
 		bool *proxy);
+extern uint16_t bgp_attr_df_pref_from_ec(struct attr *attr, uint8_t *alg);
 
-extern bool is_zero_gw_ip(const union gw_addr *gw_ip, afi_t afi);
 
+extern bool bgp_route_evpn_same(const struct bgp_route_evpn *e1,
+				const struct bgp_route_evpn *e2);
 #endif /* _QUAGGA_BGP_ATTR_EVPN_H */

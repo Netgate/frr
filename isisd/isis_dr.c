@@ -61,7 +61,7 @@ const char *isis_disflag2string(int disflag)
 	return NULL; /* not reached */
 }
 
-int isis_run_dr(struct thread *thread)
+void isis_run_dr(struct thread *thread)
 {
 	struct isis_circuit_arg *arg = THREAD_ARG(thread);
 
@@ -74,8 +74,9 @@ int isis_run_dr(struct thread *thread)
 
 	if (circuit->circ_type != CIRCUIT_T_BROADCAST) {
 		zlog_warn("%s: scheduled for non broadcast circuit from %s:%d",
-			  __func__, thread->schedfrom, thread->schedfrom_line);
-		return ISIS_WARNING;
+			  __func__, thread->xref->xref.file,
+			  thread->xref->xref.line);
+		return;
 	}
 
 	if (circuit->u.bc.run_dr_elect[level - 1])
@@ -83,8 +84,6 @@ int isis_run_dr(struct thread *thread)
 
 	circuit->u.bc.t_run_dr[level - 1] = NULL;
 	circuit->u.bc.run_dr_elect[level - 1] = 1;
-
-	return ISIS_OK;
 }
 
 static int isis_check_dr_change(struct isis_adjacency *adj, int level)
@@ -96,6 +95,7 @@ static int isis_check_dr_change(struct isis_adjacency *adj, int level)
 	/* was there a DIS state transition ? */
 	{
 		adj->dischanges[level - 1]++;
+		adj->circuit->desig_changes[level - 1]++;
 		/* ok rotate the history list through */
 		for (i = DIS_RECORDS - 1; i > 0; i--) {
 			adj->dis_record[(i * ISIS_LEVELS) + level - 1].dis =
@@ -217,15 +217,16 @@ int isis_dr_resign(struct isis_circuit *circuit, int level)
 {
 	uint8_t id[ISIS_SYS_ID_LEN + 2];
 
-	zlog_debug("isis_dr_resign l%d", level);
+	if (IS_DEBUG_EVENTS)
+		zlog_debug("isis_dr_resign l%d", level);
 
 	circuit->u.bc.is_dr[level - 1] = 0;
 	circuit->u.bc.run_dr_elect[level - 1] = 0;
-	THREAD_TIMER_OFF(circuit->u.bc.t_run_dr[level - 1]);
-	THREAD_TIMER_OFF(circuit->u.bc.t_refresh_pseudo_lsp[level - 1]);
+	thread_cancel(&circuit->u.bc.t_run_dr[level - 1]);
+	thread_cancel(&circuit->u.bc.t_refresh_pseudo_lsp[level - 1]);
 	circuit->lsp_regenerate_pending[level - 1] = 0;
 
-	memcpy(id, circuit->area->isis->sysid, ISIS_SYS_ID_LEN);
+	memcpy(id, circuit->isis->sysid, ISIS_SYS_ID_LEN);
 	LSP_PSEUDO_ID(id) = circuit->circuit_id;
 	LSP_FRAGMENT(id) = 0;
 	lsp_purge_pseudo(id, circuit, level);
@@ -246,7 +247,7 @@ int isis_dr_resign(struct isis_circuit *circuit, int level)
 				 &circuit->t_send_psnp[1]);
 	}
 
-	THREAD_TIMER_OFF(circuit->t_send_csnp[level - 1]);
+	thread_cancel(&circuit->t_send_csnp[level - 1]);
 
 	thread_add_timer(master, isis_run_dr,
 			 &circuit->level_arg[level - 1],
@@ -278,7 +279,7 @@ int isis_dr_commence(struct isis_circuit *circuit, int level)
 			/* there was a dr elected, purge its LSPs from the db */
 			lsp_purge_pseudo(old_dr, circuit, level);
 		}
-		memcpy(circuit->u.bc.l1_desig_is, circuit->area->isis->sysid,
+		memcpy(circuit->u.bc.l1_desig_is, circuit->isis->sysid,
 		       ISIS_SYS_ID_LEN);
 		*(circuit->u.bc.l1_desig_is + ISIS_SYS_ID_LEN) =
 			circuit->circuit_id;
@@ -300,7 +301,7 @@ int isis_dr_commence(struct isis_circuit *circuit, int level)
 			/* there was a dr elected, purge its LSPs from the db */
 			lsp_purge_pseudo(old_dr, circuit, level);
 		}
-		memcpy(circuit->u.bc.l2_desig_is, circuit->area->isis->sysid,
+		memcpy(circuit->u.bc.l2_desig_is, circuit->isis->sysid,
 		       ISIS_SYS_ID_LEN);
 		*(circuit->u.bc.l2_desig_is + ISIS_SYS_ID_LEN) =
 			circuit->circuit_id;

@@ -84,10 +84,11 @@ static void bfdd_client_deregister(struct stream *msg);
 static void debug_printbpc(const struct bfd_peer_cfg *bpc, const char *fmt, ...)
 {
 	char timers[3][128] = {};
+	char minttl_str[32] = {};
 	char addr[3][128] = {};
 	char profile[128] = {};
 	char cbit_str[32];
-	char msgbuf[256];
+	char msgbuf[512];
 	va_list vl;
 
 	/* Avoid debug calculations if it's disabled. */
@@ -120,6 +121,10 @@ static void debug_printbpc(const struct bfd_peer_cfg *bpc, const char *fmt, ...)
 
 	snprintf(cbit_str, sizeof(cbit_str), " cbit:0x%02x", bpc->bpc_cbit);
 
+	if (bpc->bpc_has_minimum_ttl)
+		snprintf(minttl_str, sizeof(minttl_str), " minimum-ttl:%d",
+			 bpc->bpc_minimum_ttl);
+
 	if (bpc->bpc_has_profile)
 		snprintf(profile, sizeof(profile), " profile:%s",
 			 bpc->bpc_profile);
@@ -128,9 +133,10 @@ static void debug_printbpc(const struct bfd_peer_cfg *bpc, const char *fmt, ...)
 	vsnprintf(msgbuf, sizeof(msgbuf), fmt, vl);
 	va_end(vl);
 
-	zlog_debug("%s [mhop:%s %s%s%s%s%s%s%s%s]", msgbuf,
+	zlog_debug("%s [mhop:%s %s%s%s%s%s%s%s%s%s]", msgbuf,
 		   bpc->bpc_mhop ? "yes" : "no", addr[0], addr[1], addr[2],
-		   timers[0], timers[1], timers[2], cbit_str, profile);
+		   timers[0], timers[1], timers[2], cbit_str, minttl_str,
+		   profile);
 }
 
 static void _ptm_bfd_session_del(struct bfd_session *bs, uint8_t diag)
@@ -226,7 +232,7 @@ int ptm_bfd_notify(struct bfd_session *bs, uint8_t notify_state)
 	stream_putl(msg, ZEBRA_INTERFACE_BFD_DEST_UPDATE);
 
 	/* NOTE: Interface is a shortcut to avoid comparing source address. */
-	if (bs->ifp != NULL)
+	if (!CHECK_FLAG(bs->flags, BFD_SESS_FLAG_MH) && bs->ifp != NULL)
 		stream_putl(msg, bs->ifp->ifindex);
 	else
 		stream_putl(msg, IFINDEX_INTERNAL);
@@ -307,6 +313,8 @@ static int _ptm_msg_read(struct stream *msg, int command, vrf_id_t vrf_id,
 
 	/*
 	 * Register/Deregister/Update Message format:
+	 *
+	 * Old format (being used by PTM BFD).
 	 * - header: Command, VRF
 	 * - l: pid
 	 * - w: family
@@ -322,16 +330,37 @@ static int _ptm_msg_read(struct stream *msg, int command, vrf_id_t vrf_id,
 	 *   - multihop:
 	 *     - w: family
 	 *       - AF_INET:
-	 *         - l: destination ipv4
+	 *         - l: source IPv4 address
 	 *       - AF_INET6:
-	 *         - 16 bytes: destination IPv6
+	 *         - 16 bytes: source IPv6 address
 	 *     - c: ttl
 	 *   - no multihop
 	 *     - AF_INET6:
 	 *       - w: family
-	 *       - 16 bytes: ipv6 address
+	 *       - 16 bytes: source IPv6 address
 	 *     - c: ifname length
 	 *     - X bytes: interface name
+	 *
+	 * New format:
+	 * - header: Command, VRF
+	 * - l: pid
+	 * - w: family
+	 *   - AF_INET:
+	 *     - l: destination IPv4 address
+	 *   - AF_INET6:
+	 *     - 16 bytes: destination IPv6 address
+	 * - l: min_rx
+	 * - l: min_tx
+	 * - c: detect multiplier
+	 * - c: is_multihop?
+	 * - w: family
+	 *   - AF_INET:
+	 *     - l: source IPv4 address
+	 *   - AF_INET6:
+	 *     - 16 bytes: source IPv6 address
+	 * - c: ttl
+	 * - c: ifname length
+	 * - X bytes: interface name
 	 * - c: bfd_cbit
 	 * - c: profile name length.
 	 * - X bytes: profile name.
@@ -355,58 +384,50 @@ static int _ptm_msg_read(struct stream *msg, int command, vrf_id_t vrf_id,
 	bpc->bpc_ipv4 = (bpc->bpc_peer.sa_sin.sin_family == AF_INET);
 
 	/* Get peer configuration. */
-	if (command != ZEBRA_BFD_DEST_DEREGISTER) {
-		STREAM_GETL(msg, bpc->bpc_recvinterval);
-		bpc->bpc_has_recvinterval =
-			(bpc->bpc_recvinterval != BPC_DEF_RECEIVEINTERVAL);
+	STREAM_GETL(msg, bpc->bpc_recvinterval);
+	bpc->bpc_has_recvinterval =
+		(bpc->bpc_recvinterval != BPC_DEF_RECEIVEINTERVAL);
 
-		STREAM_GETL(msg, bpc->bpc_txinterval);
-		bpc->bpc_has_txinterval =
-			(bpc->bpc_txinterval != BPC_DEF_TRANSMITINTERVAL);
+	STREAM_GETL(msg, bpc->bpc_txinterval);
+	bpc->bpc_has_txinterval =
+		(bpc->bpc_txinterval != BPC_DEF_TRANSMITINTERVAL);
 
-		STREAM_GETC(msg, bpc->bpc_detectmultiplier);
-		bpc->bpc_has_detectmultiplier =
-			(bpc->bpc_detectmultiplier != BPC_DEF_DETECTMULTIPLIER);
-	}
+	STREAM_GETC(msg, bpc->bpc_detectmultiplier);
+	bpc->bpc_has_detectmultiplier =
+		(bpc->bpc_detectmultiplier != BPC_DEF_DETECTMULTIPLIER);
 
 	/* Read (single|multi)hop and its options. */
 	STREAM_GETC(msg, bpc->bpc_mhop);
-	if (bpc->bpc_mhop) {
-		/* Read multihop source address and TTL. */
-		_ptm_msg_read_address(msg, &bpc->bpc_local);
-		STREAM_GETC(msg, bpc->bpc_minimum_ttl);
-		if (bpc->bpc_minimum_ttl >= BFD_TTL_VAL
-		    || bpc->bpc_minimum_ttl == 0) {
-			zlog_warn("%s: received invalid TTL configuration %d",
-				  __func__, bpc->bpc_has_minimum_ttl);
-			bpc->bpc_minimum_ttl = BFD_DEF_MHOP_TTL;
-			bpc->bpc_has_minimum_ttl = false;
-		} else {
-			bpc->bpc_minimum_ttl =
-				(BFD_TTL_VAL + 1) - bpc->bpc_minimum_ttl;
-			bpc->bpc_has_minimum_ttl = true;
-		}
+
+	/* Read multihop source address and TTL. */
+	_ptm_msg_read_address(msg, &bpc->bpc_local);
+
+	/* Read the minimum TTL (0 means unset or invalid). */
+	STREAM_GETC(msg, bpc->bpc_minimum_ttl);
+	if (bpc->bpc_minimum_ttl == 0) {
+		bpc->bpc_minimum_ttl = BFD_DEF_MHOP_TTL;
+		bpc->bpc_has_minimum_ttl = false;
 	} else {
-		/* If target is IPv6, then we must obtain local address. */
-		if (bpc->bpc_ipv4 == false)
-			_ptm_msg_read_address(msg, &bpc->bpc_local);
-
-		/*
-		 * Read interface name and make sure it fits our data
-		 * structure, otherwise fail.
-		 */
-		STREAM_GETC(msg, ifnamelen);
-		if (ifnamelen >= sizeof(bpc->bpc_localif)) {
-			zlog_err("ptm-read: interface name is too big");
-			return -1;
-		}
-
-		bpc->bpc_has_localif = ifnamelen > 0;
-		if (bpc->bpc_has_localif) {
-			STREAM_GET(bpc->bpc_localif, msg, ifnamelen);
-			bpc->bpc_localif[ifnamelen] = 0;
-		}
+		bpc->bpc_minimum_ttl = (BFD_TTL_VAL + 1) - bpc->bpc_minimum_ttl;
+		bpc->bpc_has_minimum_ttl = true;
 	}
+
+	/*
+	 * Read interface name and make sure it fits our data
+	 * structure, otherwise fail.
+	 */
+	STREAM_GETC(msg, ifnamelen);
+	if (ifnamelen >= sizeof(bpc->bpc_localif)) {
+		zlog_err("ptm-read: interface name is too big");
+		return -1;
+	}
+
+	bpc->bpc_has_localif = ifnamelen > 0;
+	if (bpc->bpc_has_localif) {
+		STREAM_GET(bpc->bpc_localif, msg, ifnamelen);
+		bpc->bpc_localif[ifnamelen] = 0;
+	}
+
 	if (vrf_id != VRF_DEFAULT) {
 		struct vrf *vrf;
 
@@ -424,6 +445,7 @@ static int _ptm_msg_read(struct stream *msg, int command, vrf_id_t vrf_id,
 		strlcpy(bpc->bpc_vrfname, VRF_DEFAULT_NAME, sizeof(bpc->bpc_vrfname));
 	}
 
+	/* Read control plane independant configuration. */
 	STREAM_GETC(msg, bpc->bpc_cbit);
 
 	/* Handle profile names. */
@@ -435,7 +457,7 @@ static int _ptm_msg_read(struct stream *msg, int command, vrf_id_t vrf_id,
 	}
 
 	/* Sanity check: peer and local address must match IP types. */
-	if (bpc->bpc_local.sa_sin.sin_family != 0
+	if (bpc->bpc_local.sa_sin.sin_family != AF_UNSPEC
 	    && (bpc->bpc_local.sa_sin.sin_family
 		!= bpc->bpc_peer.sa_sin.sin_family)) {
 		zlog_warn("ptm-read: peer family doesn't match local type");
@@ -470,9 +492,6 @@ static void bfdd_dest_register(struct stream *msg, vrf_id_t vrf_id)
 					"ptm-add-dest: failed to create BFD session");
 			return;
 		}
-
-		/* Protocol created peers are 'no shutdown' by default. */
-		bs->peer_profile.admin_shutdown = false;
 	} else {
 		/*
 		 * BFD session was already created, we are just updating the
@@ -647,9 +666,7 @@ static void bfdd_sessions_enable_interface(struct interface *ifp)
 	struct bfd_session *bs;
 	struct vrf *vrf;
 
-	vrf = vrf_lookup_by_id(ifp->vrf_id);
-	if (!vrf)
-		return;
+	vrf = ifp->vrf;
 
 	TAILQ_FOREACH(bso, &bglobal.bg_obslist, bso_entry) {
 		bs = bso->bso_bs;
@@ -661,7 +678,8 @@ static void bfdd_sessions_enable_interface(struct interface *ifp)
 		/* If Interface matches vrfname, then bypass iface check */
 		if (vrf_is_backend_netns() || strcmp(ifp->name, vrf->name)) {
 			/* Interface name mismatch. */
-			if (strcmp(ifp->name, bs->key.ifname))
+			if (bs->key.ifname[0] &&
+			    strcmp(ifp->name, bs->key.ifname))
 				continue;
 		}
 
@@ -692,7 +710,7 @@ static void bfdd_sessions_disable_interface(struct interface *ifp)
 		}
 
 		bfd_session_disable(bs);
-
+		bs->ifp = NULL;
 	}
 }
 
@@ -704,11 +722,6 @@ void bfdd_sessions_enable_vrf(struct vrf *vrf)
 	/* it may affect configs without interfaces */
 	TAILQ_FOREACH(bso, &bglobal.bg_obslist, bso_entry) {
 		bs = bso->bso_bs;
-		/* update name */
-		if (bs->vrf && bs->vrf == vrf) {
-			if (!strmatch(bs->key.vrfname, vrf->name))
-				bfd_session_update_vrf_name(bs, vrf);
-		}
 		if (bs->vrf)
 			continue;
 		if (bs->key.vrfname[0] &&
@@ -741,13 +754,15 @@ void bfdd_sessions_disable_vrf(struct vrf *vrf)
 			continue;
 
 		bfd_session_disable(bs);
+		bs->vrf = NULL;
 	}
 }
 
 static int bfd_ifp_destroy(struct interface *ifp)
 {
 	if (bglobal.debug_zebra)
-		zlog_debug("zclient: delete interface %s", ifp->name);
+		zlog_debug("zclient: delete interface %s (VRF %s(%u))",
+			   ifp->name, ifp->vrf->name, ifp->vrf->vrf_id);
 
 	bfdd_sessions_disable_interface(ifp);
 
@@ -794,17 +809,16 @@ static void bfdd_sessions_enable_address(struct connected *ifc)
 static int bfdd_interface_address_update(ZAPI_CALLBACK_ARGS)
 {
 	struct connected *ifc;
-	char buf[64];
 
 	ifc = zebra_interface_address_read(cmd, zclient->ibuf, vrf_id);
 	if (ifc == NULL)
 		return 0;
 
 	if (bglobal.debug_zebra)
-		zlog_debug("zclient: %s local address %s",
+		zlog_debug("zclient: %s local address %pFX (VRF %u)",
 			   cmd == ZEBRA_INTERFACE_ADDRESS_ADD ? "add"
 							      : "delete",
-			   prefix2str(ifc->address, buf, sizeof(buf)));
+			   ifc->address, vrf_id);
 
 	if (cmd == ZEBRA_INTERFACE_ADDRESS_ADD)
 		bfdd_sessions_enable_address(ifc);
@@ -817,36 +831,39 @@ static int bfdd_interface_address_update(ZAPI_CALLBACK_ARGS)
 static int bfd_ifp_create(struct interface *ifp)
 {
 	if (bglobal.debug_zebra)
-		zlog_debug("zclient: add interface %s", ifp->name);
-
+		zlog_debug("zclient: add interface %s (VRF %s(%u))", ifp->name,
+			   ifp->vrf->name, ifp->vrf->vrf_id);
 	bfdd_sessions_enable_interface(ifp);
 
 	return 0;
 }
 
-void bfdd_zclient_init(struct zebra_privs_t *bfdd_priv)
-{
-	if_zapi_callbacks(bfd_ifp_create, NULL, NULL, bfd_ifp_destroy);
-	zclient = zclient_new(master, &zclient_options_default);
-	assert(zclient != NULL);
-	zclient_init(zclient, ZEBRA_ROUTE_BFD, 0, bfdd_priv);
-
+static zclient_handler *const bfd_handlers[] = {
 	/*
 	 * We'll receive all messages through replay, however it will
 	 * contain a special field with the real command inside so we
 	 * avoid having to create too many handlers.
 	 */
-	zclient->bfd_dest_replay = bfdd_replay;
+	[ZEBRA_BFD_DEST_REPLAY] = bfdd_replay,
+
+	/* Learn about interface VRF. */
+	[ZEBRA_INTERFACE_VRF_UPDATE] = bfdd_interface_vrf_update,
+
+	/* Learn about new addresses being registered. */
+	[ZEBRA_INTERFACE_ADDRESS_ADD] = bfdd_interface_address_update,
+	[ZEBRA_INTERFACE_ADDRESS_DELETE] = bfdd_interface_address_update,
+};
+
+void bfdd_zclient_init(struct zebra_privs_t *bfdd_priv)
+{
+	if_zapi_callbacks(bfd_ifp_create, NULL, NULL, bfd_ifp_destroy);
+	zclient = zclient_new(master, &zclient_options_default, bfd_handlers,
+			      array_size(bfd_handlers));
+	assert(zclient != NULL);
+	zclient_init(zclient, ZEBRA_ROUTE_BFD, 0, bfdd_priv);
 
 	/* Send replay request on zebra connect. */
 	zclient->zebra_connected = bfdd_zebra_connected;
-
-	/* Learn about interface VRF. */
-	zclient->interface_vrf_update = bfdd_interface_vrf_update;
-
-	/* Learn about new addresses being registered. */
-	zclient->interface_address_add = bfdd_interface_address_update;
-	zclient->interface_address_delete = bfdd_interface_address_update;
 }
 
 void bfdd_zclient_register(vrf_id_t vrf_id)

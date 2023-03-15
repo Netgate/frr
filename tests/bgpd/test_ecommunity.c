@@ -30,7 +30,7 @@
 #include "bgpd/bgp_ecommunity.h"
 
 /* need these to link in libbgp */
-struct zebra_privs_t *bgpd_privs = NULL;
+struct zebra_privs_t bgpd_privs = {};
 struct thread_master *master = NULL;
 
 static int failed = 0;
@@ -121,7 +121,7 @@ static void parse_test(struct test_segment *t)
 
 	printf("%s: %s\n", t->name, t->desc);
 
-	ecom = ecommunity_parse((uint8_t *)t->data, t->len);
+	ecom = ecommunity_parse((uint8_t *)t->data, t->len, 0);
 
 	printf("ecom: %s\nvalidating...:\n", ecommunity_str(ecom));
 

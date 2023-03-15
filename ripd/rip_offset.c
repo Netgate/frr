@@ -29,7 +29,7 @@
 
 #include "ripd/ripd.h"
 
-DEFINE_MTYPE_STATIC(RIPD, RIP_OFFSET_LIST, "RIP offset list")
+DEFINE_MTYPE_STATIC(RIPD, RIP_OFFSET_LIST, "RIP offset list");
 
 #define OFFSET_LIST_IN_NAME(O)  ((O)->direct[RIP_OFFSET_LIST_IN].alist_name)
 #define OFFSET_LIST_IN_METRIC(O)  ((O)->direct[RIP_OFFSET_LIST_IN].metric)
@@ -78,7 +78,7 @@ struct rip_offset_list *rip_offset_list_lookup(struct rip *rip,
 	return NULL;
 }
 
-/* If metric is modifed return 1. */
+/* If metric is modified return 1. */
 int rip_offset_list_apply_in(struct prefix_ipv4 *p, struct interface *ifp,
 			     uint32_t *metric)
 {
@@ -115,7 +115,7 @@ int rip_offset_list_apply_in(struct prefix_ipv4 *p, struct interface *ifp,
 	return 0;
 }
 
-/* If metric is modifed return 1. */
+/* If metric is modified return 1. */
 int rip_offset_list_apply_out(struct prefix_ipv4 *p, struct interface *ifp,
 			      uint32_t *metric)
 {

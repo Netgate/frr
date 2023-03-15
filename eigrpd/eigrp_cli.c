@@ -29,6 +29,7 @@
 #include "eigrp_structs.h"
 #include "eigrpd.h"
 #include "eigrp_zebra.h"
+#include "eigrp_cli.h"
 
 #ifndef VTYSH_EXTRACT_PL
 #include "eigrpd/eigrp_cli_clippy.c"
@@ -78,10 +79,10 @@ DEFPY_YANG(
 		 as_str, vrf ? vrf : VRF_DEFAULT_NAME);
 
 	nb_cli_enqueue_change(vty, xpath, NB_OP_DESTROY, NULL);
-	return nb_cli_apply_changes(vty, NULL);
+	return nb_cli_apply_changes_clear_pending(vty, NULL);
 }
 
-void eigrp_cli_show_header(struct vty *vty, struct lyd_node *dnode,
+void eigrp_cli_show_header(struct vty *vty, const struct lyd_node *dnode,
 			   bool show_defaults)
 {
 	const char *asn = yang_dnode_get_string(dnode, "./asn");
@@ -93,8 +94,9 @@ void eigrp_cli_show_header(struct vty *vty, struct lyd_node *dnode,
 	vty_out(vty, "\n");
 }
 
-void eigrp_cli_show_end_header(struct vty *vty, struct lyd_node *dnode)
+void eigrp_cli_show_end_header(struct vty *vty, const struct lyd_node *dnode)
 {
+	vty_out(vty, "exit\n");
 	vty_out(vty, "!\n");
 }
 
@@ -126,7 +128,7 @@ DEFPY_YANG(
 	return nb_cli_apply_changes(vty, NULL);
 }
 
-void eigrp_cli_show_router_id(struct vty *vty, struct lyd_node *dnode,
+void eigrp_cli_show_router_id(struct vty *vty, const struct lyd_node *dnode,
 			      bool show_defaults)
 {
 	const char *router_id = yang_dnode_get_string(dnode, NULL);
@@ -155,7 +157,8 @@ DEFPY_YANG(
 	return nb_cli_apply_changes(vty, NULL);
 }
 
-void eigrp_cli_show_passive_interface(struct vty *vty, struct lyd_node *dnode,
+void eigrp_cli_show_passive_interface(struct vty *vty,
+				      const struct lyd_node *dnode,
 				      bool show_defaults)
 {
 	const char *ifname = yang_dnode_get_string(dnode, NULL);
@@ -198,7 +201,7 @@ DEFPY_YANG(
 	return nb_cli_apply_changes(vty, NULL);
 }
 
-void eigrp_cli_show_active_time(struct vty *vty, struct lyd_node *dnode,
+void eigrp_cli_show_active_time(struct vty *vty, const struct lyd_node *dnode,
 				bool show_defaults)
 {
 	const char *timer = yang_dnode_get_string(dnode, NULL);
@@ -232,7 +235,7 @@ DEFPY_YANG(
 	return nb_cli_apply_changes(vty, NULL);
 }
 
-void eigrp_cli_show_variance(struct vty *vty, struct lyd_node *dnode,
+void eigrp_cli_show_variance(struct vty *vty, const struct lyd_node *dnode,
 			     bool show_defaults)
 {
 	const char *variance = yang_dnode_get_string(dnode, NULL);
@@ -267,7 +270,7 @@ DEFPY_YANG(
 	return nb_cli_apply_changes(vty, NULL);
 }
 
-void eigrp_cli_show_maximum_paths(struct vty *vty, struct lyd_node *dnode,
+void eigrp_cli_show_maximum_paths(struct vty *vty, const struct lyd_node *dnode,
 				  bool show_defaults)
 {
 	const char *maximum_paths = yang_dnode_get_string(dnode, NULL);
@@ -331,7 +334,7 @@ DEFPY_YANG(
 	return nb_cli_apply_changes(vty, NULL);
 }
 
-void eigrp_cli_show_metrics(struct vty *vty, struct lyd_node *dnode,
+void eigrp_cli_show_metrics(struct vty *vty, const struct lyd_node *dnode,
 			    bool show_defaults)
 {
 	const char *k1, *k2, *k3, *k4, *k5, *k6;
@@ -377,7 +380,7 @@ DEFPY_YANG(
 	return nb_cli_apply_changes(vty, NULL);
 }
 
-void eigrp_cli_show_network(struct vty *vty, struct lyd_node *dnode,
+void eigrp_cli_show_network(struct vty *vty, const struct lyd_node *dnode,
 			    bool show_defaults)
 {
 	const char *prefix = yang_dnode_get_string(dnode, NULL);
@@ -406,8 +409,8 @@ DEFPY_YANG(
 	return nb_cli_apply_changes(vty, NULL);
 }
 
-void eigrp_cli_show_neighbor(struct vty *vty, struct lyd_node *dnode,
-			    bool show_defaults)
+void eigrp_cli_show_neighbor(struct vty *vty, const struct lyd_node *dnode,
+			     bool show_defaults)
 {
 	const char *prefix = yang_dnode_get_string(dnode, NULL);
 
@@ -466,7 +469,7 @@ DEFPY_YANG(
 	return nb_cli_apply_changes(vty, NULL);
 }
 
-void eigrp_cli_show_redistribute(struct vty *vty, struct lyd_node *dnode,
+void eigrp_cli_show_redistribute(struct vty *vty, const struct lyd_node *dnode,
 				 bool show_defaults)
 {
 	const char *proto = yang_dnode_get_string(dnode, "./protocol");
@@ -518,7 +521,7 @@ DEFPY_YANG(
 	return nb_cli_apply_changes(vty, NULL);
 }
 
-void eigrp_cli_show_delay(struct vty *vty, struct lyd_node *dnode,
+void eigrp_cli_show_delay(struct vty *vty, const struct lyd_node *dnode,
 			  bool show_defaults)
 {
 	const char *delay = yang_dnode_get_string(dnode, NULL);
@@ -556,7 +559,7 @@ DEFPY_YANG(
 	return nb_cli_apply_changes(vty, NULL);
 }
 
-void eigrp_cli_show_bandwidth(struct vty *vty, struct lyd_node *dnode,
+void eigrp_cli_show_bandwidth(struct vty *vty, const struct lyd_node *dnode,
 			      bool show_defaults)
 {
 	const char *bandwidth = yang_dnode_get_string(dnode, NULL);
@@ -597,7 +600,8 @@ DEFPY_YANG(
 }
 
 
-void eigrp_cli_show_hello_interval(struct vty *vty, struct lyd_node *dnode,
+void eigrp_cli_show_hello_interval(struct vty *vty,
+				   const struct lyd_node *dnode,
 				   bool show_defaults)
 {
 	const char *hello = yang_dnode_get_string(dnode, NULL);
@@ -637,7 +641,7 @@ DEFPY_YANG(
 	return nb_cli_apply_changes(vty, NULL);
 }
 
-void eigrp_cli_show_hold_time(struct vty *vty, struct lyd_node *dnode,
+void eigrp_cli_show_hold_time(struct vty *vty, const struct lyd_node *dnode,
 			      bool show_defaults)
 {
 	const char *holdtime = yang_dnode_get_string(dnode, NULL);
@@ -670,7 +674,7 @@ DEFPY_YANG(
 		 as_str);
 	nb_cli_enqueue_change(vty, xpath, NB_OP_CREATE, NULL);
 
-	snprintf(xpath_auth, sizeof(xpath_auth), "%s/summarize-address", xpath);
+	snprintf(xpath_auth, sizeof(xpath_auth), "%s/summarize-addresses", xpath);
 	nb_cli_enqueue_change(vty, xpath_auth, NB_OP_CREATE, prefix_str);
 
 	return nb_cli_apply_changes(vty, NULL);
@@ -693,21 +697,23 @@ DEFPY_YANG(
 		 as_str);
 	nb_cli_enqueue_change(vty, xpath, NB_OP_CREATE, NULL);
 
-	snprintf(xpath_auth, sizeof(xpath_auth), "%s/summarize-address", xpath);
+	snprintf(xpath_auth, sizeof(xpath_auth), "%s/summarize-addresses", xpath);
 	nb_cli_enqueue_change(vty, xpath_auth, NB_OP_DESTROY, prefix_str);
 
 	return nb_cli_apply_changes(vty, NULL);
 }
 
-void eigrp_cli_show_summarize_address(struct vty *vty, struct lyd_node *dnode,
+void eigrp_cli_show_summarize_address(struct vty *vty,
+				      const struct lyd_node *dnode,
 				      bool show_defaults)
 {
-	const struct eigrp_interface *eif = nb_running_get_entry(dnode, NULL,
-								 true);
+	const struct lyd_node *instance =
+		yang_dnode_get_parent(dnode, "instance");
+	uint16_t asn = yang_dnode_get_uint16(instance, "./asn");
 	const char *summarize_address = yang_dnode_get_string(dnode, NULL);
 
-	vty_out(vty, " ip summary-address eigrp %d %s\n",
-		eif->eigrp->AS, summarize_address);
+	vty_out(vty, " ip summary-address eigrp %d %s\n", asn,
+		summarize_address);
 }
 
 /*
@@ -763,15 +769,16 @@ DEFPY_YANG(
 	return nb_cli_apply_changes(vty, NULL);
 }
 
-void eigrp_cli_show_authentication(struct vty *vty, struct lyd_node *dnode,
+void eigrp_cli_show_authentication(struct vty *vty,
+				   const struct lyd_node *dnode,
 				   bool show_defaults)
 {
-	const struct eigrp_interface *eif = nb_running_get_entry(dnode, NULL,
-								 true);
+	const struct lyd_node *instance =
+		yang_dnode_get_parent(dnode, "instance");
+	uint16_t asn = yang_dnode_get_uint16(instance, "./asn");
 	const char *crypt = yang_dnode_get_string(dnode, NULL);
 
-	vty_out(vty, " ip authentication mode eigrp %d %s\n",
-		eif->eigrp->AS, crypt);
+	vty_out(vty, " ip authentication mode eigrp %d %s\n", asn, crypt);
 }
 
 /*
@@ -823,15 +830,16 @@ DEFPY_YANG(
 	return nb_cli_apply_changes(vty, NULL);
 }
 
-void eigrp_cli_show_keychain(struct vty *vty, struct lyd_node *dnode,
+void eigrp_cli_show_keychain(struct vty *vty, const struct lyd_node *dnode,
 			     bool show_defaults)
 {
-	const struct eigrp_interface *eif = nb_running_get_entry(dnode, NULL,
-								 true);
+	const struct lyd_node *instance =
+		yang_dnode_get_parent(dnode, "instance");
+	uint16_t asn = yang_dnode_get_uint16(instance, "./asn");
 	const char *keychain = yang_dnode_get_string(dnode, NULL);
 
-	vty_out(vty, " ip authentication key-chain eigrp %d %s\n",
-		eif->eigrp->AS, keychain);
+	vty_out(vty, " ip authentication key-chain eigrp %d %s\n", asn,
+		keychain);
 }
 
 
@@ -849,47 +857,13 @@ static struct cmd_node eigrp_node = {
 
 static int eigrp_config_write(struct vty *vty)
 {
-	struct lyd_node *dnode;
+	const struct lyd_node *dnode;
 	int written = 0;
 
 	dnode = yang_dnode_get(running_config->dnode, "/frr-eigrpd:eigrpd");
 	if (dnode) {
 		nb_cli_show_dnode_cmds(vty, dnode, false);
 		written = 1;
-	}
-
-	return written;
-}
-
-static int eigrp_write_interface(struct vty *vty);
-static struct cmd_node eigrp_interface_node = {
-	.name = "interface",
-	.node = INTERFACE_NODE,
-	.parent_node = CONFIG_NODE,
-	.prompt = "%s(config-if)# ",
-	.config_write = eigrp_write_interface,
-};
-
-
-static int eigrp_write_interface(struct vty *vty)
-{
-	struct lyd_node *dnode;
-	struct interface *ifp;
-	struct vrf *vrf;
-	int written = 0;
-
-	RB_FOREACH(vrf, vrf_name_head, &vrfs_by_name) {
-		FOR_ALL_INTERFACES(vrf, ifp) {
-			dnode = yang_dnode_get(
-				running_config->dnode,
-				"/frr-interface:lib/interface[name='%s'][vrf='%s']",
-				ifp->name, vrf->name);
-			if (dnode == NULL)
-				continue;
-
-			written = 1;
-			nb_cli_show_dnode_cmds(vty, dnode, false);
-		}
 	}
 
 	return written;
@@ -919,8 +893,9 @@ eigrp_cli_init(void)
 	install_element(EIGRP_NODE, &eigrp_neighbor_cmd);
 	install_element(EIGRP_NODE, &eigrp_redistribute_source_metric_cmd);
 
-	install_node(&eigrp_interface_node);
-	if_cmd_init();
+	vrf_cmd_init(NULL);
+
+	if_cmd_init_default();
 
 	install_element(INTERFACE_NODE, &eigrp_if_delay_cmd);
 	install_element(INTERFACE_NODE, &no_eigrp_if_delay_cmd);

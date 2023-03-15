@@ -30,14 +30,11 @@ Following tests are covered to test EVPN-Type5 functionality:
 """
 
 import os
-import re
 import sys
-import json
 import time
 import pytest
 import platform
 from copy import deepcopy
-from time import sleep
 
 
 # Save the Current Working Directory to find configuration files.
@@ -51,7 +48,6 @@ sys.path.append(os.path.join(CWD, "../lib/"))
 # Import topogen and topotest helpers
 from lib.topotest import version_cmp
 from lib.topogen import Topogen, get_topogen
-from mininet.topo import Topo
 
 from lib.common_config import (
     start_topology,
@@ -61,42 +57,29 @@ from lib.common_config import (
     reset_config_on_routers,
     verify_rib,
     step,
-    start_router_daemons,
     create_static_routes,
     create_vrf_cfg,
-    create_route_maps,
-    create_interface_in_kernel,
     check_router_status,
     configure_vxlan,
     configure_brctl,
-    apply_raw_config,
     verify_vrf_vni,
-    verify_cli_json
+    verify_cli_json,
 )
 
 from lib.topolog import logger
 from lib.bgp import (
     verify_bgp_convergence,
     create_router_bgp,
-    clear_bgp,
-    verify_best_path_as_per_bgp_attribute,
     verify_attributes_for_evpn_routes,
-    verify_evpn_routes
 )
-from lib.topojson import build_topo_from_json, build_config_from_json
+from lib.topojson import build_config_from_json
 
-# Reading the data from JSON File for topology creation
-jsonFile = "{}/evpn_type5_chaos_topo1.json".format(CWD)
-try:
-    with open(jsonFile, "r") as topoJson:
-        topo = json.load(topoJson)
-except IOError:
-    assert False, "Could not read file {}".format(jsonFile)
+
+pytestmark = [pytest.mark.bgpd, pytest.mark.staticd]
 
 # Reading the data from JSON File for topology creation
 # Global variables
 TCPDUMP_FILE = "evpn_log.txt"
-LOGDIR = "/tmp/topotests/"
 NETWORK1_1 = {"ipv4": "10.1.1.1/32", "ipv6": "10::1/128"}
 NETWORK1_2 = {"ipv4": "40.1.1.1/32", "ipv6": "40::1/128"}
 NETWORK1_3 = {"ipv4": "40.1.1.2/32", "ipv6": "40::2/128"}
@@ -137,21 +120,6 @@ BRCTL = {
 }
 
 
-class CreateTopo(Topo):
-    """
-    Test BasicTopo - topology 1
-
-    * `Topo`: Topology object
-    """
-
-    def build(self, *_args, **_opts):
-        """Build function"""
-        tgen = get_topogen(self)
-
-        # Building topology from json file
-        build_topo_from_json(tgen, topo)
-
-
 def setup_module(mod):
     """
     Sets up the pytest environment
@@ -159,7 +127,6 @@ def setup_module(mod):
     * `mod`: module name
     """
 
-    global topo
     testsuite_run_time = time.asctime(time.localtime(time.time()))
     logger.info("Testsuite start time: {}".format(testsuite_run_time))
     logger.info("=" * 40)
@@ -167,19 +134,24 @@ def setup_module(mod):
     logger.info("Running setup_module to create topology")
 
     # This function initiates the topology build with Topogen...
-    tgen = Topogen(CreateTopo, mod.__name__)
+    json_file = "{}/evpn_type5_chaos_topo1.json".format(CWD)
+    tgen = Topogen(json_file, mod.__name__)
+    global topo
+    topo = tgen.json_topo
     # ... and here it calls Mininet initialization functions.
 
     # Starting topology, create tmp files which are loaded to routers
-    #  to start deamons and then start routers
+    #  to start daemons and then start routers
     start_topology(tgen)
 
     # Creating configuration from JSON
     build_config_from_json(tgen, topo)
 
-    if version_cmp(platform.release(), '4.19') < 0:
-        error_msg = ('EVPN tests will not run (have kernel "{}", '
-            'but it requires >= 4.19)'.format(platform.release()))
+    if version_cmp(platform.release(), "4.19") < 0:
+        error_msg = (
+            'EVPN tests will not run (have kernel "{}", '
+            "but it requires >= 4.19)".format(platform.release())
+        )
         pytest.skip(error_msg)
 
     global BGP_CONVERGENCE
@@ -247,9 +219,7 @@ def prerequisite_config_for_test_suite(tgen):
         }
 
         result = configure_vxlan(tgen, vxlan_input)
-        assert result is True, "Testcase {} :Failed \n Error: {}".format(
-            tc_name, result
-        )
+        assert result is True, "Testcase :Failed \n Error: {}".format(result)
 
         step("Configure bridge interface")
         brctl_input = {
@@ -265,9 +235,7 @@ def prerequisite_config_for_test_suite(tgen):
             }
         }
         result = configure_brctl(tgen, topo, brctl_input)
-        assert result is True, "Testcase {} :Failed \n Error: {}".format(
-            tc_name, result
-        )
+        assert result is True, "Testcase :Failed \n Error: {}".format(result)
 
     step("Configure default routes")
     add_default_routes(tgen)
@@ -336,7 +304,7 @@ def add_default_routes(tgen):
     }
 
     result = create_static_routes(tgen, default_routes)
-    assert result is True, "Testcase {} :Failed \n Error: {}".format(tc_name, result)
+    assert result is True, "Testcase :Failed \n Error: {}".format(result)
 
 
 def test_verify_overlay_index_p1(request):
@@ -389,9 +357,9 @@ def test_verify_overlay_index_p1(request):
                         "network": NETWORK3_1[addr_type],
                         "next_hop": NEXT_HOP_IP[addr_type],
                         "vrf": "GREEN",
-                    }
+                    },
                 ]
-            }
+            },
         }
 
         result = create_static_routes(tgen, input_dict_1)
@@ -463,7 +431,7 @@ def test_evpn_cli_json_available_p1(request):
             "cli": [
                 "show evpn vni detail",
                 "show bgp l2vpn evpn all overlay",
-                "show bgp l2vpn evpn vni"
+                "show bgp l2vpn evpn vni",
             ]
         }
     }
@@ -516,9 +484,9 @@ def test_RT_verification_auto_p0(request):
                         "network": NETWORK4_1[addr_type],
                         "next_hop": NEXT_HOP_IP[addr_type],
                         "vrf": "GREEN",
-                    }
+                    },
                 ]
-            }
+            },
         }
 
         result = create_static_routes(tgen, input_dict_1)
@@ -861,8 +829,9 @@ def test_RT_verification_auto_p0(request):
         }
 
         result = verify_rib(tgen, addr_type, "d2", input_routes, expected=False)
-        assert result is not True, "Testcase {} :Failed \n "
-        "Routes are still present: {}".format(tc_name, result)
+        assert (
+            result is not True
+        ), "Testcase {} :Failed \n Routes are still present: {}".format(tc_name, result)
         logger.info("Expected Behavior: {}".format(result))
 
     step(
@@ -996,8 +965,11 @@ def test_RT_verification_auto_p0(request):
         result = verify_attributes_for_evpn_routes(
             tgen, topo, "d2", input_routes_1, rt="auto", rt_peer="e1", expected=False
         )
-        assert result is not True, "Testcase {} :Failed \n "
-        "Malfaromed Auto-RT value accepted: {}".format(tc_name, result)
+        assert (
+            result is not True
+        ), "Testcase {} :Failed \n Malfaromed Auto-RT value accepted: {}".format(
+            tc_name, result
+        )
         logger.info("Expected Behavior: {}".format(result))
 
     step("Configure VNI number more than boundary limit (16777215)")
@@ -1028,8 +1000,11 @@ def test_RT_verification_auto_p0(request):
         result = verify_attributes_for_evpn_routes(
             tgen, topo, "d2", input_routes_1, rt="auto", rt_peer="e1", expected=False
         )
-        assert result is not True, "Testcase {} :Failed \n "
-        "Malfaromed Auto-RT value accepted: {}".format(tc_name, result)
+        assert (
+            result is not True
+        ), "Testcase {} :Failed \n Malfaromed Auto-RT value accepted: {}".format(
+            tc_name, result
+        )
         logger.info("Expected Behavior: {}".format(result))
 
     step("Un-configure VNI number more than boundary limit (16777215)")

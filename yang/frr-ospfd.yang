@@ -15,6 +15,10 @@ module frr-ospfd {
     prefix frr-interface;
   }
 
+  import frr-route-map {
+    prefix frr-route-map;
+  }
+
   import frr-route-types {
     prefix frr-route-types;
   }
@@ -41,10 +45,6 @@ module frr-ospfd {
   }
 
   /* Policy types to be removed later, once policy Yang finalized */
-  typedef rmap-ref {
-    type string;
-  }
-
   typedef plist-ref {
     type string;
   }
@@ -425,7 +425,7 @@ module frr-ospfd {
     }
 
     leaf route-map {
-      type rmap-ref;
+      type frr-route-map:route-map-ref;
       description
         "Route map reference.";
     }
@@ -682,8 +682,8 @@ module frr-ospfd {
       container global-block {
         description
           "Segment Routing Global Block label range.";
-        must "./upper-bound > ./lower-bound";
         leaf lower-bound {
+          must "../upper-bound > .";
           type uint32 {
             range "0..1048575";
           }
@@ -691,6 +691,7 @@ module frr-ospfd {
         }
 
         leaf upper-bound {
+          must ". > ../lower-bound";
           type uint32 {
             range "0..1048575";
           }
@@ -701,14 +702,15 @@ module frr-ospfd {
       container srlb {
         description
           "Local blocks to be advertised.";
-        must "./upper-bound > ./lower-bound";
         leaf lower-bound {
+          must "../upper-bound > .";
           type uint32;
           default "15000";
           description
             "Lower value in the label range.";
         }
         leaf upper-bound {
+          must ". > ../lower-bound";
           type uint32;
           default "15999";
           description

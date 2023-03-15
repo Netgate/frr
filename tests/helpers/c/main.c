@@ -47,13 +47,12 @@ DEFUN (daemon_exit,
 }
 
 static int timer_count;
-static int test_timer(struct thread *thread)
+static void test_timer(struct thread *thread)
 {
 	int *count = THREAD_ARG(thread);
 
 	printf("run %d of timer\n", (*count)++);
 	thread_add_timer(master, test_timer, count, 5, NULL);
-	return 0;
 }
 
 static void test_timer_init(void)
@@ -155,7 +154,6 @@ int main(int argc, char **argv)
 	cmd_init(1);
 	vty_init(master, false);
 	lib_cmd_init();
-	yang_init(true);
 	nb_init(master, NULL, 0, false);
 
 	/* OSPF vty inits. */

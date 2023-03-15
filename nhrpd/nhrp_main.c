@@ -18,7 +18,7 @@
 #include "getopt.h"
 #include "thread.h"
 #include "sigevent.h"
-#include "version.h"
+#include "lib/version.h"
 #include "log.h"
 #include "memory.h"
 #include "command.h"
@@ -26,10 +26,9 @@
 #include "filter.h"
 
 #include "nhrpd.h"
-#include "netlink.h"
 #include "nhrp_errors.h"
 
-DEFINE_MGROUP(NHRPD, "NHRP")
+DEFINE_MGROUP(NHRPD, "NHRP");
 
 unsigned int debug_flags = 0;
 
@@ -56,7 +55,9 @@ struct zebra_privs_t nhrpd_privs = {
 #endif
 	.caps_p = _caps_p,
 	.cap_num_p = array_size(_caps_p),
+	.cap_num_i = 0
 };
+
 
 static void parse_arguments(int argc, char **argv)
 {
@@ -72,7 +73,6 @@ static void parse_arguments(int argc, char **argv)
 			break;
 		default:
 			frr_help_exit(1);
-			break;
 		}
 	}
 }
@@ -101,7 +101,7 @@ static void nhrp_request_stop(void)
 	exit(0);
 }
 
-static struct quagga_signal_t sighandlers[] = {
+static struct frr_signal_t sighandlers[] = {
 	{
 		.signal = SIGUSR1,
 		.handler = &nhrp_sigusr1,
@@ -119,6 +119,7 @@ static struct quagga_signal_t sighandlers[] = {
 static const struct frr_yang_module_info *const nhrpd_yang_modules[] = {
 	&frr_filter_info,
 	&frr_interface_info,
+	&frr_vrf_info,
 };
 
 FRR_DAEMON_INFO(nhrpd, NHRP, .vty_port = NHRP_VTY_PORT,
@@ -128,7 +129,8 @@ FRR_DAEMON_INFO(nhrpd, NHRP, .vty_port = NHRP_VTY_PORT,
 		.signals = sighandlers, .n_signals = array_size(sighandlers),
 
 		.privs = &nhrpd_privs, .yang_modules = nhrpd_yang_modules,
-		.n_yang_modules = array_size(nhrpd_yang_modules), )
+		.n_yang_modules = array_size(nhrpd_yang_modules),
+);
 
 int main(int argc, char **argv)
 {
@@ -140,15 +142,19 @@ int main(int argc, char **argv)
 	/* Library inits. */
 	master = frr_init();
 	nhrp_error_init();
-	vrf_init(NULL, NULL, NULL, NULL, NULL);
+	vrf_init(NULL, NULL, NULL, NULL);
 	nhrp_interface_init();
 	resolver_init(master);
 
-	/* Run with elevated capabilities, as for all netlink activity
-	 * we need privileges anyway. */
+	/*
+	 * Run with elevated capabilities, as for all netlink activity
+	 * we need privileges anyway.
+	 * The assert is for clang SA code where it does
+	 * not see the change function being set in lib
+	 */
+	assert(nhrpd_privs.change);
 	nhrpd_privs.change(ZPRIVS_RAISE);
 
-	netlink_init();
 	evmgr_init();
 	nhrp_vc_init();
 	nhrp_packet_init();

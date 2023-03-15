@@ -28,7 +28,7 @@ THE SOFTWARE.
 #include "thread.h"
 #include "privs.h"
 #include "sigevent.h"
-#include "version.h"
+#include "lib/version.h"
 #include "command.h"
 #include "vty.h"
 #include "memory.h"
@@ -115,7 +115,7 @@ babel_sigusr1 (void)
     zlog_rotate ();
 }
 
-static struct quagga_signal_t babel_signals[] =
+static struct frr_signal_t babel_signals[] =
   {
     {
       .signal = SIGUSR1,
@@ -153,7 +153,7 @@ FRR_DAEMON_INFO(babeld, BABELD,
 
 		.yang_modules = babeld_yang_modules,
 		.n_yang_modules = array_size(babeld_yang_modules),
-		)
+);
 
 int
 main(int argc, char **argv)
@@ -183,8 +183,7 @@ main(int argc, char **argv)
 	  case 0:
 	    break;
 	  default:
-	    frr_help_exit (1);
-	    break;
+	    frr_help_exit(1);
 	  }
     }
 

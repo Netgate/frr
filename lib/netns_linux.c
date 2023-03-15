@@ -40,8 +40,8 @@
 #include "vrf.h"
 #include "lib_errors.h"
 
-DEFINE_MTYPE_STATIC(LIB, NS, "NetNS Context")
-DEFINE_MTYPE_STATIC(LIB, NS_NAME, "NetNS Name")
+DEFINE_MTYPE_STATIC(LIB, NS, "NetNS Context");
+DEFINE_MTYPE_STATIC(LIB, NS_NAME, "NetNS Name");
 
 static inline int ns_compare(const struct ns *ns, const struct ns *ns2);
 static struct ns *ns_lookup_name_internal(const char *name);
@@ -279,7 +279,7 @@ static void ns_disable_internal(struct ns *ns)
 	}
 }
 
-/* VRF list existance check by name. */
+/* VRF list existence check by name. */
 static struct ns_map_nsid *ns_map_nsid_lookup_by_nsid(ns_id_t ns_id)
 {
 	struct ns_map_nsid ns_map;

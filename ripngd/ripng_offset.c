@@ -33,7 +33,7 @@
 
 #include "ripngd/ripngd.h"
 
-DEFINE_MTYPE_STATIC(RIPNGD, RIPNG_OFFSET_LIST, "RIPng offset lst")
+DEFINE_MTYPE_STATIC(RIPNGD, RIPNG_OFFSET_LIST, "RIPng offset lst");
 
 #define OFFSET_LIST_IN_NAME(O)  ((O)->direct[RIPNG_OFFSET_LIST_IN].alist_name)
 #define OFFSET_LIST_IN_METRIC(O)  ((O)->direct[RIPNG_OFFSET_LIST_IN].metric)
@@ -85,7 +85,7 @@ struct ripng_offset_list *ripng_offset_list_lookup(struct ripng *ripng,
 	return NULL;
 }
 
-/* If metric is modifed return 1. */
+/* If metric is modified return 1. */
 int ripng_offset_list_apply_in(struct ripng *ripng, struct prefix_ipv6 *p,
 			       struct interface *ifp, uint8_t *metric)
 {
@@ -123,7 +123,7 @@ int ripng_offset_list_apply_in(struct ripng *ripng, struct prefix_ipv6 *p,
 	return 0;
 }
 
-/* If metric is modifed return 1. */
+/* If metric is modified return 1. */
 int ripng_offset_list_apply_out(struct ripng *ripng, struct prefix_ipv6 *p,
 				struct interface *ifp, uint8_t *metric)
 {

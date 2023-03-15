@@ -20,6 +20,8 @@
 
 #include "zebra.h"
 
+#include "lib/printfrr.h"
+
 #include "prefix.h"
 #include "lib_errors.h"
 
@@ -95,7 +97,7 @@ bool bgp_flowspec_contains_prefix(const struct prefix *pfs,
 		switch (type) {
 		case FLOWSPEC_DEST_PREFIX:
 		case FLOWSPEC_SRC_PREFIX:
-			memset(&compare, 0, sizeof(struct prefix));
+			memset(&compare, 0, sizeof(compare));
 			ret = bgp_flowspec_ip_address(
 					BGP_FLOWSPEC_CONVERT_TO_NON_OPAQUE,
 					nlri_content+offset,
@@ -183,7 +185,7 @@ int bgp_flowspec_ip_address(enum bgp_flowspec_util_nlri_t type,
 	uint8_t prefix_offset = 0;
 
 	*error = 0;
-	memset(&prefix_local, 0, sizeof(struct prefix));
+	memset(&prefix_local, 0, sizeof(prefix_local));
 	/* read the prefix length */
 	prefix_local.prefixlen = nlri_ptr[offset];
 	psize = PSIZE(prefix_local.prefixlen);
@@ -211,14 +213,11 @@ int bgp_flowspec_ip_address(enum bgp_flowspec_util_nlri_t type,
 	switch (type) {
 	case BGP_FLOWSPEC_RETURN_STRING:
 		if (prefix_local.family == AF_INET6) {
-			char str[BGP_FLOWSPEC_STRING_DISPLAY_MAX];
 			int ret;
 
-			prefix2str(&prefix_local, str,
-				   BGP_FLOWSPEC_STRING_DISPLAY_MAX);
-			ret = snprintf(display, BGP_FLOWSPEC_STRING_DISPLAY_MAX,
-				       "%s/off %u",
-				       str, prefix_offset);
+			ret = snprintfrr(
+				display, BGP_FLOWSPEC_STRING_DISPLAY_MAX,
+				"%pFX/off %u", &prefix_local, prefix_offset);
 			if (ret < 0) {
 				*error = -1;
 				break;
@@ -228,12 +227,8 @@ int bgp_flowspec_ip_address(enum bgp_flowspec_util_nlri_t type,
 				   BGP_FLOWSPEC_STRING_DISPLAY_MAX);
 		break;
 	case BGP_FLOWSPEC_CONVERT_TO_NON_OPAQUE:
-		if (prefix) {
-			if (prefix_local.family == AF_INET)
-				PREFIX_COPY_IPV4(prefix, &prefix_local)
-			else
-				PREFIX_COPY_IPV6(prefix, &prefix_local)
-		}
+		if (prefix)
+			prefix_copy(prefix, &prefix_local);
 		break;
 	case BGP_FLOWSPEC_VALIDATE_ONLY:
 	default:
@@ -638,17 +633,16 @@ int bgp_flowspec_match_rules_fill(uint8_t *nlri_content, int len,
 			offset += ret;
 			break;
 		default:
-			flog_err(EC_LIB_DEVELOPMENT, "%s: unknown type %d\n",
+			flog_err(EC_LIB_DEVELOPMENT, "%s: unknown type %d",
 				 __func__, type);
 		}
 	}
-	if (bpem->match_packet_length_num || bpem->match_fragment_num ||
-	    bpem->match_tcpflags_num || bpem->match_dscp_num ||
-	    bpem->match_packet_length_num || bpem->match_icmp_code_num ||
-	    bpem->match_icmp_type_num || bpem->match_port_num ||
-	    bpem->match_src_port_num || bpem->match_dst_port_num ||
-	    bpem->match_protocol_num || bpem->match_bitmask ||
-	    bpem->match_flowlabel_num)
+	if (bpem->match_packet_length_num || bpem->match_fragment_num
+	    || bpem->match_tcpflags_num || bpem->match_dscp_num
+	    || bpem->match_icmp_code_num || bpem->match_icmp_type_num
+	    || bpem->match_port_num || bpem->match_src_port_num
+	    || bpem->match_dst_port_num || bpem->match_protocol_num
+	    || bpem->match_bitmask || bpem->match_flowlabel_num)
 		bpem->type = BGP_PBR_IPSET;
 	else if ((bpem->match_bitmask_iprule & PREFIX_SRC_PRESENT) ||
 		 (bpem->match_bitmask_iprule & PREFIX_DST_PRESENT))
@@ -671,7 +665,7 @@ bool bgp_flowspec_get_first_nh(struct bgp *bgp, struct bgp_path_info *pi,
 	struct bgp_dest *dest = pi->net;
 	struct bgp_pbr_entry_action *api_action;
 
-	memset(&api, 0, sizeof(struct bgp_pbr_entry_main));
+	memset(&api, 0, sizeof(api));
 	if (bgp_pbr_build_and_validate_entry(bgp_dest_get_prefix(dest), pi,
 					     &api)
 	    < 0)

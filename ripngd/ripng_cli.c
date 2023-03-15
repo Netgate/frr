@@ -80,11 +80,11 @@ DEFPY_YANG (no_router_ripng,
 
 	nb_cli_enqueue_change(vty, xpath, NB_OP_DESTROY, NULL);
 
-	return nb_cli_apply_changes(vty, NULL);
+	return nb_cli_apply_changes_clear_pending(vty, NULL);
 }
 
-void cli_show_router_ripng(struct vty *vty, struct lyd_node *dnode,
-			 bool show_defaults)
+void cli_show_router_ripng(struct vty *vty, const struct lyd_node *dnode,
+			   bool show_defaults)
 {
 	const char *vrf_name;
 
@@ -112,7 +112,7 @@ DEFPY_YANG (ripng_allow_ecmp,
 	return nb_cli_apply_changes(vty, NULL);
 }
 
-void cli_show_ripng_allow_ecmp(struct vty *vty, struct lyd_node *dnode,
+void cli_show_ripng_allow_ecmp(struct vty *vty, const struct lyd_node *dnode,
 			       bool show_defaults)
 {
 	if (!yang_dnode_get_bool(dnode, NULL))
@@ -138,7 +138,7 @@ DEFPY_YANG (ripng_default_information_originate,
 }
 
 void cli_show_ripng_default_information_originate(struct vty *vty,
-						  struct lyd_node *dnode,
+						  const struct lyd_node *dnode,
 						  bool show_defaults)
 {
 	if (!yang_dnode_get_bool(dnode, NULL))
@@ -174,7 +174,8 @@ DEFPY_YANG (no_ripng_default_metric,
 	return nb_cli_apply_changes(vty, NULL);
 }
 
-void cli_show_ripng_default_metric(struct vty *vty, struct lyd_node *dnode,
+void cli_show_ripng_default_metric(struct vty *vty,
+				   const struct lyd_node *dnode,
 				   bool show_defaults)
 {
 	vty_out(vty, " default-metric %s\n",
@@ -197,7 +198,8 @@ DEFPY_YANG (ripng_network_prefix,
 	return nb_cli_apply_changes(vty, NULL);
 }
 
-void cli_show_ripng_network_prefix(struct vty *vty, struct lyd_node *dnode,
+void cli_show_ripng_network_prefix(struct vty *vty,
+				   const struct lyd_node *dnode,
 				   bool show_defaults)
 {
 	vty_out(vty, " network %s\n", yang_dnode_get_string(dnode, NULL));
@@ -219,7 +221,8 @@ DEFPY_YANG (ripng_network_if,
 	return nb_cli_apply_changes(vty, NULL);
 }
 
-void cli_show_ripng_network_interface(struct vty *vty, struct lyd_node *dnode,
+void cli_show_ripng_network_interface(struct vty *vty,
+				      const struct lyd_node *dnode,
 				      bool show_defaults)
 {
 	vty_out(vty, " network %s\n", yang_dnode_get_string(dnode, NULL));
@@ -230,7 +233,7 @@ void cli_show_ripng_network_interface(struct vty *vty, struct lyd_node *dnode,
  */
 DEFPY_YANG (ripng_offset_list,
        ripng_offset_list_cmd,
-       "[no] offset-list WORD$acl <in|out>$direction (0-16)$metric [IFNAME]",
+       "[no] offset-list ACCESSLIST6_NAME$acl <in|out>$direction (0-16)$metric [IFNAME]",
        NO_STR
        "Modify RIPng metric\n"
        "Access-list name\n"
@@ -252,7 +255,7 @@ DEFPY_YANG (ripng_offset_list,
 		ifname ? ifname : "*", direction);
 }
 
-void cli_show_ripng_offset_list(struct vty *vty, struct lyd_node *dnode,
+void cli_show_ripng_offset_list(struct vty *vty, const struct lyd_node *dnode,
 				bool show_defaults)
 {
 	const char *interface;
@@ -284,7 +287,8 @@ DEFPY_YANG (ripng_passive_interface,
 	return nb_cli_apply_changes(vty, NULL);
 }
 
-void cli_show_ripng_passive_interface(struct vty *vty, struct lyd_node *dnode,
+void cli_show_ripng_passive_interface(struct vty *vty,
+				      const struct lyd_node *dnode,
 				      bool show_defaults)
 {
 	vty_out(vty, " passive-interface %s\n",
@@ -320,7 +324,7 @@ DEFPY_YANG (ripng_redistribute,
 				    protocol);
 }
 
-void cli_show_ripng_redistribute(struct vty *vty, struct lyd_node *dnode,
+void cli_show_ripng_redistribute(struct vty *vty, const struct lyd_node *dnode,
 				 bool show_defaults)
 {
 	vty_out(vty, " redistribute %s",
@@ -350,7 +354,7 @@ DEFPY_YANG (ripng_route,
 	return nb_cli_apply_changes(vty, NULL);
 }
 
-void cli_show_ripng_route(struct vty *vty, struct lyd_node *dnode,
+void cli_show_ripng_route(struct vty *vty, const struct lyd_node *dnode,
 			  bool show_defaults)
 {
 	vty_out(vty, " route %s\n", yang_dnode_get_string(dnode, NULL));
@@ -373,7 +377,8 @@ DEFPY_YANG (ripng_aggregate_address,
 	return nb_cli_apply_changes(vty, NULL);
 }
 
-void cli_show_ripng_aggregate_address(struct vty *vty, struct lyd_node *dnode,
+void cli_show_ripng_aggregate_address(struct vty *vty,
+				      const struct lyd_node *dnode,
 				      bool show_defaults)
 {
 	vty_out(vty, " aggregate-address %s\n",
@@ -419,7 +424,7 @@ DEFPY_YANG (no_ripng_timers,
 	return nb_cli_apply_changes(vty, "./timers");
 }
 
-void cli_show_ripng_timers(struct vty *vty, struct lyd_node *dnode,
+void cli_show_ripng_timers(struct vty *vty, const struct lyd_node *dnode,
 			   bool show_defaults)
 {
 	vty_out(vty, " timers basic %s %s %s\n",
@@ -454,7 +459,8 @@ DEFPY_YANG (ipv6_ripng_split_horizon,
 	return nb_cli_apply_changes(vty, "./frr-ripngd:ripng");
 }
 
-void cli_show_ipv6_ripng_split_horizon(struct vty *vty, struct lyd_node *dnode,
+void cli_show_ipv6_ripng_split_horizon(struct vty *vty,
+				       const struct lyd_node *dnode,
 				       bool show_defaults)
 {
 	int value;
@@ -496,17 +502,64 @@ DEFPY_YANG (clear_ipv6_rip,
 		listnode_add(input, yang_vrf);
 	}
 
-	ret = nb_cli_rpc("/frr-ripngd:clear-ripng-route", input, NULL);
+	ret = nb_cli_rpc(vty, "/frr-ripngd:clear-ripng-route", input, NULL);
 
 	list_delete(&input);
 
 	return ret;
 }
 
+DEFUN (ripng_ipv6_distribute_list,
+       ripng_ipv6_distribute_list_cmd,
+       "ipv6 distribute-list [prefix] ACCESSLIST6_NAME <in|out> [WORD]",
+       "IPv6\n"
+       "Filter networks in routing updates\n"
+       "Specify a prefix\n"
+       "Access-list name\n"
+       "Filter incoming routing updates\n"
+       "Filter outgoing routing updates\n"
+       "Interface name\n")
+{
+	const char *ifname = NULL;
+	int prefix = (argv[2]->type == WORD_TKN) ? 1 : 0;
+
+	if (argv[argc - 1]->type == VARIABLE_TKN)
+		ifname = argv[argc - 1]->arg;
+
+	return distribute_list_parser(prefix, false, argv[3 + prefix]->text,
+				      argv[2 + prefix]->arg, ifname);
+}
+
+DEFUN (ripng_no_ipv6_distribute_list,
+       ripng_no_ipv6_distribute_list_cmd,
+       "no ipv6 distribute-list [prefix] ACCESSLIST6_NAME <in|out> [WORD]",
+       NO_STR
+       "IPv6\n"
+       "Filter networks in routing updates\n"
+       "Specify a prefix\n"
+       "Access-list name\n"
+       "Filter incoming routing updates\n"
+       "Filter outgoing routing updates\n"
+       "Interface name\n")
+{
+	const char *ifname = NULL;
+	int prefix = (argv[3]->type == WORD_TKN) ? 1 : 0;
+
+	if (argv[argc - 1]->type == VARIABLE_TKN)
+		ifname = argv[argc - 1]->arg;
+
+	return distribute_list_no_parser(vty, prefix, false,
+					 argv[4 + prefix]->text,
+					 argv[3 + prefix]->arg, ifname);
+}
+
 void ripng_cli_init(void)
 {
 	install_element(CONFIG_NODE, &router_ripng_cmd);
 	install_element(CONFIG_NODE, &no_router_ripng_cmd);
+
+	install_element(RIPNG_NODE, &ripng_ipv6_distribute_list_cmd);
+	install_element(RIPNG_NODE, &ripng_no_ipv6_distribute_list_cmd);
 
 	install_element(RIPNG_NODE, &ripng_allow_ecmp_cmd);
 	install_element(RIPNG_NODE, &ripng_default_information_originate_cmd);

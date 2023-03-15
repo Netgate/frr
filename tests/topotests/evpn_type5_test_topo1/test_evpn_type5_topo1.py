@@ -26,22 +26,20 @@ Following tests are covered to test EVPN-Type5 functionality:
 1. RD verification (manual/auto).
 2. RT verification(manual)
 3. In an active/standby EVPN implementation, if active DCG goes down,
-	secondary takes over.
+        secondary takes over.
 4. EVPN routes are advertised/withdrawn, based on VNFs
-	advertising/withdrawing IP prefixes.
+        advertising/withdrawing IP prefixes.
 5. Route-map operations for EVPN address family.
 6. BGP attributes for EVPN address-family.
 """
 
 import os
-import re
 import sys
 import json
 import time
 import pytest
 import platform
 from copy import deepcopy
-from time import sleep
 
 
 # Save the Current Working Directory to find configuration files.
@@ -55,7 +53,6 @@ sys.path.append(os.path.join(CWD, "../lib/"))
 # Import topogen and topotest helpers
 from lib.topotest import version_cmp
 from lib.topogen import Topogen, get_topogen
-from mininet.topo import Topo
 
 from lib.common_config import (
     start_topology,
@@ -66,30 +63,29 @@ from lib.common_config import (
     verify_rib,
     step,
     create_route_maps,
-    verify_cli_json,
-    start_router_daemons,
     create_static_routes,
-    stop_router,
-    start_router,
     create_vrf_cfg,
     check_router_status,
     apply_raw_config,
     configure_vxlan,
     configure_brctl,
-    verify_vrf_vni,
-    create_interface_in_kernel
+    create_interface_in_kernel,
+    kill_router_daemons,
+    start_router_daemons
 )
 
 from lib.topolog import logger
 from lib.bgp import (
     verify_bgp_convergence,
     create_router_bgp,
-    clear_bgp,
     verify_best_path_as_per_bgp_attribute,
     verify_attributes_for_evpn_routes,
-    verify_evpn_routes
+    verify_evpn_routes,
 )
 from lib.topojson import build_topo_from_json, build_config_from_json
+
+pytestmark = [pytest.mark.bgpd, pytest.mark.staticd]
+
 
 # Reading the data from JSON File for topology creation
 jsonFile = "{}/evpn_type5_topo1.json".format(CWD)
@@ -139,19 +135,8 @@ BRCTL = {
 }
 
 
-class CreateTopo(Topo):
-    """
-    Test BasicTopo - topology 1
-
-    * `Topo`: Topology object
-    """
-
-    def build(self, *_args, **_opts):
-        """Build function"""
-        tgen = get_topogen(self)
-
-        # Building topology from json file
-        build_topo_from_json(tgen, topo)
+def build_topo(tgen):
+    build_topo_from_json(tgen, topo)
 
 
 def setup_module(mod):
@@ -169,19 +154,21 @@ def setup_module(mod):
     logger.info("Running setup_module to create topology")
 
     # This function initiates the topology build with Topogen...
-    tgen = Topogen(CreateTopo, mod.__name__)
+    tgen = Topogen(build_topo, mod.__name__)
     # ... and here it calls Mininet initialization functions.
 
     # Starting topology, create tmp files which are loaded to routers
-    #  to start deamons and then start routers
+    #  to start daemons and then start routers
     start_topology(tgen)
 
     # Creating configuration from JSON
     build_config_from_json(tgen, topo)
 
-    if version_cmp(platform.release(), '4.19') < 0:
-        error_msg = ('EVPN tests will not run (have kernel "{}", '
-            'but it requires >= 4.19)'.format(platform.release()))
+    if version_cmp(platform.release(), "4.19") < 0:
+        error_msg = (
+            'EVPN tests will not run (have kernel "{}", '
+            "but it requires >= 4.19)".format(platform.release())
+        )
         pytest.skip(error_msg)
 
     global BGP_CONVERGENCE
@@ -249,9 +236,7 @@ def prerequisite_config_for_test_suite(tgen):
         }
 
         result = configure_vxlan(tgen, vxlan_input)
-        assert result is True, "Testcase {} on {} :Failed \n Error: {}".format(
-            tc_name, dut, result
-        )
+        assert result is True, "Testcase :Failed \n Error: {}".format(result)
 
         step("Configure bridge interface")
         brctl_input = {
@@ -267,9 +252,7 @@ def prerequisite_config_for_test_suite(tgen):
             }
         }
         result = configure_brctl(tgen, topo, brctl_input)
-        assert result is True, "Testcase {} on {} :Failed \n Error: {}".format(
-            tc_name, dut, result
-        )
+        assert result is True, "Testcase :Failed \n Error: {}".format(result)
 
     step("Configure default routes")
     add_default_routes(tgen)
@@ -338,7 +321,7 @@ def add_default_routes(tgen):
     }
 
     result = create_static_routes(tgen, default_routes)
-    assert result is True, "Testcase {} :Failed \n Error: {}".format(tc_name, result)
+    assert result is True, "Testcase :Failed \n Error: {}".format(result)
 
 
 def test_RD_verification_manual_and_auto_p0(request):
@@ -387,9 +370,9 @@ def test_RD_verification_manual_and_auto_p0(request):
                         "network": NETWORK3_1[addr_type],
                         "next_hop": NEXT_HOP_IP[addr_type],
                         "vrf": "GREEN",
-                    }
+                    },
                 ]
-            }
+            },
         }
 
         result = create_static_routes(tgen, input_dict_1)
@@ -453,7 +436,7 @@ def test_RD_verification_manual_and_auto_p0(request):
                     "vrf": "RED",
                     "address_family": {
                         "l2vpn": {"evpn": {"rd": "100.100.100.100:100"}}
-                    }
+                    },
                 }
             ]
         }
@@ -620,9 +603,9 @@ def test_RT_verification_manual_p0(request):
                         "network": NETWORK3_1[addr_type],
                         "next_hop": NEXT_HOP_IP[addr_type],
                         "vrf": "GREEN",
-                    }
+                    },
                 ]
-            }
+            },
         }
 
         result = create_static_routes(tgen, input_dict_1)
@@ -652,7 +635,7 @@ def test_RT_verification_manual_p0(request):
                         "l2vpn": {
                             "evpn": {"route-target": {"export": [{"value": "100:100"}]}}
                         },
-                    }
+                    },
                 }
             ]
         }
@@ -995,9 +978,9 @@ def test_active_standby_evpn_implementation_p1(request):
                         "network": NETWORK1_4[addr_type],
                         "next_hop": NEXT_HOP_IP[addr_type],
                         "vrf": "GREEN",
-                    }
+                    },
                 ]
-            }
+            },
         }
 
         result = create_static_routes(tgen, input_dict_1)
@@ -1249,9 +1232,9 @@ def test_evpn_routes_from_VNFs_p1(request):
                         "network": NETWORK3_1[addr_type],
                         "next_hop": NEXT_HOP_IP[addr_type],
                         "vrf": "GREEN",
-                    }
+                    },
                 ]
-            }
+            },
         }
 
         result = create_static_routes(tgen, input_dict_1)
@@ -1310,14 +1293,14 @@ def test_evpn_routes_from_VNFs_p1(request):
     )
     for addr_type in ADDR_TYPES:
         input_routes = {key: topo["routers"][key] for key in ["r1"]}
-        result = verify_rib(tgen, addr_type, "d2", input_routes, expected=False)
+        result = verify_rib(tgen, addr_type, "d2", input_routes)
         assert result is True, "Testcase {} :Failed \n Error: {}".format(
             tc_name, result
         )
 
     for addr_type in ADDR_TYPES:
         input_routes = {key: topo["routers"][key] for key in ["r2"]}
-        result = verify_rib(tgen, addr_type, "d2", input_routes, expected=False)
+        result = verify_rib(tgen, addr_type, "d2", input_routes)
         assert result is True, "Testcase {} :Failed \n Error: {}".format(
             tc_name, result
         )
@@ -1343,15 +1326,17 @@ def test_evpn_routes_from_VNFs_p1(request):
     for addr_type in ADDR_TYPES:
         input_routes = {key: topo["routers"][key] for key in ["r1"]}
         result = verify_rib(tgen, addr_type, "d2", input_routes, expected=False)
-        assert result is not True, "Testcase {} :Failed \n "
-        "Routes are still present: {}".format(tc_name, result)
+        assert (
+            result is not True
+        ), "Testcase :Failed \n Routes are still present: {}".format(result)
         logger.info("Expected Behavior: {}".format(result))
 
     for addr_type in ADDR_TYPES:
         input_routes = {key: topo["routers"][key] for key in ["r1"]}
         result = verify_rib(tgen, addr_type, "r3", input_routes, expected=False)
-        assert result is not True, "Testcase {} :Failed \n "
-        "Routes are still present: {}".format(tc_name, result)
+        assert (
+            result is not True
+        ), "Testcase {} :Failed \n Routes are still present: {}".format(tc_name, result)
         logger.info("Expected Behavior: {}".format(result))
 
     step("Re-advertise IP prefixes from VFN(R1).")
@@ -1382,9 +1367,9 @@ def test_evpn_routes_from_VNFs_p1(request):
                         "network": NETWORK3_1[addr_type],
                         "next_hop": NEXT_HOP_IP[addr_type],
                         "vrf": "GREEN",
-                    }
+                    },
                 ]
-            }
+            },
         }
 
         result = create_static_routes(tgen, input_dict_1)
@@ -1426,13 +1411,15 @@ def test_evpn_routes_from_VNFs_p1(request):
         }
 
         result = verify_rib(tgen, addr_type, "d2", input_routes, expected=False)
-        assert result is not True, "Testcase {} :Failed \n "
-        "Routes are still present: {}".format(tc_name, result)
+        assert (
+            result is not True
+        ), "Testcase {} :Failed \n Routes are still present: {}".format(tc_name, result)
         logger.info("Expected Behavior: {}".format(result))
 
         result = verify_rib(tgen, addr_type, "r4", input_routes, expected=False)
-        assert result is not True, "Testcase {} :Failed \n "
-        "Routes are still present: {}".format(tc_name, result)
+        assert (
+            result is not True
+        ), "Testcase {} :Failed \n Routes are still present: {}".format(tc_name, result)
         logger.info("Expected Behavior: {}".format(result))
 
     step("Add vrf BLUE on router Edge-1 again.")
@@ -1473,8 +1460,8 @@ def test_evpn_routes_from_VNFs_p1(request):
                     tgen, dut, intf_name, intf_ipv6, vrf, create=False
                 )
 
-    logger.info("Wait for 60 sec.")
-    sleep(60)
+    result = verify_bgp_convergence(tgen, topo, dut)
+    assert result is True, "Failed to converge on {}".format(dut)
 
     step(
         "Verify that DCG-2 receives EVPN routes corresponding to "
@@ -1527,13 +1514,15 @@ def test_evpn_routes_from_VNFs_p1(request):
     }
 
     result = verify_rib(tgen, addr_type, "d2", input_routes, expected=False)
-    assert result is not True, "Testcase {} :Failed \n "
-    "Routes are still present: {}".format(tc_name, result)
+    assert (
+        result is not True
+    ), "Testcase {} :Failed \n Routes are still present: {}".format(tc_name, result)
     logger.info("Expected Behavior: {}".format(result))
 
     result = verify_rib(tgen, addr_type, "r4", input_routes, expected=False)
-    assert result is not True, "Testcase {} :Failed \n "
-    "Routes are still present: {}".format(tc_name, result)
+    assert (
+        result is not True
+    ), "Testcase {} :Failed \n Routes are still present: {}".format(tc_name, result)
     logger.info("Expected Behavior: {}".format(result))
 
     step("Advertise IPv6 address-family in EVPN advertisements " "for VRF GREEN.")
@@ -1617,9 +1606,9 @@ def test_route_map_operations_for_evpn_address_family_p1(request, attribute):
                         "network": NETWORK3_1[addr_type],
                         "next_hop": NEXT_HOP_IP[addr_type],
                         "vrf": "GREEN",
-                    }
+                    },
                 ]
-            }
+            },
         }
 
         result = create_static_routes(tgen, input_dict_1)
@@ -1768,6 +1757,221 @@ def test_route_map_operations_for_evpn_address_family_p1(request, attribute):
     write_test_footer(tc_name)
 
 
+def test_evpn_address_family_with_graceful_restart_p0(request):
+    """
+    Verify Graceful-restart function for EVPN address-family.
+    """
+
+    tgen = get_topogen()
+    tc_name = request.node.name
+    write_test_header(tc_name)
+    check_router_status(tgen)
+    reset_config_on_routers(tgen)
+    add_default_routes(tgen)
+
+    if tgen.routers_have_failure():
+        pytest.skip(tgen.errors)
+
+    for addr_type in ADDR_TYPES:
+        input_dict_1 = {
+            "r3": {
+                "static_routes": [{
+                    "network": NETWORK1_2[addr_type],
+                    "next_hop": NEXT_HOP_IP[addr_type],
+                    "vrf": "RED"
+                }]
+            },
+            "r4":{
+                "static_routes": [{
+                    "network": NETWORK1_3[addr_type],
+                    "next_hop": NEXT_HOP_IP[addr_type],
+                    "vrf": "BLUE"
+                },
+                {
+                    "network": NETWORK1_4[addr_type],
+                    "next_hop": NEXT_HOP_IP[addr_type],
+                    "vrf": "GREEN"
+                }]
+            }
+        }
+
+        result = create_static_routes(tgen, input_dict_1)
+        assert result is True, 'Testcase {} : Failed \n Error: {}'.format(
+            tc_name, result)
+
+    step("Redistribute static in (IPv4 and IPv6) address-family "
+        "on Edge-1 for all VRFs.")
+
+    input_dict_2={}
+    for dut in ["r3", "r4"]:
+        temp = {dut: {"bgp": []}}
+        input_dict_2.update(temp)
+
+        if dut == "r3":
+            VRFS = ["RED"]
+            AS_NUM = [3]
+        if dut == "r4":
+            VRFS = ["BLUE", "GREEN"]
+            AS_NUM = [4, 4]
+
+        for vrf, as_num in zip(VRFS, AS_NUM):
+            temp[dut]["bgp"].append(
+                {
+                    "local_as": as_num,
+                    "vrf": vrf,
+                    "address_family": {
+                        "ipv4": {
+                            "unicast": {
+                                "redistribute": [{
+                                    "redist_type": "static"
+                                }]
+                            }
+                        },
+                        "ipv6": {
+                            "unicast": {
+                                "redistribute": [{
+                                    "redist_type": "static"
+                                }]
+                            }
+                        }
+                    }
+                })
+
+    result = create_router_bgp(tgen, topo, input_dict_2)
+    assert result is True, "Testcase {} :Failed \n Error: {}". \
+        format(tc_name, result)
+
+    step("Verify on router Edge-1 that EVPN routes corresponding to "
+        "all VRFs are received from both routers DCG-1 and DCG-2")
+
+    for addr_type in ADDR_TYPES:
+        input_routes = {
+            "r3": {
+                "static_routes": [{
+                    "network": NETWORK1_2[addr_type],
+                    "next_hop": NEXT_HOP_IP[addr_type],
+                    "vrf": "RED"
+                }]
+            },
+            "r4":{
+                "static_routes": [{
+                    "network": NETWORK1_3[addr_type],
+                    "next_hop": NEXT_HOP_IP[addr_type],
+                    "vrf": "BLUE"
+                },
+                {
+                    "network": NETWORK1_4[addr_type],
+                    "next_hop": NEXT_HOP_IP[addr_type],
+                    "vrf": "GREEN"
+                }]
+            }
+        }
+
+        result = verify_rib(tgen, addr_type, "e1", input_routes)
+        assert result is True, "Testcase {} :Failed \n Error: {}". \
+            format(tc_name, result)
+
+    step("Configure DCG-2 as GR restarting node for EVPN session between"
+        " DCG-2 and EDGE-1, following by a session reset using 'clear bgp *'"
+        " command.")
+
+    input_dict_gr = {
+        "d2": {
+            "bgp":
+            [
+                {
+                    "local_as": "200",
+                    "graceful-restart": {
+                        "graceful-restart": True,
+                    }
+                }
+            ]
+        }
+    }
+
+    result = create_router_bgp(tgen, topo, input_dict_gr)
+    assert result is True, "Testcase {} : Failed \n Error: {}".format(
+        tc_name, result)
+
+    step("Verify that DCG-2 changes it's role to GR-restarting router "
+        "and EDGE-1 becomes the GR-helper.")
+
+    step("Kill BGPd daemon on DCG-2.")
+    kill_router_daemons(tgen, "d2", ["bgpd"])
+
+    step("Verify that EDGE-1 keep stale entries for EVPN RT-5 routes "
+        "received from DCG-2 before the restart.")
+
+    for addr_type in ADDR_TYPES:
+        input_routes = {
+            "r4":{
+                "static_routes": [{
+                    "network": NETWORK1_3[addr_type],
+                    "next_hop": NEXT_HOP_IP[addr_type],
+                    "vrf": "BLUE"
+                },
+                {
+                    "network": NETWORK1_4[addr_type],
+                    "next_hop": NEXT_HOP_IP[addr_type],
+                    "vrf": "GREEN"
+                }]
+            }
+        }
+        result = verify_evpn_routes(tgen, topo, "e1", input_routes)
+        assert result is True, "Testcase {} :Failed \n Error: {}". \
+            format(tc_name, result)
+
+    step("Verify that DCG-2 keeps BGP routes in Zebra until BGPd "
+        "comes up or end of 'rib-stale-time'")
+
+    step("Start BGPd daemon on DCG-2.")
+    start_router_daemons(tgen, "d2", ["bgpd"])
+
+    step("Verify that EDGE-1 removed all the stale entries.")
+    for addr_type in ADDR_TYPES:
+        input_routes = {
+            "r4":{
+                "static_routes": [{
+                    "network": NETWORK1_3[addr_type],
+                    "next_hop": NEXT_HOP_IP[addr_type],
+                    "vrf": "BLUE"
+                },
+                {
+                    "network": NETWORK1_4[addr_type],
+                    "next_hop": NEXT_HOP_IP[addr_type],
+                    "vrf": "GREEN"
+                }]
+            }
+        }
+        result = verify_evpn_routes(tgen, topo, "e1", input_routes)
+        assert result is True, "Testcase {} :Failed \n Error: {}". \
+            format(tc_name, result)
+
+    step("Verify that DCG-2 refresh zebra with EVPN routes. "
+        "(no significance of 'rib-stale-time'")
+
+    for addr_type in ADDR_TYPES:
+        input_routes = {
+            "r4":{
+                "static_routes": [{
+                    "network": NETWORK1_3[addr_type],
+                    "next_hop": NEXT_HOP_IP[addr_type],
+                    "vrf": "BLUE"
+                },
+                {
+                    "network": NETWORK1_4[addr_type],
+                    "next_hop": NEXT_HOP_IP[addr_type],
+                    "vrf": "GREEN"
+                }]
+            }
+        }
+        result = verify_rib(tgen, addr_type, "d2", input_routes)
+        assert result is True, "Testcase {} :Failed \n Error: {}". \
+            format(tc_name, result)
+
+    write_test_footer(tc_name)
+
+
 @pytest.mark.parametrize("attribute", ["locPrf", "weight", "path"])
 def test_bgp_attributes_for_evpn_address_family_p1(request, attribute):
     """
@@ -1811,9 +2015,9 @@ def test_bgp_attributes_for_evpn_address_family_p1(request, attribute):
                         "network": NETWORK3_1[addr_type],
                         "next_hop": NEXT_HOP_IP[addr_type],
                         "vrf": "GREEN",
-                    }
+                    },
                 ]
-            }
+            },
         }
 
         result = create_static_routes(tgen, input_dict_1)
@@ -1985,7 +2189,7 @@ def test_bgp_attributes_for_evpn_address_family_p1(request, attribute):
         input_dict_1 = {
             "e1": {
                 "route_maps": {
-                    "rmap_d1".format(addr_type): [
+                    "rmap_d1": [
                         {
                             "action": "permit",
                             "set": {
@@ -1996,7 +2200,7 @@ def test_bgp_attributes_for_evpn_address_family_p1(request, attribute):
                             },
                         }
                     ],
-                    "rmap_d2".format(addr_type): [
+                    "rmap_d2": [
                         {
                             "action": "permit",
                             "set": {
@@ -2011,12 +2215,8 @@ def test_bgp_attributes_for_evpn_address_family_p1(request, attribute):
         input_dict_1 = {
             "e1": {
                 "route_maps": {
-                    "rmap_d1".format(addr_type): [
-                        {"action": "permit", "set": {attribute: 120}}
-                    ],
-                    "rmap_d2".format(addr_type): [
-                        {"action": "permit", "set": {attribute: 150}}
-                    ],
+                    "rmap_d1": [{"action": "permit", "set": {attribute: 120}}],
+                    "rmap_d2": [{"action": "permit", "set": {attribute: 150}}],
                 }
             }
         }

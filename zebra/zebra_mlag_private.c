@@ -28,7 +28,7 @@
 #include "thread.h"
 #include "frr_pthread.h"
 #include "libfrr.h"
-#include "version.h"
+#include "lib/version.h"
 #include "network.h"
 
 #include "lib/stream.h"
@@ -48,8 +48,8 @@
 static struct thread_master *zmlag_master;
 static int mlag_socket;
 
-static int zebra_mlag_connect(struct thread *thread);
-static int zebra_mlag_read(struct thread *thread);
+static void zebra_mlag_connect(struct thread *thread);
+static void zebra_mlag_read(struct thread *thread);
 
 /*
  * Write the data to MLAGD
@@ -72,8 +72,9 @@ static void zebra_mlag_sched_read(void)
 			&zrouter.mlag_info.t_read);
 }
 
-static int zebra_mlag_read(struct thread *thread)
+static void zebra_mlag_read(struct thread *thread)
 {
+	static uint32_t mlag_rd_buf_offset;
 	uint32_t *msglen;
 	uint32_t h_msglen;
 	uint32_t tot_len, curr_len = mlag_rd_buf_offset;
@@ -97,13 +98,13 @@ static int zebra_mlag_read(struct thread *thread)
 					   mlag_socket);
 			close(mlag_socket);
 			zebra_mlag_handle_process_state(MLAG_DOWN);
-			return -1;
+			return;
 		}
 		mlag_rd_buf_offset += data_len;
 		if (data_len != (ssize_t)(ZEBRA_MLAG_LEN_SIZE - curr_len)) {
 			/* Try again later */
 			zebra_mlag_sched_read();
-			return 0;
+			return;
 		}
 		curr_len = ZEBRA_MLAG_LEN_SIZE;
 	}
@@ -135,13 +136,13 @@ static int zebra_mlag_read(struct thread *thread)
 					   mlag_socket);
 			close(mlag_socket);
 			zebra_mlag_handle_process_state(MLAG_DOWN);
-			return -1;
+			return;
 		}
 		mlag_rd_buf_offset += data_len;
 		if (data_len != (ssize_t)(tot_len - curr_len)) {
 			/* Try again later */
 			zebra_mlag_sched_read();
-			return 0;
+			return;
 		}
 	}
 
@@ -159,11 +160,11 @@ static int zebra_mlag_read(struct thread *thread)
 
 	/* Register read thread. */
 	zebra_mlag_reset_read_buffer();
+	mlag_rd_buf_offset = 0;
 	zebra_mlag_sched_read();
-	return 0;
 }
 
-static int zebra_mlag_connect(struct thread *thread)
+static void zebra_mlag_connect(struct thread *thread)
 {
 	struct sockaddr_un svr = {0};
 
@@ -176,7 +177,7 @@ static int zebra_mlag_connect(struct thread *thread)
 
 	mlag_socket = socket(svr.sun_family, SOCK_STREAM, 0);
 	if (mlag_socket < 0)
-		return -1;
+		return;
 
 	if (connect(mlag_socket, (struct sockaddr *)&svr, sizeof(svr)) == -1) {
 		if (IS_ZEBRA_DEBUG_MLAG)
@@ -187,7 +188,7 @@ static int zebra_mlag_connect(struct thread *thread)
 		zrouter.mlag_info.timer_running = true;
 		thread_add_timer(zmlag_master, zebra_mlag_connect, NULL, 10,
 				 &zrouter.mlag_info.t_read);
-		return 0;
+		return;
 	}
 
 	set_nonblocking(mlag_socket);
@@ -202,7 +203,6 @@ static int zebra_mlag_connect(struct thread *thread)
 	 * Connection is established with MLAGD, post to clients
 	 */
 	zebra_mlag_handle_process_state(MLAG_UP);
-	return 0;
 }
 
 /*
@@ -295,4 +295,4 @@ FRR_MODULE_SETUP(
 	.version = FRR_VERSION,
 	.description = "zebra Cumulus MLAG interface",
 	.init = zebra_mlag_module_init,
-)
+);

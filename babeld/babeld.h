@@ -41,20 +41,6 @@ THE SOFTWARE.
 #define MAX(x,y) ((x)<=(y)?(y):(x))
 #define MIN(x,y) ((x)<=(y)?(x):(y))
 
-#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
-/* nothing */
-#elif defined(__GNUC__)
-#define inline __inline
-#if  (__GNUC__ >= 3)
-#define restrict __restrict
-#else
-#define restrict /**/
-#endif
-#else
-#define inline /**/
-#define restrict /**/
-#endif
-
 #if defined(__GNUC__) && (__GNUC__ >= 3)
 #define ATTRIBUTE(x) __attribute__ (x)
 #define LIKELY(_x) __builtin_expect(!!(_x), 1)
@@ -95,6 +81,11 @@ THE SOFTWARE.
 #define BABEL_DEFAULT_HELLO_INTERVAL 4000
 #define BABEL_DEFAULT_UPDATE_INTERVAL 16000
 #define BABEL_DEFAULT_RESEND_DELAY 2000
+#define BABEL_DEFAULT_RTT_DECAY 42
+
+/* Values in microseconds */
+#define BABEL_DEFAULT_RTT_MIN 10000
+#define BABEL_DEFAULT_RTT_MAX 120000
 
 /* In units of seconds */
 #define BABEL_DEFAULT_SMOOTHING_HALF_LIFE 4
@@ -104,6 +95,7 @@ THE SOFTWARE.
 
 #define BABEL_DEFAULT_RXCOST_WIRED 96
 #define BABEL_DEFAULT_RXCOST_WIRELESS 256
+#define BABEL_DEFAULT_MAX_RTT_PENALTY 150
 
 /* Babel structure. */
 struct babel

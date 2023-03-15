@@ -30,7 +30,7 @@
 extern "C" {
 #endif
 
-DECLARE_MTYPE(WORK_QUEUE)
+DECLARE_MTYPE(WORK_QUEUE);
 
 /* Hold time for the initial schedule of a queue run, in  millisec */
 #define WORK_QUEUE_DEFAULT_HOLD 50
@@ -177,7 +177,7 @@ extern void work_queue_unplug(struct work_queue *wq);
 bool work_queue_is_scheduled(struct work_queue *);
 
 /* Helpers, exported for thread.c and command.c */
-extern int work_queue_run(struct thread *);
+extern void work_queue_run(struct thread *);
 
 extern void workqueue_cmd_init(void);
 

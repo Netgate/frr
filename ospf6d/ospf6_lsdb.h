@@ -29,6 +29,7 @@ struct ospf6_lsdb {
 	void *data; /* data structure that holds this lsdb */
 	struct route_table *table;
 	uint32_t count;
+	uint32_t stats[OSPF6_LSTYPE_SIZE];
 	void (*hook_add)(struct ospf6_lsa *);
 	void (*hook_remove)(struct ospf6_lsa *);
 };
@@ -66,11 +67,19 @@ extern struct ospf6_lsa *ospf6_lsdb_next(const struct route_node *iterend,
 	lsa;                                                                   \
 	lsa = ospf6_lsdb_next(iterend, lsa)
 
-#define ALL_LSDB(lsdb, lsa)                                                    \
+/*
+ * Since we are locking the lsa in ospf6_lsdb_head
+ * and then unlocking it in ospf6_lsa_unlock, when
+ * we cache the next pointer we need to increment
+ * the lock for the lsa so we don't accidentally free
+ * it really early.
+ */
+#define ALL_LSDB(lsdb, lsa, lsanext)                                           \
 	const struct route_node *iterend =                                     \
 		ospf6_lsdb_head(lsdb, 0, 0, 0, &lsa);                          \
-	lsa;                                                                   \
-	lsa = ospf6_lsdb_next(iterend, lsa)
+	(lsa) != NULL && ospf6_lsa_lock(lsa)                                   \
+		&& ((lsanext) = ospf6_lsdb_next(iterend, (lsa)), 1);           \
+	ospf6_lsa_unlock(lsa), (lsa) = (lsanext)
 
 extern void ospf6_lsdb_remove_all(struct ospf6_lsdb *lsdb);
 extern void ospf6_lsdb_lsa_unlock(struct ospf6_lsa *lsa);
@@ -84,7 +93,8 @@ enum ospf_lsdb_show_level {
 
 extern void ospf6_lsdb_show(struct vty *vty, enum ospf_lsdb_show_level level,
 			    uint16_t *type, uint32_t *id, uint32_t *adv_router,
-			    struct ospf6_lsdb *lsdb);
+			    struct ospf6_lsdb *lsdb, json_object *json,
+			    bool use_json);
 
 extern uint32_t ospf6_new_ls_id(uint16_t type, uint32_t adv_router,
 				struct ospf6_lsdb *lsdb);

@@ -64,7 +64,7 @@ const char *lookup_msg(const struct message *mz, int kz, const char *nf)
 }
 
 /* For time string format. */
-size_t quagga_timestamp(int timestamp_precision, char *buf, size_t buflen)
+size_t frr_timestamp(int timestamp_precision, char *buf, size_t buflen)
 {
 	static struct {
 		time_t last;
@@ -161,8 +161,9 @@ void zlog_signal(int signo, const char *action, void *siginfo_v,
 	if (!tc)
 		bprintfrr(&fb, "no thread information available\n");
 	else
-		bprintfrr(&fb, "in thread %s scheduled from %s:%d\n",
-			  tc->funcname, tc->schedfrom, tc->schedfrom_line);
+		bprintfrr(&fb, "in thread %s scheduled from %s:%d %s()\n",
+			  tc->xref->funcname, tc->xref->xref.file,
+			  tc->xref->xref.line, tc->xref->xref.func);
 
 	zlog_sigsafe(fb.buf, fb.pos - fb.buf);
 }
@@ -238,7 +239,7 @@ void zlog_backtrace(int priority)
 {
 #ifdef HAVE_LIBUNWIND
 	char buf[100];
-	unw_cursor_t cursor;
+	unw_cursor_t cursor = {};
 	unw_context_t uc;
 	unw_word_t ip, off, sp;
 	Dl_info dlinfo;
@@ -303,21 +304,11 @@ void zlog_thread_info(int log_level)
 
 	if (tc)
 		zlog(log_level,
-		     "Current thread function %s, scheduled from file %s, line %u",
-		     tc->funcname, tc->schedfrom, tc->schedfrom_line);
+		     "Current thread function %s, scheduled from file %s, line %u in %s()",
+		     tc->xref->funcname, tc->xref->xref.file,
+		     tc->xref->xref.line, tc->xref->xref.func);
 	else
 		zlog(log_level, "Current thread not known/applicable");
-}
-
-void _zlog_assert_failed(const char *assertion, const char *file,
-			 unsigned int line, const char *function)
-{
-	zlog(LOG_CRIT, "Assertion `%s' failed in file %s, line %u, function %s",
-	     assertion, file, line, (function ? function : "?"));
-	zlog_backtrace(LOG_CRIT);
-	zlog_thread_info(LOG_CRIT);
-	log_memstats(stderr, "log");
-	abort();
 }
 
 void memory_oom(size_t size, const char *name)
@@ -364,9 +355,6 @@ static const struct zebra_desc_table command_types[] = {
 	DESC_ENTRY(ZEBRA_INTERFACE_NBR_ADDRESS_ADD),
 	DESC_ENTRY(ZEBRA_INTERFACE_NBR_ADDRESS_DELETE),
 	DESC_ENTRY(ZEBRA_INTERFACE_BFD_DEST_UPDATE),
-	DESC_ENTRY(ZEBRA_IMPORT_ROUTE_REGISTER),
-	DESC_ENTRY(ZEBRA_IMPORT_ROUTE_UNREGISTER),
-	DESC_ENTRY(ZEBRA_IMPORT_CHECK_UPDATE),
 	DESC_ENTRY(ZEBRA_BFD_DEST_REGISTER),
 	DESC_ENTRY(ZEBRA_BFD_DEST_DEREGISTER),
 	DESC_ENTRY(ZEBRA_BFD_DEST_UPDATE),
@@ -382,7 +370,7 @@ static const struct zebra_desc_table command_types[] = {
 	DESC_ENTRY(ZEBRA_BFD_CLIENT_DEREGISTER),
 	DESC_ENTRY(ZEBRA_INTERFACE_ENABLE_RADV),
 	DESC_ENTRY(ZEBRA_INTERFACE_DISABLE_RADV),
-	DESC_ENTRY(ZEBRA_IPV4_NEXTHOP_LOOKUP_MRIB),
+	DESC_ENTRY(ZEBRA_NEXTHOP_LOOKUP_MRIB),
 	DESC_ENTRY(ZEBRA_INTERFACE_LINK_PARAMS),
 	DESC_ENTRY(ZEBRA_MPLS_LABELS_ADD),
 	DESC_ENTRY(ZEBRA_MPLS_LABELS_DELETE),
@@ -455,7 +443,25 @@ static const struct zebra_desc_table command_types[] = {
 	DESC_ENTRY(ZEBRA_OPAQUE_MESSAGE),
 	DESC_ENTRY(ZEBRA_OPAQUE_REGISTER),
 	DESC_ENTRY(ZEBRA_OPAQUE_UNREGISTER),
-	DESC_ENTRY(ZEBRA_NEIGH_DISCOVER)};
+	DESC_ENTRY(ZEBRA_NEIGH_DISCOVER),
+	DESC_ENTRY(ZEBRA_NHG_ADD),
+	DESC_ENTRY(ZEBRA_NHG_DEL),
+	DESC_ENTRY(ZEBRA_NHG_NOTIFY_OWNER),
+	DESC_ENTRY(ZEBRA_ROUTE_NOTIFY_REQUEST),
+	DESC_ENTRY(ZEBRA_CLIENT_CLOSE_NOTIFY),
+	DESC_ENTRY(ZEBRA_EVPN_REMOTE_NH_ADD),
+	DESC_ENTRY(ZEBRA_EVPN_REMOTE_NH_DEL),
+	DESC_ENTRY(ZEBRA_NHRP_NEIGH_ADDED),
+	DESC_ENTRY(ZEBRA_NHRP_NEIGH_REMOVED),
+	DESC_ENTRY(ZEBRA_NHRP_NEIGH_GET),
+	DESC_ENTRY(ZEBRA_NHRP_NEIGH_REGISTER),
+	DESC_ENTRY(ZEBRA_NHRP_NEIGH_UNREGISTER),
+	DESC_ENTRY(ZEBRA_NEIGH_IP_ADD),
+	DESC_ENTRY(ZEBRA_NEIGH_IP_DEL),
+	DESC_ENTRY(ZEBRA_CONFIGURE_ARP),
+	DESC_ENTRY(ZEBRA_GRE_GET),
+	DESC_ENTRY(ZEBRA_GRE_UPDATE),
+	DESC_ENTRY(ZEBRA_GRE_SOURCE_SET)};
 #undef DESC_ENTRY
 
 static const struct zebra_desc_table unknown = {0, "unknown", '?'};

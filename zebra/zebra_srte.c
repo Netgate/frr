@@ -24,12 +24,11 @@
 #include "lib/lib_errors.h"
 
 #include "zebra/zebra_srte.h"
-#include "zebra/zebra_memory.h"
 #include "zebra/zebra_mpls.h"
 #include "zebra/zebra_rnh.h"
 #include "zebra/zapi_msg.h"
 
-DEFINE_MTYPE_STATIC(ZEBRA, ZEBRA_SR_POLICY, "SR Policy")
+DEFINE_MTYPE_STATIC(ZEBRA, ZEBRA_SR_POLICY, "SR Policy");
 
 static void zebra_sr_policy_deactivate(struct zebra_sr_policy *policy);
 
@@ -100,7 +99,7 @@ struct zebra_sr_policy *zebra_sr_policy_find_by_name(char *name)
 static int zebra_sr_policy_notify_update_client(struct zebra_sr_policy *policy,
 						struct zserv *client)
 {
-	const zebra_nhlfe_t *nhlfe;
+	const struct zebra_nhlfe *nhlfe;
 	struct stream *s;
 	uint32_t message = 0;
 	unsigned long nump = 0;
@@ -117,13 +116,26 @@ static int zebra_sr_policy_notify_update_client(struct zebra_sr_policy *policy,
 	SET_FLAG(message, ZAPI_MESSAGE_SRTE);
 	stream_putl(s, message);
 
+	stream_putw(s, SAFI_UNICAST);
+	/*
+	 * The prefix is copied twice because the ZEBRA_NEXTHOP_UPDATE
+	 * code was modified to send back both the matched against
+	 * as well as the actual matched.  There does not appear to
+	 * be an equivalent here so just send the same thing twice.
+	 */
 	switch (policy->endpoint.ipa_type) {
 	case IPADDR_V4:
 		stream_putw(s, AF_INET);
 		stream_putc(s, IPV4_MAX_BITLEN);
 		stream_put_in_addr(s, &policy->endpoint.ipaddr_v4);
+		stream_putw(s, AF_INET);
+		stream_putc(s, IPV4_MAX_BITLEN);
+		stream_put_in_addr(s, &policy->endpoint.ipaddr_v4);
 		break;
 	case IPADDR_V6:
+		stream_putw(s, AF_INET6);
+		stream_putc(s, IPV6_MAX_BITLEN);
+		stream_put(s, &policy->endpoint.ipaddr_v6, IPV6_MAX_BYTELEN);
 		stream_putw(s, AF_INET6);
 		stream_putc(s, IPV6_MAX_BITLEN);
 		stream_put(s, &policy->endpoint.ipaddr_v6, IPV6_MAX_BYTELEN);
@@ -162,7 +174,6 @@ static int zebra_sr_policy_notify_update_client(struct zebra_sr_policy *policy,
 	stream_putw_at(s, 0, stream_get_endp(s));
 
 	client->nh_last_upd_time = monotime(NULL);
-	client->last_write_cmd = ZEBRA_NEXTHOP_UPDATE;
 	return zserv_send_message(client, s);
 
 failure:
@@ -198,7 +209,7 @@ static void zebra_sr_policy_notify_update(struct zebra_sr_policy *policy)
 		exit(1);
 	}
 
-	rnh = zebra_lookup_rnh(&p, zvrf_id(zvrf), RNH_NEXTHOP_TYPE);
+	rnh = zebra_lookup_rnh(&p, zvrf_id(zvrf), SAFI_UNICAST);
 	if (!rnh)
 		return;
 
@@ -207,13 +218,13 @@ static void zebra_sr_policy_notify_update(struct zebra_sr_policy *policy)
 			zebra_sr_policy_notify_update_client(policy, client);
 		else
 			/* Fallback to the IGP shortest path. */
-			zebra_send_rnh_update(rnh, client, RNH_NEXTHOP_TYPE,
-					      zvrf_id(zvrf), policy->color);
+			zebra_send_rnh_update(rnh, client, zvrf_id(zvrf),
+					      policy->color);
 	}
 }
 
 static void zebra_sr_policy_activate(struct zebra_sr_policy *policy,
-				     zebra_lsp_t *lsp)
+				     struct zebra_lsp *lsp)
 {
 	policy->status = ZEBRA_SR_POLICY_UP;
 	policy->lsp = lsp;
@@ -224,7 +235,7 @@ static void zebra_sr_policy_activate(struct zebra_sr_policy *policy,
 }
 
 static void zebra_sr_policy_update(struct zebra_sr_policy *policy,
-				   zebra_lsp_t *lsp,
+				   struct zebra_lsp *lsp,
 				   struct zapi_srte_tunnel *old_tunnel)
 {
 	bool bsid_changed;
@@ -269,7 +280,7 @@ int zebra_sr_policy_validate(struct zebra_sr_policy *policy,
 			     struct zapi_srte_tunnel *new_tunnel)
 {
 	struct zapi_srte_tunnel old_tunnel = policy->segment_list;
-	zebra_lsp_t *lsp;
+	struct zebra_lsp *lsp;
 
 	if (new_tunnel)
 		policy->segment_list = *new_tunnel;
@@ -295,7 +306,7 @@ int zebra_sr_policy_validate(struct zebra_sr_policy *policy,
 int zebra_sr_policy_bsid_install(struct zebra_sr_policy *policy)
 {
 	struct zapi_srte_tunnel *zt = &policy->segment_list;
-	zebra_nhlfe_t *nhlfe;
+	struct zebra_nhlfe *nhlfe;
 
 	if (zt->local_label == MPLS_LABEL_NONE)
 		return 0;

@@ -34,7 +34,7 @@
 #include "lib_errors.h"
 #include "stream.h"
 #include "libfrr.h"
-#include "version.h"
+#include "lib/version.h"
 #include "jhash.h"
 #include "termtable.h"
 
@@ -49,6 +49,7 @@
 #include "bgpd/bgp_fsm.h"
 #include "bgpd/bgp_updgrp.h"
 #include "bgpd/bgp_vty.h"
+#include "bgpd/bgp_trace.h"
 
 static void bmp_close(struct bmp *bmp);
 static struct bmp_bgp *bmp_bgp_find(struct bgp *bgp);
@@ -58,21 +59,21 @@ static struct bmp_bgp_peer *bmp_bgp_peer_get(struct peer *peer);
 static void bmp_active_disconnected(struct bmp_active *ba);
 static void bmp_active_put(struct bmp_active *ba);
 
-DEFINE_MGROUP(BMP, "BMP (BGP Monitoring Protocol)")
+DEFINE_MGROUP(BMP, "BMP (BGP Monitoring Protocol)");
 
-DEFINE_MTYPE_STATIC(BMP, BMP_CONN,	"BMP connection state")
-DEFINE_MTYPE_STATIC(BMP, BMP_TARGETS,	"BMP targets")
-DEFINE_MTYPE_STATIC(BMP, BMP_TARGETSNAME, "BMP targets name")
-DEFINE_MTYPE_STATIC(BMP, BMP_LISTENER,	"BMP listener")
-DEFINE_MTYPE_STATIC(BMP, BMP_ACTIVE,	"BMP active connection config")
-DEFINE_MTYPE_STATIC(BMP, BMP_ACLNAME,	"BMP access-list name")
-DEFINE_MTYPE_STATIC(BMP, BMP_QUEUE,	"BMP update queue item")
-DEFINE_MTYPE_STATIC(BMP, BMP,		"BMP instance state")
-DEFINE_MTYPE_STATIC(BMP, BMP_MIRRORQ,	"BMP route mirroring buffer")
-DEFINE_MTYPE_STATIC(BMP, BMP_PEER,	"BMP per BGP peer data")
-DEFINE_MTYPE_STATIC(BMP, BMP_OPEN,	"BMP stored BGP OPEN message")
+DEFINE_MTYPE_STATIC(BMP, BMP_CONN,	"BMP connection state");
+DEFINE_MTYPE_STATIC(BMP, BMP_TARGETS,	"BMP targets");
+DEFINE_MTYPE_STATIC(BMP, BMP_TARGETSNAME, "BMP targets name");
+DEFINE_MTYPE_STATIC(BMP, BMP_LISTENER,	"BMP listener");
+DEFINE_MTYPE_STATIC(BMP, BMP_ACTIVE,	"BMP active connection config");
+DEFINE_MTYPE_STATIC(BMP, BMP_ACLNAME,	"BMP access-list name");
+DEFINE_MTYPE_STATIC(BMP, BMP_QUEUE,	"BMP update queue item");
+DEFINE_MTYPE_STATIC(BMP, BMP,		"BMP instance state");
+DEFINE_MTYPE_STATIC(BMP, BMP_MIRRORQ,	"BMP route mirroring buffer");
+DEFINE_MTYPE_STATIC(BMP, BMP_PEER,	"BMP per BGP peer data");
+DEFINE_MTYPE_STATIC(BMP, BMP_OPEN,	"BMP stored BGP OPEN message");
 
-DEFINE_QOBJ_TYPE(bmp_targets)
+DEFINE_QOBJ_TYPE(bmp_targets);
 
 static int bmp_bgp_cmp(const struct bmp_bgp *a, const struct bmp_bgp *b)
 {
@@ -88,7 +89,7 @@ static uint32_t bmp_bgp_hash(const struct bmp_bgp *e)
 	return jhash(&e->bgp, sizeof(e->bgp), 0x55aa5a5a);
 }
 
-DECLARE_HASH(bmp_bgph, struct bmp_bgp, bbi, bmp_bgp_cmp, bmp_bgp_hash)
+DECLARE_HASH(bmp_bgph, struct bmp_bgp, bbi, bmp_bgp_cmp, bmp_bgp_hash);
 
 struct bmp_bgph_head bmp_bgph;
 
@@ -108,11 +109,11 @@ static uint32_t bmp_bgp_peer_hash(const struct bmp_bgp_peer *e)
 }
 
 DECLARE_HASH(bmp_peerh, struct bmp_bgp_peer, bpi,
-		bmp_bgp_peer_cmp, bmp_bgp_peer_hash)
+		bmp_bgp_peer_cmp, bmp_bgp_peer_hash);
 
 struct bmp_peerh_head bmp_peerh;
 
-DECLARE_LIST(bmp_mirrorq, struct bmp_mirrorq, bmi)
+DECLARE_LIST(bmp_mirrorq, struct bmp_mirrorq, bmi);
 
 /* listener management */
 
@@ -131,7 +132,14 @@ static int bmp_listener_cmp(const struct bmp_listener *a,
 	return 0;
 }
 
-DECLARE_SORTLIST_UNIQ(bmp_listeners, struct bmp_listener, bli, bmp_listener_cmp)
+DECLARE_SORTLIST_UNIQ(bmp_listeners, struct bmp_listener, bli,
+		      bmp_listener_cmp);
+
+static void bmp_listener_put(struct bmp_listener *bl)
+{
+	bmp_listeners_del(&bl->targets->listeners, bl);
+	XFREE(MTYPE_BMP_LISTENER, bl);
+}
 
 static int bmp_targets_cmp(const struct bmp_targets *a,
 			   const struct bmp_targets *b)
@@ -139,11 +147,11 @@ static int bmp_targets_cmp(const struct bmp_targets *a,
 	return strcmp(a->name, b->name);
 }
 
-DECLARE_SORTLIST_UNIQ(bmp_targets, struct bmp_targets, bti, bmp_targets_cmp)
+DECLARE_SORTLIST_UNIQ(bmp_targets, struct bmp_targets, bti, bmp_targets_cmp);
 
-DECLARE_LIST(bmp_session, struct bmp, bsi)
+DECLARE_LIST(bmp_session, struct bmp, bsi);
 
-DECLARE_DLIST(bmp_qlist, struct bmp_queue_entry, bli)
+DECLARE_DLIST(bmp_qlist, struct bmp_queue_entry, bli);
 
 static int bmp_qhash_cmp(const struct bmp_queue_entry *a,
 		const struct bmp_queue_entry *b)
@@ -188,7 +196,7 @@ static uint32_t bmp_qhash_hkey(const struct bmp_queue_entry *e)
 }
 
 DECLARE_HASH(bmp_qhash, struct bmp_queue_entry, bhi,
-		bmp_qhash_cmp, bmp_qhash_hkey)
+		bmp_qhash_cmp, bmp_qhash_hkey);
 
 static int bmp_active_cmp(const struct bmp_active *a,
 		const struct bmp_active *b)
@@ -205,7 +213,7 @@ static int bmp_active_cmp(const struct bmp_active *a,
 	return 0;
 }
 
-DECLARE_SORTLIST_UNIQ(bmp_actives, struct bmp_active, bai, bmp_active_cmp)
+DECLARE_SORTLIST_UNIQ(bmp_actives, struct bmp_active, bai, bmp_active_cmp);
 
 static struct bmp *bmp_new(struct bmp_targets *bt, int bmp_sock)
 {
@@ -363,7 +371,7 @@ static struct stream *bmp_peerstate(struct peer *peer, bool down)
 #define BGP_BMP_MAX_PACKET_SIZE	1024
 	s = stream_new(BGP_MAX_PACKET_SIZE);
 
-	if (peer->status == Established && !down) {
+	if (peer_established(peer) && !down) {
 		struct bmp_bgp_peer *bbpeer;
 
 		bmp_common_hdr(s, BMP_VERSION_3,
@@ -554,6 +562,8 @@ static int bmp_mirror_packet(struct peer *peer, uint8_t type, bgp_size_t size,
 	struct bmp_targets *bt;
 	struct bmp *bmp;
 
+	frrtrace(3, frr_bgp, bmp_mirror_packet, peer, type, packet);
+
 	gettimeofday(&tv, NULL);
 
 	if (type == BGP_MSG_OPEN) {
@@ -671,6 +681,8 @@ static int bmp_outgoing_packet(struct peer *peer, uint8_t type, bgp_size_t size,
 		struct stream *packet)
 {
 	if (type == BGP_MSG_OPEN) {
+		frrtrace(2, frr_bgp, bmp_update_saved_open, peer, packet);
+
 		struct bmp_bgp_peer *bbpeer = bmp_bgp_peer_get(peer);
 
 		XFREE(MTYPE_BMP_OPEN, bbpeer->open_tx);
@@ -682,20 +694,32 @@ static int bmp_outgoing_packet(struct peer *peer, uint8_t type, bgp_size_t size,
 	return 0;
 }
 
-static int bmp_peer_established(struct peer *peer)
+static int bmp_peer_status_changed(struct peer *peer)
 {
 	struct bmp_bgp *bmpbgp = bmp_bgp_find(peer->bgp);
+	struct bmp_bgp_peer *bbpeer, *bbdopp;
+
+	frrtrace(1, frr_bgp, bmp_peer_status_changed, peer);
 
 	if (!bmpbgp)
 		return 0;
+
+	if (peer->status == Deleted) {
+		bbpeer = bmp_bgp_peer_find(peer->qobj_node.nid);
+		if (bbpeer) {
+			XFREE(MTYPE_BMP_OPEN, bbpeer->open_rx);
+			XFREE(MTYPE_BMP_OPEN, bbpeer->open_tx);
+			bmp_peerh_del(&bmp_peerh, bbpeer);
+			XFREE(MTYPE_BMP_PEER, bbpeer);
+		}
+		return 0;
+	}
 
 	/* Check if this peer just went to Established */
 	if ((peer->ostatus != OpenConfirm) || !(peer_established(peer)))
 		return 0;
 
 	if (peer->doppelganger && (peer->doppelganger->status != Deleted)) {
-		struct bmp_bgp_peer *bbpeer, *bbdopp;
-
 		bbpeer = bmp_bgp_peer_get(peer);
 		bbdopp = bmp_bgp_peer_find(peer->doppelganger->qobj_node.nid);
 		if (bbdopp) {
@@ -721,6 +745,8 @@ static int bmp_peer_backward(struct peer *peer)
 	struct bmp_bgp *bmpbgp = bmp_bgp_find(peer->bgp);
 	struct bmp_bgp_peer *bbpeer;
 
+	frrtrace(1, frr_bgp, bmp_peer_backward_transition, peer);
+
 	if (!bmpbgp)
 		return 0;
 
@@ -741,8 +767,10 @@ static void bmp_eor(struct bmp *bmp, afi_t afi, safi_t safi, uint8_t flags)
 	struct peer *peer;
 	struct listnode *node;
 	struct stream *s, *s2;
-	iana_afi_t pkt_afi;
-	iana_safi_t pkt_safi;
+	iana_afi_t pkt_afi = IANA_AFI_IPV4;
+	iana_safi_t pkt_safi = IANA_SAFI_UNICAST;
+
+	frrtrace(3, frr_bgp, bmp_eor, afi, safi, flags);
 
 	s = stream_new(BGP_MAX_PACKET_SIZE);
 
@@ -1134,7 +1162,7 @@ static bool bmp_wrqueue(struct bmp *bmp, struct pullwr *pullwr)
 		zlog_info("bmp: skipping queued item for deleted peer");
 		goto out;
 	}
-	if (peer->status != Established)
+	if (!peer_established(peer))
 		goto out;
 
 	bn = bgp_node_lookup(bmp->targets->bgp->rib[afi][safi], &bqe->p);
@@ -1167,7 +1195,7 @@ static bool bmp_wrqueue(struct bmp *bmp, struct pullwr *pullwr)
 			if (adjin->peer == peer)
 				break;
 		}
-		bmp_monitor(bmp, peer, BMP_PEER_FLAG_L, &bqe->p, prd,
+		bmp_monitor(bmp, peer, 0, &bqe->p, prd,
 			    adjin ? adjin->attr : NULL, afi, safi,
 			    adjin ? adjin->uptime : monotime(NULL));
 		written = true;
@@ -1260,6 +1288,14 @@ static int bmp_process(struct bgp *bgp, afi_t afi, safi_t safi,
 	struct bmp_targets *bt;
 	struct bmp *bmp;
 
+	if (frrtrace_enabled(frr_bgp, bmp_process)) {
+		char pfxprint[PREFIX2STR_BUFFER];
+
+		prefix2str(&bn->p, pfxprint, sizeof(pfxprint));
+		frrtrace(5, frr_bgp, bmp_process, peer, pfxprint, afi, safi,
+			 withdraw);
+	}
+
 	if (!bmpbgp)
 		return 0;
 
@@ -1285,7 +1321,7 @@ static void bmp_stat_put_u32(struct stream *s, size_t *cnt, uint16_t type,
 	(*cnt)++;
 }
 
-static int bmp_stats(struct thread *thread)
+static void bmp_stats(struct thread *thread)
 {
 	struct bmp_targets *bt = THREAD_ARG(thread);
 	struct stream *s;
@@ -1303,7 +1339,7 @@ static int bmp_stats(struct thread *thread)
 	for (ALL_LIST_ELEMENTS_RO(bt->bgp->peer, node, peer)) {
 		size_t count = 0, count_pos, len;
 
-		if (peer->status != Established)
+		if (!peer_established(peer))
 			continue;
 
 		s = stream_new(BGP_MAX_PACKET_SIZE);
@@ -1335,7 +1371,31 @@ static int bmp_stats(struct thread *thread)
 
 		bmp_send_all(bt->bmpbgp, s);
 	}
-	return 0;
+}
+
+/* read from the BMP socket to detect session termination */
+static void bmp_read(struct thread *t)
+{
+	struct bmp *bmp = THREAD_ARG(t);
+	char buf[1024];
+	ssize_t n;
+
+	bmp->t_read = NULL;
+
+	n = read(bmp->socket, buf, sizeof(buf));
+	if (n >= 1) {
+		zlog_info("bmp[%s]: unexpectedly received %zu bytes", bmp->remote, n);
+	} else if (n == 0) {
+		/* the TCP session was terminated by the far end */
+		bmp_wrerr(bmp, NULL, true);
+		return;
+	} else if (!(errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+		/* the TCP session experienced a fatal error, likely a timeout */
+		bmp_wrerr(bmp, NULL, false);
+		return;
+	}
+
+	thread_add_read(bm->master, bmp_read, bmp, bmp->socket, &bmp->t_read);
 }
 
 static struct bmp *bmp_open(struct bmp_targets *bt, int bmp_sock)
@@ -1358,9 +1418,11 @@ static struct bmp *bmp_open(struct bmp_targets *bt, int bmp_sock)
 
 	set_nonblocking(bmp_sock);
 	set_cloexec(bmp_sock);
-	shutdown(bmp_sock, SHUT_RD);
 
-	sockunion2hostprefix(&su, &p);
+	if (!sockunion2hostprefix(&su, &p)) {
+		close(bmp_sock);
+		return NULL;
+	}
 
 	acl = NULL;
 	switch (p.family) {
@@ -1409,13 +1471,14 @@ static struct bmp *bmp_open(struct bmp_targets *bt, int bmp_sock)
 	bmp->state = BMP_PeerUp;
 	bmp->pullwr = pullwr_new(bm->master, bmp_sock, bmp, bmp_wrfill,
 			bmp_wrerr);
+	thread_add_read(bm->master, bmp_read, bmp, bmp_sock, &bmp->t_read);
 	bmp_send_initiation(bmp);
 
 	return bmp;
 }
 
 /* Accept BMP connection. */
-static int bmp_accept(struct thread *thread)
+static void bmp_accept(struct thread *thread)
 {
 	union sockunion su;
 	struct bmp_listener *bl = THREAD_ARG(thread);
@@ -1430,16 +1493,17 @@ static int bmp_accept(struct thread *thread)
 	bmp_sock = sockunion_accept(bl->sock, &su);
 	if (bmp_sock < 0) {
 		zlog_info("bmp: accept_sock failed: %s", safe_strerror(errno));
-		return -1;
+		return;
 	}
 	bmp_open(bl->targets, bmp_sock);
-	return 0;
 }
 
 static void bmp_close(struct bmp *bmp)
 {
 	struct bmp_queue_entry *bqe;
 	struct bmp_mirrorq *bmq;
+
+	THREAD_OFF(bmp->t_read);
 
 	if (bmp->active)
 		bmp_active_disconnected(bmp->active);
@@ -1482,11 +1546,16 @@ static struct bmp_bgp *bmp_bgp_get(struct bgp *bgp)
 static void bmp_bgp_put(struct bmp_bgp *bmpbgp)
 {
 	struct bmp_targets *bt;
+	struct bmp_listener *bl;
 
 	bmp_bgph_del(&bmp_bgph, bmpbgp);
 
-	frr_each_safe(bmp_targets, &bmpbgp->targets, bt)
+	frr_each_safe (bmp_targets, &bmpbgp->targets, bt) {
+		frr_each_safe (bmp_listeners, &bt->listeners, bl)
+			bmp_listener_put(bl);
+
 		bmp_targets_put(bt);
+	}
 
 	bmp_mirrorq_fini(&bmpbgp->mirrorq);
 	XFREE(MTYPE_BMP, bmpbgp);
@@ -1561,6 +1630,8 @@ static void bmp_targets_put(struct bmp_targets *bt)
 	struct bmp *bmp;
 	struct bmp_active *ba;
 
+	THREAD_OFF(bt->t_stats);
+
 	frr_each_safe (bmp_actives, &bt->actives, ba)
 		bmp_active_put(ba);
 
@@ -1612,12 +1683,6 @@ static struct bmp_listener *bmp_listener_get(struct bmp_targets *bt,
 
 	bmp_listeners_add(&bt->listeners, bl);
 	return bl;
-}
-
-static void bmp_listener_put(struct bmp_listener *bl)
-{
-	bmp_listeners_del(&bl->targets->listeners, bl);
-	XFREE(MTYPE_BMP_LISTENER, bl);
 }
 
 static void bmp_listener_start(struct bmp_listener *bl)
@@ -1775,12 +1840,13 @@ static void bmp_active_resolved(struct resolver_query *resq, const char *errstr,
 	bmp_active_connect(ba);
 }
 
-static int bmp_active_thread(struct thread *t)
+static void bmp_active_thread(struct thread *t)
 {
 	struct bmp_active *ba = THREAD_ARG(t);
 	socklen_t slen;
 	int status, ret;
 	char buf[SU_ADDRSTRLEN];
+	vrf_id_t vrf_id;
 
 	/* all 3 end up here, though only timer or read+write are active
 	 * at a time */
@@ -1791,9 +1857,14 @@ static int bmp_active_thread(struct thread *t)
 	ba->last_err = NULL;
 
 	if (ba->socket == -1) {
-		resolver_resolve(&ba->resq, AF_UNSPEC, ba->hostname,
+		/* get vrf_id */
+		if (!ba->targets || !ba->targets->bgp)
+			vrf_id = VRF_DEFAULT;
+		else
+			vrf_id = ba->targets->bgp->vrf_id;
+		resolver_resolve(&ba->resq, AF_UNSPEC, vrf_id, ba->hostname,
 				 bmp_active_resolved);
-		return 0;
+		return;
 	}
 
 	slen = sizeof(status);
@@ -1818,14 +1889,13 @@ static int bmp_active_thread(struct thread *t)
 	ba->bmp->active = ba;
 	ba->socket = -1;
 	ba->curretry = ba->minretry;
-	return 0;
+	return;
 
 out_next:
 	close(ba->socket);
 	ba->socket = -1;
 	ba->addrpos++;
 	bmp_active_connect(ba);
-	return 0;
 }
 
 static void bmp_active_disconnected(struct bmp_active *ba)
@@ -1865,6 +1935,28 @@ static struct cmd_node bmp_node = {
 	.parent_node = BGP_NODE,
 	.prompt = "%s(config-bgp-bmp)# "
 };
+
+static void bmp_targets_autocomplete(vector comps, struct cmd_token *token)
+{
+	struct bgp *bgp;
+	struct bmp_targets *target;
+	struct listnode *node;
+
+	for (ALL_LIST_ELEMENTS_RO(bm->bgp, node, bgp)) {
+		struct bmp_bgp *bmpbgp = bmp_bgp_find(bgp);
+
+		if (!bmpbgp)
+			continue;
+
+		frr_each_safe (bmp_targets, &bmpbgp->targets, target)
+			vector_set(comps,
+				   XSTRDUP(MTYPE_COMPLETION, target->name));
+	}
+}
+
+static const struct cmd_variable_handler bmp_targets_var_handlers[] = {
+	{.tokenname = "BMPTARGETS", .completions = bmp_targets_autocomplete},
+	{.completions = NULL}};
 
 #define BMP_STR "BGP Monitoring Protocol\n"
 
@@ -1992,7 +2084,7 @@ DEFPY(bmp_connect,
 
 DEFPY(bmp_acl,
       bmp_acl_cmd,
-      "[no] <ip|ipv6>$af access-list WORD",
+      "[no] <ip|ipv6>$af access-list ACCESSLIST_NAME$access_list",
       NO_STR
       IP_STR
       IPV6_STR
@@ -2348,6 +2440,8 @@ static int bmp_config_write(struct bgp *bgp, struct vty *vty)
 		frr_each (bmp_actives, &bt->actives, ba)
 			vty_out(vty, "  bmp connect %s port %u min-retry %u max-retry %u\n",
 				ba->hostname, ba->port, ba->minretry, ba->maxretry);
+
+		vty_out(vty, " exit\n");
 	}
 
 	return 0;
@@ -2357,6 +2451,9 @@ static int bgp_bmp_init(struct thread_master *tm)
 {
 	install_node(&bmp_node);
 	install_default(BMP_NODE);
+
+	cmd_variable_handler_register(bmp_targets_var_handlers);
+
 	install_element(BGP_NODE, &bmp_targets_cmd);
 	install_element(BGP_NODE, &no_bmp_targets_cmd);
 
@@ -2381,7 +2478,7 @@ static int bgp_bmp_module_init(void)
 {
 	hook_register(bgp_packet_dump, bmp_mirror_packet);
 	hook_register(bgp_packet_send, bmp_outgoing_packet);
-	hook_register(peer_status_changed, bmp_peer_established);
+	hook_register(peer_status_changed, bmp_peer_status_changed);
 	hook_register(peer_backward_transition, bmp_peer_backward);
 	hook_register(bgp_process, bmp_process);
 	hook_register(bgp_inst_config_write, bmp_config_write);
@@ -2392,4 +2489,5 @@ static int bgp_bmp_module_init(void)
 
 FRR_MODULE_SETUP(.name = "bgpd_bmp", .version = FRR_VERSION,
 		 .description = "bgpd BMP module",
-		 .init = bgp_bmp_module_init)
+		 .init = bgp_bmp_module_init,
+);

@@ -12,6 +12,9 @@ module frr-bfdd {
   import frr-interface {
     prefix frr-interface;
   }
+  import frr-vrf {
+    prefix frr-vrf;
+  }
   import frr-route-types {
     prefix frr-route-types;
   }
@@ -64,14 +67,14 @@ module frr-bfdd {
   typedef multiplier {
     description "Detection multiplier";
     type uint8 {
-      range 2..255;
+      range "2..255";
     }
   }
 
   typedef discriminator {
     description "BFD session identification";
     type uint32 {
-      range 1..4294967295;
+      range "1..4294967295";
     }
   }
 
@@ -167,14 +170,18 @@ module frr-bfdd {
     }
 
     leaf desired-transmission-interval {
-      type uint32;
+      type uint32 {
+          range "10000..60000000";
+      }
       units microseconds;
       default 300000;
       description "Minimum desired control packet transmission interval";
     }
 
     leaf required-receive-interval {
-      type uint32;
+      type uint32 {
+          range "10000..60000000";
+      }
       units microseconds;
       default 300000;
       description "Minimum required control packet receive interval";
@@ -182,7 +189,7 @@ module frr-bfdd {
 
     leaf administrative-down {
       type boolean;
-      default true;
+      default false;
       description "Disables or enables the session administratively";
     }
 
@@ -204,10 +211,21 @@ module frr-bfdd {
     }
 
     leaf desired-echo-transmission-interval {
-      type uint32;
+      type uint32 {
+          range "10000..60000000";
+      }
       units microseconds;
       default 50000;
-      description "Minimum desired control packet transmission interval";
+      description "Minimum desired echo packet transmission interval";
+    }
+
+    leaf required-echo-receive-interval {
+      type uint32 {
+          range "0 | 10000..60000000";
+      }
+      units microseconds;
+      default 50000;
+      description "Minimum required echo packet receive interval";
     }
   }
 
@@ -216,8 +234,9 @@ module frr-bfdd {
 
     leaf minimum-ttl {
       type uint8 {
-        range 1..254;
+        range "1..254";
       }
+      default "254";
       description
         "Minimum expected TTL on received packets.";
     }
@@ -396,14 +415,12 @@ module frr-bfdd {
           }
 
           leaf interface {
-            type string {
-              length "0..16";
-            }
+            type frr-interface:interface-ref;
             description "Interface to use to contact peer";
           }
 
           leaf vrf {
-            type string;
+            type frr-vrf:vrf-ref;
             description "Virtual Routing Domain name";
           }
 
@@ -427,7 +444,7 @@ module frr-bfdd {
         }
 
         list multi-hop {
-          key "source-addr dest-addr interface vrf";
+          key "source-addr dest-addr vrf";
           description "List of multi hop sessions";
 
           leaf source-addr {
@@ -440,15 +457,8 @@ module frr-bfdd {
             description "IP address of the peer";
           }
 
-          leaf interface {
-            type string {
-              length "0..16";
-            }
-            description "Interface to use to contact peer";
-          }
-
           leaf vrf {
-            type string;
+            type frr-vrf:vrf-ref;
             description "Virtual Routing Domain name";
           }
 

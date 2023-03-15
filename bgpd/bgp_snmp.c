@@ -32,7 +32,7 @@
 #include "filter.h"
 #include "hook.h"
 #include "libfrr.h"
-#include "version.h"
+#include "lib/version.h"
 
 #include "bgpd/bgpd.h"
 #include "bgpd/bgp_table.h"
@@ -40,6 +40,7 @@
 #include "bgpd/bgp_attr.h"
 #include "bgpd/bgp_route.h"
 #include "bgpd/bgp_fsm.h"
+#include "bgpd/bgp_mplsvpn_snmp.h"
 
 /* BGP4-MIB described in RFC1657. */
 #define BGP4MIB 1,3,6,1,2,1,15
@@ -325,7 +326,7 @@ static uint8_t *bgpVersion(struct variable *v, oid name[], size_t *length,
 	    == MATCH_FAILED)
 		return NULL;
 
-	/* Retrun BGP version.  Zebra bgpd only support version 4. */
+	/* Return BGP version.  Zebra bgpd only support version 4. */
 	version = (0x80 >> (BGP_VERSION_4 - 1));
 
 	/* Return octet string length 1. */
@@ -434,7 +435,7 @@ static struct peer *bgpPeerTable_lookup(struct variable *v, oid name[],
 		if (peer == NULL)
 			return NULL;
 
-		oid_copy_addr(name + namelen, addr, sizeof(struct in_addr));
+		oid_copy_in_addr(name + namelen, addr);
 		*length = sizeof(struct in_addr) + namelen;
 
 		return peer;
@@ -460,7 +461,7 @@ static int write_bgpPeerTable(int action, uint8_t *var_val,
 
 	intval = *(long *)var_val;
 
-	memset(&addr, 0, sizeof(struct in_addr));
+	memset(&addr, 0, sizeof(addr));
 
 	peer = bgpPeerTable_lookup(NULL, name, &length, &addr, 1);
 	if (!peer)
@@ -517,7 +518,7 @@ static uint8_t *bgpPeerTable(struct variable *v, oid name[], size_t *length,
 	if (smux_header_table(v, name, length, exact, var_len, write_method)
 	    == MATCH_FAILED)
 		return NULL;
-	memset(&addr, 0, sizeof(struct in_addr));
+	memset(&addr, 0, sizeof(addr));
 
 	peer = bgpPeerTable_lookup(v, name, length, &addr, exact);
 	if (!peer)
@@ -688,12 +689,12 @@ static struct bgp_path_info *bgp4PathAttrLookup(struct variable *v, oid name[],
 		dest = bgp_node_lookup(bgp->rib[AFI_IP][SAFI_UNICAST],
 				       (struct prefix *)addr);
 		if (dest) {
-			bgp_dest_unlock_node(dest);
-
 			for (path = bgp_dest_get_bgp_path_info(dest); path;
 			     path = path->next)
 				if (sockunion_same(&path->peer->su, &su))
 					return path;
+
+			bgp_dest_unlock_node(dest);
 		}
 	} else {
 		offset = name + v->namelen;
@@ -766,14 +767,12 @@ static struct bgp_path_info *bgp4PathAttrLookup(struct variable *v, oid name[],
 					v->namelen + BGP_PATHATTR_ENTRY_OFFSET;
 
 				offset = name + v->namelen;
-				oid_copy_addr(offset, &rn_p->u.prefix4,
-					      IN_ADDR_SIZE);
+				oid_copy_in_addr(offset, &rn_p->u.prefix4);
 				offset += IN_ADDR_SIZE;
 				*offset = rn_p->prefixlen;
 				offset++;
-				oid_copy_addr(offset,
-					      &min->peer->su.sin.sin_addr,
-					      IN_ADDR_SIZE);
+				oid_copy_in_addr(offset,
+						 &min->peer->su.sin.sin_addr);
 				addr->prefix = rn_p->u.prefix4;
 				addr->prefixlen = rn_p->prefixlen;
 
@@ -803,7 +802,7 @@ static uint8_t *bgp4PathAttrTable(struct variable *v, oid name[],
 	if (smux_header_table(v, name, length, exact, var_len, write_method)
 	    == MATCH_FAILED)
 		return NULL;
-	memset(&addr, 0, sizeof(struct prefix_ipv4));
+	memset(&addr, 0, sizeof(addr));
 
 	path = bgp4PathAttrLookup(v, name, length, bgp, &addr, exact);
 	if (!path)
@@ -849,8 +848,9 @@ static uint8_t *bgp4PathAttrTable(struct variable *v, oid name[],
 }
 
 /* BGP Traps. */
-static struct trap_object bgpTrapList[] = {{3, {3, 1, BGPPEERLASTERROR}},
-					   {3, {3, 1, BGPPEERSTATE}}};
+static struct trap_object bgpTrapList[] = {{3, {3, 1, BGPPEERREMOTEADDR} },
+					   {3, {3, 1, BGPPEERLASTERROR} },
+					   {3, {3, 1, BGPPEERSTATE} } };
 
 static int bgpTrapEstablished(struct peer *peer)
 {
@@ -866,7 +866,7 @@ static int bgpTrapEstablished(struct peer *peer)
 	if (ret == 0)
 		return 0;
 
-	oid_copy_addr(index, &addr, IN_ADDR_SIZE);
+	oid_copy_in_addr(index, &addr);
 
 	smux_trap(bgp_variables, array_size(bgp_variables), bgp_trap_oid,
 		  array_size(bgp_trap_oid), bgp_oid,
@@ -885,7 +885,7 @@ static int bgpTrapBackwardTransition(struct peer *peer)
 	if (ret == 0)
 		return 0;
 
-	oid_copy_addr(index, &addr, IN_ADDR_SIZE);
+	oid_copy_in_addr(index, &addr);
 
 	smux_trap(bgp_variables, array_size(bgp_variables), bgp_trap_oid,
 		  array_size(bgp_trap_oid), bgp_oid,
@@ -898,6 +898,7 @@ static int bgp_snmp_init(struct thread_master *tm)
 {
 	smux_init(tm);
 	REGISTER_MIB("mibII/bgp", bgp_variables, variable, bgp_oid);
+	bgp_mpls_l3vpn_module_init();
 	return 0;
 }
 
@@ -911,4 +912,5 @@ static int bgp_snmp_module_init(void)
 
 FRR_MODULE_SETUP(.name = "bgpd_snmp", .version = FRR_VERSION,
 		 .description = "bgpd AgentX SNMP module",
-		 .init = bgp_snmp_module_init)
+		 .init = bgp_snmp_module_init,
+);

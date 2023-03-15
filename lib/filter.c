@@ -30,14 +30,14 @@
 #include "routemap.h"
 #include "libfrr.h"
 #include "northbound_cli.h"
+#include "json.h"
 
-DEFINE_MTYPE_STATIC(LIB, ACCESS_LIST, "Access List")
-DEFINE_MTYPE_STATIC(LIB, ACCESS_LIST_STR, "Access List Str")
-DEFINE_MTYPE_STATIC(LIB, ACCESS_FILTER, "Access Filter")
+DEFINE_MTYPE_STATIC(LIB, ACCESS_LIST, "Access List");
+DEFINE_MTYPE_STATIC(LIB, ACCESS_LIST_STR, "Access List Str");
+DEFINE_MTYPE_STATIC(LIB, ACCESS_FILTER, "Access Filter");
 
 /* Static structure for mac access_list's master. */
 static struct access_master access_master_mac = {
-	{NULL, NULL},
 	{NULL, NULL},
 	NULL,
 	NULL,
@@ -46,14 +46,12 @@ static struct access_master access_master_mac = {
 /* Static structure for IPv4 access_list's master. */
 static struct access_master access_master_ipv4 = {
 	{NULL, NULL},
-	{NULL, NULL},
 	NULL,
 	NULL,
 };
 
 /* Static structure for IPv6 access_list's master. */
 static struct access_master access_master_ipv6 = {
-	{NULL, NULL},
 	{NULL, NULL},
 	NULL,
 	NULL,
@@ -111,10 +109,14 @@ static int filter_match_cisco(struct filter *mfilter, const struct prefix *p)
 		masklen2ip(p->prefixlen, &mask);
 		check_mask = mask.s_addr & ~filter->mask_mask.s_addr;
 
-		if (memcmp(&check_addr, &filter->addr.s_addr, 4) == 0
-		    && memcmp(&check_mask, &filter->mask.s_addr, 4) == 0)
+		if (memcmp(&check_addr, &filter->addr.s_addr, IPV4_MAX_BYTELEN)
+			    == 0
+		    && memcmp(&check_mask, &filter->mask.s_addr,
+			      IPV4_MAX_BYTELEN)
+			       == 0)
 			return 1;
-	} else if (memcmp(&check_addr, &filter->addr.s_addr, 4) == 0)
+	} else if (memcmp(&check_addr, &filter->addr.s_addr, IPV4_MAX_BYTELEN)
+		   == 0)
 		return 1;
 
 	return 0;
@@ -166,10 +168,7 @@ void access_list_delete(struct access_list *access)
 
 	master = access->master;
 
-	if (access->type == ACCESS_TYPE_NUMBER)
-		list = &master->num;
-	else
-		list = &master->str;
+	list = &master->str;
 
 	if (access->next)
 		access->next->prev = access->prev;
@@ -181,6 +180,11 @@ void access_list_delete(struct access_list *access)
 	else
 		list->head = access->next;
 
+	route_map_notify_dependencies(access->name, RMAP_EVENT_FILTER_DELETED);
+
+	if (master->delete_hook)
+		master->delete_hook(access);
+
 	XFREE(MTYPE_ACCESS_LIST_STR, access->name);
 
 	XFREE(MTYPE_TMP, access->remark);
@@ -188,12 +192,10 @@ void access_list_delete(struct access_list *access)
 	access_list_free(access);
 }
 
-/* Insert new access list to list of access_list.  Each acceess_list
+/* Insert new access list to list of access_list.  Each access_list
    is sorted by the name. */
 static struct access_list *access_list_insert(afi_t afi, const char *name)
 {
-	unsigned int i;
-	long number;
 	struct access_list *access;
 	struct access_list *point;
 	struct access_list_list *alist;
@@ -208,36 +210,13 @@ static struct access_list *access_list_insert(afi_t afi, const char *name)
 	access->name = XSTRDUP(MTYPE_ACCESS_LIST_STR, name);
 	access->master = master;
 
-	/* If name is made by all digit character.  We treat it as
-	   number. */
-	for (number = 0, i = 0; i < strlen(name); i++) {
-		if (isdigit((unsigned char)name[i]))
-			number = (number * 10) + (name[i] - '0');
-		else
+	/* Set access_list to string list. */
+	alist = &master->str;
+
+	/* Set point to insertion point. */
+	for (point = alist->head; point; point = point->next)
+		if (strcmp(point->name, name) >= 0)
 			break;
-	}
-
-	/* In case of name is all digit character */
-	if (i == strlen(name)) {
-		access->type = ACCESS_TYPE_NUMBER;
-
-		/* Set access_list to number list. */
-		alist = &master->num;
-
-		for (point = alist->head; point; point = point->next)
-			if (atol(point->name) >= number)
-				break;
-	} else {
-		access->type = ACCESS_TYPE_STRING;
-
-		/* Set access_list to string list. */
-		alist = &master->str;
-
-		/* Set point to insertion point. */
-		for (point = alist->head; point; point = point->next)
-			if (strcmp(point->name, name) >= 0)
-				break;
-	}
 
 	/* In case of this is the first element of master. */
 	if (alist->head == NULL) {
@@ -284,10 +263,6 @@ struct access_list *access_list_lookup(afi_t afi, const char *name)
 	master = access_master_get(afi);
 	if (master == NULL)
 		return NULL;
-
-	for (access = master->num.head; access; access = access->next)
-		if (strcmp(access->name, name) == 0)
-			return access;
 
 	for (access = master->str.head; access; access = access->next)
 		if (strcmp(access->name, name) == 0)
@@ -412,7 +387,7 @@ void access_list_filter_add(struct access_list *access,
 	struct filter *replace;
 	struct filter *point;
 
-	/* Automatic asignment of seq no. */
+	/* Automatic assignment of seq no. */
 	if (filter->seq == -1)
 		filter->seq = filter_new_seq_get(access);
 
@@ -469,176 +444,146 @@ void access_list_filter_add(struct access_list *access,
   host                 A single host address
 */
 
-struct filter *filter_lookup_cisco(struct access_list *access,
-				   struct filter *mnew)
+static void config_write_access_zebra(struct vty *, struct filter *,
+				      json_object *);
+static void config_write_access_cisco(struct vty *, struct filter *,
+				      json_object *);
+
+static const char *filter_type2str(struct filter *filter)
 {
-	struct filter *mfilter;
-	struct filter_cisco *filter;
-	struct filter_cisco *new;
-
-	new = &mnew->u.cfilter;
-
-	for (mfilter = access->head; mfilter; mfilter = mfilter->next) {
-		filter = &mfilter->u.cfilter;
-
-		if (filter->extended) {
-			if (mfilter->type == mnew->type
-			    && filter->addr.s_addr == new->addr.s_addr
-			    && filter->addr_mask.s_addr == new->addr_mask.s_addr
-			    && filter->mask.s_addr == new->mask.s_addr
-			    && filter->mask_mask.s_addr
-				       == new->mask_mask.s_addr)
-				return mfilter;
-		} else {
-			if (mfilter->type == mnew->type
-			    && filter->addr.s_addr == new->addr.s_addr
-			    && filter->addr_mask.s_addr
-				       == new->addr_mask.s_addr)
-				return mfilter;
-		}
-	}
-
-	return NULL;
+	if (filter->cisco) {
+		if (filter->u.cfilter.extended)
+			return "Extended";
+		else
+			return "Standard";
+	} else
+		return "Zebra";
 }
-
-struct filter *filter_lookup_zebra(struct access_list *access,
-				   struct filter *mnew)
-{
-	struct filter *mfilter;
-	struct filter_zebra *filter;
-	struct filter_zebra *new;
-
-	new = &mnew->u.zfilter;
-
-	for (mfilter = access->head; mfilter; mfilter = mfilter->next) {
-		filter = &mfilter->u.zfilter;
-
-		if (filter->exact == new->exact
-		    && mfilter->type == mnew->type) {
-			if (prefix_same(&filter->prefix, &new->prefix))
-				return mfilter;
-		}
-	}
-	return NULL;
-}
-
-static void config_write_access_zebra(struct vty *, struct filter *);
-static void config_write_access_cisco(struct vty *, struct filter *);
 
 /* show access-list command. */
-static int filter_show(struct vty *vty, const char *name, afi_t afi)
+static int filter_show(struct vty *vty, const char *name, afi_t afi,
+		       bool use_json)
 {
 	struct access_list *access;
 	struct access_master *master;
 	struct filter *mfilter;
 	struct filter_cisco *filter;
-	int write = 0;
+	bool first;
+	json_object *json = NULL;
+	json_object *json_proto = NULL;
 
 	master = access_master_get(afi);
-	if (master == NULL)
+	if (master == NULL) {
+		if (use_json)
+			vty_out(vty, "{}\n");
 		return 0;
+	}
+
+	if (use_json)
+		json = json_object_new_object();
 
 	/* Print the name of the protocol */
-	vty_out(vty, "%s:\n", frr_protoname);
-
-	for (access = master->num.head; access; access = access->next) {
-		if (name && strcmp(access->name, name) != 0)
-			continue;
-
-		write = 1;
-
-		for (mfilter = access->head; mfilter; mfilter = mfilter->next) {
-			filter = &mfilter->u.cfilter;
-
-			if (write) {
-				vty_out(vty, "%s %s access list %s\n",
-					mfilter->cisco ? (filter->extended
-								  ? "Extended"
-								  : "Standard")
-						       : "Zebra",
-					(afi == AFI_IP)
-						? ("IP")
-						: ((afi == AFI_IP6) ? ("IPv6 ")
-								    : ("MAC ")),
-					access->name);
-				write = 0;
-			}
-
-			vty_out(vty, "    seq %" PRId64, mfilter->seq);
-			vty_out(vty, " %s%s", filter_type_str(mfilter),
-				mfilter->type == FILTER_DENY ? "  " : "");
-
-			if (!mfilter->cisco)
-				config_write_access_zebra(vty, mfilter);
-			else if (filter->extended)
-				config_write_access_cisco(vty, mfilter);
-			else {
-				if (filter->addr_mask.s_addr == 0xffffffff)
-					vty_out(vty, " any\n");
-				else {
-					vty_out(vty, " %s",
-						inet_ntoa(filter->addr));
-					if (filter->addr_mask.s_addr
-					    != INADDR_ANY)
-						vty_out(vty,
-							", wildcard bits %s",
-							inet_ntoa(
-								filter->addr_mask));
-					vty_out(vty, "\n");
-				}
-			}
-		}
-	}
+	if (json) {
+		json_proto = json_object_new_object();
+		json_object_object_add(json, frr_protoname, json_proto);
+	} else
+		vty_out(vty, "%s:\n", frr_protoname);
 
 	for (access = master->str.head; access; access = access->next) {
+		json_object *json_acl = NULL;
+		json_object *json_rules = NULL;
+
 		if (name && strcmp(access->name, name) != 0)
 			continue;
 
-		write = 1;
+		first = true;
 
 		for (mfilter = access->head; mfilter; mfilter = mfilter->next) {
+			json_object *json_rule = NULL;
+
 			filter = &mfilter->u.cfilter;
 
-			if (write) {
-				vty_out(vty, "%s %s access list %s\n",
-					mfilter->cisco ? (filter->extended
-								  ? "Extended"
-								  : "Standard")
-						       : "Zebra",
-					(afi == AFI_IP)
-						? ("IP")
-						: ((afi == AFI_IP6) ? ("IPv6 ")
-								    : ("MAC ")),
-					access->name);
-				write = 0;
+			if (first) {
+				const char *type = filter_type2str(mfilter);
+
+				if (json) {
+					json_acl = json_object_new_object();
+					json_object_object_add(json_proto,
+							       access->name,
+							       json_acl);
+
+					json_object_string_add(json_acl, "type",
+							       type);
+					json_object_string_add(json_acl,
+							       "addressFamily",
+							       afi2str(afi));
+					json_rules = json_object_new_array();
+					json_object_object_add(
+						json_acl, "rules", json_rules);
+				} else {
+					vty_out(vty, "%s %s access list %s\n",
+						type,
+						(afi == AFI_IP)
+							? ("IP")
+							: ((afi == AFI_IP6)
+								   ? ("IPv6 ")
+								   : ("MAC ")),
+						access->name);
+				}
+
+				first = false;
 			}
 
-			vty_out(vty, "    seq %" PRId64, mfilter->seq);
-			vty_out(vty, " %s%s", filter_type_str(mfilter),
-				mfilter->type == FILTER_DENY ? "  " : "");
+			if (json) {
+				json_rule = json_object_new_object();
+				json_object_array_add(json_rules, json_rule);
+
+				json_object_int_add(json_rule, "sequenceNumber",
+						    mfilter->seq);
+				json_object_string_add(
+					json_rule, "filterType",
+					filter_type_str(mfilter));
+			} else {
+				vty_out(vty, "    seq %" PRId64, mfilter->seq);
+				vty_out(vty, " %s%s", filter_type_str(mfilter),
+					mfilter->type == FILTER_DENY ? "  "
+								     : "");
+			}
 
 			if (!mfilter->cisco)
-				config_write_access_zebra(vty, mfilter);
+				config_write_access_zebra(vty, mfilter,
+							  json_rule);
 			else if (filter->extended)
-				config_write_access_cisco(vty, mfilter);
+				config_write_access_cisco(vty, mfilter,
+							  json_rule);
 			else {
-				if (filter->addr_mask.s_addr == 0xffffffff)
-					vty_out(vty, " any\n");
-				else {
-					vty_out(vty, " %s",
-						inet_ntoa(filter->addr));
+				if (json) {
+					json_object_string_addf(
+						json_rule, "address", "%pI4",
+						&filter->addr);
+					json_object_string_addf(
+						json_rule, "mask", "%pI4",
+						&filter->addr_mask);
+				} else {
 					if (filter->addr_mask.s_addr
-					    != INADDR_ANY)
-						vty_out(vty,
-							", wildcard bits %s",
-							inet_ntoa(
-								filter->addr_mask));
-					vty_out(vty, "\n");
+					    == 0xffffffff)
+						vty_out(vty, " any\n");
+					else {
+						vty_out(vty, " %pI4",
+							&filter->addr);
+						if (filter->addr_mask.s_addr
+						    != INADDR_ANY)
+							vty_out(vty,
+								", wildcard bits %pI4",
+								&filter->addr_mask);
+						vty_out(vty, "\n");
+					}
 				}
 			}
 		}
 	}
-	return CMD_SUCCESS;
+
+	return vty_json(vty, json);
 }
 
 /* show MAC access list - this only has MAC filters for now*/
@@ -649,108 +594,114 @@ DEFUN (show_mac_access_list,
        "mac access lists\n"
        "List mac access lists\n")
 {
-	return filter_show(vty, NULL, AFI_L2VPN);
+	return filter_show(vty, NULL, AFI_L2VPN, false);
 }
 
 DEFUN (show_mac_access_list_name,
        show_mac_access_list_name_cmd,
-       "show mac access-list WORD",
+       "show mac access-list ACCESSLIST_MAC_NAME",
        SHOW_STR
        "mac access lists\n"
        "List mac access lists\n"
        "mac address\n")
 {
-	return filter_show(vty, argv[3]->arg, AFI_L2VPN);
+	return filter_show(vty, argv[3]->arg, AFI_L2VPN, false);
 }
 
 DEFUN (show_ip_access_list,
        show_ip_access_list_cmd,
-       "show ip access-list",
+       "show ip access-list [json]",
        SHOW_STR
        IP_STR
-       "List IP access lists\n")
+       "List IP access lists\n"
+       JSON_STR)
 {
-	return filter_show(vty, NULL, AFI_IP);
+	bool uj = use_json(argc, argv);
+	return filter_show(vty, NULL, AFI_IP, uj);
 }
 
 DEFUN (show_ip_access_list_name,
        show_ip_access_list_name_cmd,
-       "show ip access-list <(1-99)|(100-199)|(1300-1999)|(2000-2699)|WORD>",
+       "show ip access-list ACCESSLIST4_NAME [json]",
        SHOW_STR
        IP_STR
        "List IP access lists\n"
-       "IP standard access list\n"
-       "IP extended access list\n"
-       "IP standard access list (expanded range)\n"
-       "IP extended access list (expanded range)\n"
-       "IP zebra access-list\n")
+       "IP access-list name\n"
+       JSON_STR)
 {
+	bool uj = use_json(argc, argv);
 	int idx_acl = 3;
-	return filter_show(vty, argv[idx_acl]->arg, AFI_IP);
+	return filter_show(vty, argv[idx_acl]->arg, AFI_IP, uj);
 }
 
 DEFUN (show_ipv6_access_list,
        show_ipv6_access_list_cmd,
-       "show ipv6 access-list",
+       "show ipv6 access-list [json]",
        SHOW_STR
        IPV6_STR
-       "List IPv6 access lists\n")
+       "List IPv6 access lists\n"
+       JSON_STR)
 {
-	return filter_show(vty, NULL, AFI_IP6);
+	bool uj = use_json(argc, argv);
+	return filter_show(vty, NULL, AFI_IP6, uj);
 }
 
 DEFUN (show_ipv6_access_list_name,
        show_ipv6_access_list_name_cmd,
-       "show ipv6 access-list WORD",
+       "show ipv6 access-list ACCESSLIST6_NAME [json]",
        SHOW_STR
        IPV6_STR
        "List IPv6 access lists\n"
-       "IPv6 zebra access-list\n")
+       "IPv6 access-list name\n"
+       JSON_STR)
 {
+	bool uj = use_json(argc, argv);
 	int idx_word = 3;
-	return filter_show(vty, argv[idx_word]->arg, AFI_IP6);
+	return filter_show(vty, argv[idx_word]->arg, AFI_IP6, uj);
 }
 
-static void config_write_access_cisco(struct vty *vty, struct filter *mfilter)
+static void config_write_access_cisco(struct vty *vty, struct filter *mfilter,
+				      json_object *json)
 {
 	struct filter_cisco *filter;
 
 	filter = &mfilter->u.cfilter;
 
-	if (filter->extended) {
+	if (json) {
+		json_object_boolean_add(json, "extended", !!filter->extended);
+		json_object_string_addf(json, "sourceAddress", "%pI4",
+					&filter->addr);
+		json_object_string_addf(json, "sourceMask", "%pI4",
+					&filter->addr_mask);
+		json_object_string_addf(json, "destinationAddress", "%pI4",
+					&filter->mask);
+		json_object_string_addf(json, "destinationMask", "%pI4",
+					&filter->mask_mask);
+	} else {
 		vty_out(vty, " ip");
 		if (filter->addr_mask.s_addr == 0xffffffff)
 			vty_out(vty, " any");
 		else if (filter->addr_mask.s_addr == INADDR_ANY)
-			vty_out(vty, " host %s", inet_ntoa(filter->addr));
+			vty_out(vty, " host %pI4", &filter->addr);
 		else {
-			vty_out(vty, " %s", inet_ntoa(filter->addr));
-			vty_out(vty, " %s", inet_ntoa(filter->addr_mask));
+			vty_out(vty, " %pI4", &filter->addr);
+			vty_out(vty, " %pI4", &filter->addr_mask);
 		}
 
 		if (filter->mask_mask.s_addr == 0xffffffff)
 			vty_out(vty, " any");
 		else if (filter->mask_mask.s_addr == INADDR_ANY)
-			vty_out(vty, " host %s", inet_ntoa(filter->mask));
+			vty_out(vty, " host %pI4", &filter->mask);
 		else {
-			vty_out(vty, " %s", inet_ntoa(filter->mask));
-			vty_out(vty, " %s", inet_ntoa(filter->mask_mask));
+			vty_out(vty, " %pI4", &filter->mask);
+			vty_out(vty, " %pI4", &filter->mask_mask);
 		}
 		vty_out(vty, "\n");
-	} else {
-		if (filter->addr_mask.s_addr == 0xffffffff)
-			vty_out(vty, " any\n");
-		else {
-			vty_out(vty, " %s", inet_ntoa(filter->addr));
-			if (filter->addr_mask.s_addr != INADDR_ANY)
-				vty_out(vty, " %s",
-					inet_ntoa(filter->addr_mask));
-			vty_out(vty, "\n");
-		}
 	}
 }
 
-static void config_write_access_zebra(struct vty *vty, struct filter *mfilter)
+static void config_write_access_zebra(struct vty *vty, struct filter *mfilter,
+				      json_object *json)
 {
 	struct filter_zebra *filter;
 	struct prefix *p;
@@ -759,21 +710,26 @@ static void config_write_access_zebra(struct vty *vty, struct filter *mfilter)
 	filter = &mfilter->u.zfilter;
 	p = &filter->prefix;
 
-	if (p->prefixlen == 0 && !filter->exact)
-		vty_out(vty, " any");
-	else if (p->family == AF_INET6 || p->family == AF_INET)
-		vty_out(vty, " %s/%d%s",
-			inet_ntop(p->family, &p->u.prefix, buf, BUFSIZ),
-			p->prefixlen, filter->exact ? " exact-match" : "");
-	else if (p->family == AF_ETHERNET) {
-		if (p->prefixlen == 0)
+	if (json) {
+		json_object_string_addf(json, "prefix", "%pFX", p);
+		json_object_boolean_add(json, "exact-match", !!filter->exact);
+	} else {
+		if (p->prefixlen == 0 && !filter->exact)
 			vty_out(vty, " any");
-		else
-			vty_out(vty, " %s", prefix_mac2str(&(p->u.prefix_eth),
-							   buf, sizeof(buf)));
-	}
+		else if (p->family == AF_INET6 || p->family == AF_INET)
+			vty_out(vty, " %pFX%s", p,
+				filter->exact ? " exact-match" : "");
+		else if (p->family == AF_ETHERNET) {
+			if (p->prefixlen == 0)
+				vty_out(vty, " any");
+			else
+				vty_out(vty, " %s",
+					prefix_mac2str(&(p->u.prefix_eth), buf,
+						       sizeof(buf)));
+		}
 
-	vty_out(vty, "\n");
+		vty_out(vty, "\n");
+	}
 }
 
 static struct cmd_node access_mac_node = {
@@ -792,17 +748,10 @@ static void access_list_reset_mac(void)
 	if (master == NULL)
 		return;
 
-	for (access = master->num.head; access; access = next) {
-		next = access->next;
-		access_list_delete(access);
-	}
 	for (access = master->str.head; access; access = next) {
 		next = access->next;
 		access_list_delete(access);
 	}
-
-	assert(master->num.head == NULL);
-	assert(master->num.tail == NULL);
 
 	assert(master->str.head == NULL);
 	assert(master->str.tail == NULL);
@@ -850,17 +799,10 @@ static void access_list_reset_ipv4(void)
 	if (master == NULL)
 		return;
 
-	for (access = master->num.head; access; access = next) {
-		next = access->next;
-		access_list_delete(access);
-	}
 	for (access = master->str.head; access; access = next) {
 		next = access->next;
 		access_list_delete(access);
 	}
-
-	assert(master->num.head == NULL);
-	assert(master->num.tail == NULL);
 
 	assert(master->str.head == NULL);
 	assert(master->str.tail == NULL);
@@ -875,11 +817,61 @@ static void access_list_init_ipv4(void)
 	install_element(ENABLE_NODE, &show_ip_access_list_name_cmd);
 }
 
+static void access_list_autocomplete_afi(afi_t afi, vector comps,
+					 struct cmd_token *token)
+{
+	struct access_list *access;
+	struct access_list *next;
+	struct access_master *master;
+
+	master = access_master_get(afi);
+	if (master == NULL)
+		return;
+
+	for (access = master->str.head; access; access = next) {
+		next = access->next;
+		vector_set(comps, XSTRDUP(MTYPE_COMPLETION, access->name));
+	}
+}
+
 static struct cmd_node access_ipv6_node = {
 	.name = "ipv6 access list",
 	.node = ACCESS_IPV6_NODE,
 	.prompt = "",
 };
+
+static void access_list_autocomplete(vector comps, struct cmd_token *token)
+{
+	access_list_autocomplete_afi(AFI_IP, comps, token);
+	access_list_autocomplete_afi(AFI_IP6, comps, token);
+	access_list_autocomplete_afi(AFI_L2VPN, comps, token);
+}
+
+static void access_list4_autocomplete(vector comps, struct cmd_token *token)
+{
+	access_list_autocomplete_afi(AFI_IP, comps, token);
+}
+
+static void access_list6_autocomplete(vector comps, struct cmd_token *token)
+{
+	access_list_autocomplete_afi(AFI_IP6, comps, token);
+}
+
+static void access_list_mac_autocomplete(vector comps, struct cmd_token *token)
+{
+	access_list_autocomplete_afi(AFI_L2VPN, comps, token);
+}
+
+static const struct cmd_variable_handler access_list_handlers[] = {
+	{.tokenname = "ACCESSLIST_NAME",
+	 .completions = access_list_autocomplete},
+	{.tokenname = "ACCESSLIST4_NAME",
+	 .completions = access_list4_autocomplete},
+	{.tokenname = "ACCESSLIST6_NAME",
+	 .completions = access_list6_autocomplete},
+	{.tokenname = "ACCESSLIST_MAC_NAME",
+	 .completions = access_list_mac_autocomplete},
+	{.completions = NULL}};
 
 static void access_list_reset_ipv6(void)
 {
@@ -891,17 +883,10 @@ static void access_list_reset_ipv6(void)
 	if (master == NULL)
 		return;
 
-	for (access = master->num.head; access; access = next) {
-		next = access->next;
-		access_list_delete(access);
-	}
 	for (access = master->str.head; access; access = next) {
 		next = access->next;
 		access_list_delete(access);
 	}
-
-	assert(master->num.head == NULL);
-	assert(master->num.tail == NULL);
 
 	assert(master->str.head == NULL);
 	assert(master->str.tail == NULL);
@@ -917,6 +902,8 @@ static void access_list_init_ipv6(void)
 
 void access_list_init(void)
 {
+	cmd_variable_handler_register(access_list_handlers);
+
 	access_list_init_ipv4();
 	access_list_init_ipv6();
 	access_list_init_mac();

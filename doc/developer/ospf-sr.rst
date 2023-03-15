@@ -17,6 +17,7 @@ Supported Features
 * Automatic provisioning of MPLS table
 * Equal Cost Multi-Path (ECMP)
 * Static route configuration with label stack up to 32 labels
+* TI-LFA (for P2P interfaces only)
 
 Interoperability
 ----------------
@@ -182,6 +183,71 @@ called. Once check the validity of labels, they are send to ZEBRA layer through
 command for deletion. This is completed by a new labelled route through
 `ZEBRA_ROUTE_ADD` command, respectively `ZEBRA_ROUTE_DELETE` command.
 
+TI-LFA
+^^^^^^
+
+Experimental support for Topology Independent LFA (Loop-Free Alternate), see
+for example 'draft-bashandy-rtgwg-segment-routing-ti-lfa-05'. The related
+files are `ospf_ti_lfa.c/h`.
+
+The current implementation is rather naive and does not support the advanced
+optimizations suggested in e.g. RFC7490 or RFC8102. It focuses on providing
+the essential infrastructure which can also later be used to enhance the
+algorithmic aspects.
+
+Supported features:
+
+* Link and node protection
+* Intra-area support
+* Proper use of Prefix- and Adjacency-SIDs in label stacks
+* Asymmetric weights (using reverse SPF)
+* Non-adjacent P/Q spaces
+* Protection of Prefix-SIDs
+
+If configured for every SPF run the routing table is enriched with additional
+backup paths for every prefix. The corresponding Prefix-SIDs are updated with
+backup paths too within the OSPF SR update task.
+
+Informal High-Level Algorithm Description:
+
+::
+
+  p_spaces = empty_list()
+
+  for every protected_resource (link or node):
+    p_space = generate_p_space(protected_resource)
+    p_space.q_spaces = empty_list()
+
+    for every destination that is affected by the protected_resource:
+      q_space = generate_q_space(destination)
+
+      # The label stack is stored in q_space
+      generate_label_stack(p_space, q_space)
+
+      # The p_space collects all its q_spaces
+      p_spaces.q_spaces.add(q_space)
+
+    p_spaces.add(p_space)
+
+  adjust_routing_table(p_spaces)
+
+Possible Performance Improvements:
+
+* Improve overall datastructures, get away from linked lists for vertices
+* Don't calculate a Q space for every destination, but for a minimum set of
+  backup paths that cover all destinations in the post-convergence SPF. The
+  thinking here is that once a backup path is known that it is also a backup
+  path for all nodes on the path themselves. This can be done by using the
+  leafs of a trimmed minimum spanning tree generated out of the post-
+  convergence SPF tree for that particular P space.
+* For an alternative (maybe better) optimization look at
+  https://tools.ietf.org/html/rfc7490#section-5.2.1.3 which describes using
+  the Q space of the node which is affected by e.g. a link failure. Note that
+  this optimization is topology dependent.
+
+It is highly recommended to read e.g. `Segment Routing I/II` by Filsfils to
+understand the basics of Ti-LFA.
+
 Configuration
 -------------
 
@@ -244,8 +310,7 @@ Routing.
     ospf router-id 192.168.1.11
     capability opaque
     segment-routing on
-    segment-routing global-block 10000 19999
-    segment-routing local-block 5000 5999
+    segment-routing global-block 10000 19999 local-block 5000 5999
     segment-routing node-msd 8
     segment-routing prefix 192.168.1.11/32 index 1100
 

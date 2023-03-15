@@ -22,7 +22,7 @@
 #
 
 """
- test_bgp_ipv6_rtadv.py: Test the FRR/Quagga BGP daemon with BGP IPv6 interface
+ test_bgp_ipv6_rtadv.py: Test the FRR BGP daemon with BGP IPv6 interface
  with route advertisements on a separate netns.
 """
 
@@ -31,7 +31,6 @@ import sys
 import json
 from functools import partial
 import pytest
-import platform
 
 # Save the Current Working Directory to find configuration files.
 CWD = os.path.dirname(os.path.realpath(__file__))
@@ -42,51 +41,39 @@ sys.path.append(os.path.join(CWD, "../"))
 from lib import topotest
 from lib.topogen import Topogen, TopoRouter, get_topogen
 from lib.topolog import logger
+from lib.common_config import required_linux_kernel_version
 
 # Required to instantiate the topology builder class.
-from mininet.topo import Topo
+
+pytestmark = [pytest.mark.bgpd]
 
 
-class BGPIPV6RTADVVRFTopo(Topo):
-    "Test topology builder"
+def build_topo(tgen):
+    "Build function"
 
-    def build(self, *_args, **_opts):
-        "Build function"
-        tgen = get_topogen(self)
+    # Create 2 routers.
+    tgen.add_router("r1")
+    tgen.add_router("r2")
 
-        # Create 2 routers.
-        tgen.add_router("r1")
-        tgen.add_router("r2")
-
-        switch = tgen.add_switch("s1")
-        switch.add_link(tgen.gears["r1"])
-        switch.add_link(tgen.gears["r2"])
+    switch = tgen.add_switch("s1")
+    switch.add_link(tgen.gears["r1"])
+    switch.add_link(tgen.gears["r2"])
 
 
 def setup_module(mod):
     "Sets up the pytest environment"
-    tgen = Topogen(BGPIPV6RTADVVRFTopo, mod.__name__)
+
+    # Required linux kernel version for this suite to run.
+    result = required_linux_kernel_version("5.0")
+    if result is not True:
+        pytest.skip("Kernel requirements are not met")
+
+    tgen = Topogen(build_topo, mod.__name__)
     tgen.start_topology()
 
     router_list = tgen.routers()
 
     logger.info("Testing with VRF Lite support")
-    krel = platform.release()
-
-    # May need to adjust handling of vrf traffic depending on kernel version
-    l3mdev_accept = 0
-    if (
-        topotest.version_cmp(krel, "4.15") >= 0
-        and topotest.version_cmp(krel, "4.18") <= 0
-    ):
-        l3mdev_accept = 1
-
-    if topotest.version_cmp(krel, "5.0") >= 0:
-        l3mdev_accept = 1
-
-    logger.info(
-        "krel '{0}' setting net.ipv4.tcp_l3mdev_accept={1}".format(krel, l3mdev_accept)
-    )
 
     cmds = [
         "ip link add {0}-cust1 type vrf table 1001",
@@ -95,21 +82,11 @@ def setup_module(mod):
         "ip link set {0}-eth0 master {0}-cust1",
     ]
 
-    for rname, router in router_list.iteritems():
+    for rname, router in router_list.items():
         for cmd in cmds:
             output = tgen.net[rname].cmd(cmd.format(rname))
 
-        output = tgen.net[rname].cmd("sysctl -n net.ipv4.tcp_l3mdev_accept")
-        logger.info(
-            "router {0}: existing tcp_l3mdev_accept was {1}".format(rname, output)
-        )
-
-        if l3mdev_accept:
-            output = tgen.net[rname].cmd(
-                "sysctl -w net.ipv4.tcp_l3mdev_accept={}".format(l3mdev_accept)
-            )
-
-    for rname, router in router_list.iteritems():
+    for rname, router in router_list.items():
         router.load_config(
             TopoRouter.RD_ZEBRA, os.path.join(CWD, "{}/zebra.conf".format(rname))
         )

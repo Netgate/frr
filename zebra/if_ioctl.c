@@ -29,7 +29,6 @@
 #include "ioctl.h"
 #include "connected.h"
 #include "memory.h"
-#include "zebra_memory.h"
 #include "log.h"
 #include "vrf.h"
 #include "vty.h"
@@ -110,7 +109,8 @@ static int interface_list_ioctl(void)
 		unsigned int size;
 
 		ifreq = (struct ifreq *)((caddr_t)ifconf.ifc_req + n);
-		ifp = if_get_by_name(ifreq->ifr_name, VRF_DEFAULT);
+		ifp = if_get_by_name(ifreq->ifr_name, VRF_DEFAULT,
+				     VRF_DEFAULT_NAME);
 		if_add_update(ifp);
 		size = ifreq->ifr_addr.sa_len;
 		if (size < sizeof(ifreq->ifr_addr))
@@ -120,7 +120,8 @@ static int interface_list_ioctl(void)
 	}
 #else
 	for (n = 0; n < ifconf.ifc_len; n += sizeof(struct ifreq)) {
-		ifp = if_get_by_name(ifreq->ifr_name, VRF_DEFAULT);
+		ifp = if_get_by_name(ifreq->ifr_name, VRF_DEFAULT,
+				     VRF_DEFAULT_NAME);
 		if_add_update(ifp);
 		ifreq++;
 	}
@@ -151,7 +152,7 @@ static int if_get_hwaddr(struct interface *ifp)
 	ifreq.ifr_addr.sa_family = AF_INET;
 
 	/* Fetch Hardware address if available. */
-	ret = vrf_if_ioctl(SIOCGIFHWADDR, (caddr_t)&ifreq, ifp->vrf_id);
+	ret = vrf_if_ioctl(SIOCGIFHWADDR, (caddr_t)&ifreq, ifp->vrf->vrf_id);
 	if (ret < 0)
 		ifp->hw_addr_len = 0;
 	else {

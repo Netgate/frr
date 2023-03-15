@@ -46,19 +46,11 @@
 #include "bgpd/bgp_errors.h"
 #include "bgpd/bgp_network.h"
 #include "bgpd/bgp_zebra.h"
+#include "bgpd/bgp_nht.h"
 
 extern struct zebra_privs_t bgpd_privs;
 
 static char *bgp_get_bound_name(struct peer *peer);
-
-/* BGP listening socket. */
-struct bgp_listener {
-	int fd;
-	union sockunion su;
-	struct thread *thread;
-	struct bgp *bgp;
-	char *name;
-};
 
 void bgp_dump_listener_info(struct vty *vty)
 {
@@ -101,9 +93,8 @@ static int bgp_md5_set_socket(int socket, union sockunion *su,
 		su2.sin6.sin6_port = 0;
 
 	/* For addresses, use the non-extended signature functionality */
-	if ((su2.sa.sa_family == AF_INET && prefixlen == IPV4_MAX_PREFIXLEN)
-	    || (su2.sa.sa_family == AF_INET6
-		&& prefixlen == IPV6_MAX_PREFIXLEN))
+	if ((su2.sa.sa_family == AF_INET && prefixlen == IPV4_MAX_BITLEN)
+	    || (su2.sa.sa_family == AF_INET6 && prefixlen == IPV6_MAX_BITLEN))
 		ret = sockopt_tcp_signature(socket, &su2, password);
 	else
 		ret = sockopt_tcp_signature_ext(socket, &su2, prefixlen,
@@ -164,8 +155,8 @@ static int bgp_md5_set_password(struct peer *peer, const char *password)
 			    peer->su.sa.sa_family) {
 				uint16_t prefixlen =
 					peer->su.sa.sa_family == AF_INET
-					? IPV4_MAX_PREFIXLEN
-					: IPV6_MAX_PREFIXLEN;
+						? IPV4_MAX_BITLEN
+						: IPV6_MAX_BITLEN;
 
 				/*
 				 * if we have stored a BGP vrf instance in the
@@ -174,9 +165,7 @@ static int bgp_md5_set_password(struct peer *peer, const char *password)
 				 * must be the default vrf or a view instance
 				 */
 				if (!listener->bgp) {
-					if (peer->bgp->vrf_id != VRF_DEFAULT
-					    && peer->bgp->inst_type
-						       != BGP_INSTANCE_TYPE_VIEW)
+					if (peer->bgp->vrf_id != VRF_DEFAULT)
 						continue;
 				} else if (listener->bgp != peer->bgp)
 					continue;
@@ -233,7 +222,6 @@ int bgp_md5_unset(struct peer *peer)
 
 int bgp_set_socket_ttl(struct peer *peer, int bgp_sock)
 {
-	char buf[INET_ADDRSTRLEN];
 	int ret = 0;
 
 	/* In case of peer is EBGP, we should set TTL for this connection.  */
@@ -242,11 +230,8 @@ int bgp_set_socket_ttl(struct peer *peer, int bgp_sock)
 		if (ret) {
 			flog_err(
 				EC_LIB_SOCKET,
-				"%s: Can't set TxTTL on peer (rtrid %s) socket, err = %d",
-				__func__,
-				inet_ntop(AF_INET, &peer->remote_id, buf,
-					  sizeof(buf)),
-				errno);
+				"%s: Can't set TxTTL on peer (rtrid %pI4) socket, err = %d",
+				__func__, &peer->remote_id, errno);
 			return ret;
 		}
 	} else if (peer->gtsm_hops) {
@@ -258,11 +243,8 @@ int bgp_set_socket_ttl(struct peer *peer, int bgp_sock)
 		if (ret) {
 			flog_err(
 				EC_LIB_SOCKET,
-				"%s: Can't set TxTTL on peer (rtrid %s) socket, err = %d",
-				__func__,
-				inet_ntop(AF_INET, &peer->remote_id, buf,
-					  sizeof(buf)),
-				errno);
+				"%s: Can't set TxTTL on peer (rtrid %pI4) socket, err = %d",
+				__func__, &peer->remote_id, errno);
 			return ret;
 		}
 		ret = sockopt_minttl(peer->su.sa.sa_family, bgp_sock,
@@ -270,11 +252,8 @@ int bgp_set_socket_ttl(struct peer *peer, int bgp_sock)
 		if (ret) {
 			flog_err(
 				EC_LIB_SOCKET,
-				"%s: Can't set MinTTL on peer (rtrid %s) socket, err = %d",
-				__func__,
-				inet_ntop(AF_INET, &peer->remote_id, buf,
-					  sizeof(buf)),
-				errno);
+				"%s: Can't set MinTTL on peer (rtrid %pI4) socket, err = %d",
+				__func__, &peer->remote_id, errno);
 			return ret;
 		}
 	}
@@ -363,7 +342,7 @@ static void bgp_socket_set_buffer_size(const int fd)
 }
 
 /* Accept bgp connection. */
-static int bgp_accept(struct thread *thread)
+static void bgp_accept(struct thread *thread)
 {
 	int bgp_sock;
 	int accept_sock;
@@ -384,9 +363,8 @@ static int bgp_accept(struct thread *thread)
 		flog_err_sys(EC_LIB_SOCKET,
 			     "[Error] BGP accept socket fd is negative: %d",
 			     accept_sock);
-		return -1;
+		return;
 	}
-	listener->thread = NULL;
 
 	thread_add_read(bm->master, bgp_accept, listener, accept_sock,
 			&listener->thread);
@@ -424,7 +402,7 @@ static int bgp_accept(struct thread *thread)
 				"[Error] BGP socket accept failed (%s); retrying",
 				safe_strerror(save_errno));
 		}
-		return -1;
+		return;
 	}
 	set_nonblocking(bgp_sock);
 
@@ -440,7 +418,7 @@ static int bgp_accept(struct thread *thread)
 				"[Event] Could not get instance for incoming conn from %s",
 				inet_sutop(&su, buf));
 		close(bgp_sock);
-		return -1;
+		return;
 	}
 
 	bgp_socket_set_buffer_size(bgp_sock);
@@ -453,14 +431,27 @@ static int bgp_accept(struct thread *thread)
 		if (peer1) {
 			/* Dynamic neighbor has been created, let it proceed */
 			peer1->fd = bgp_sock;
+
+			/* Set the user configured MSS to TCP socket */
+			if (CHECK_FLAG(peer1->flags, PEER_FLAG_TCP_MSS))
+				sockopt_tcp_mss_set(bgp_sock, peer1->tcp_mss);
+
 			bgp_fsm_change_status(peer1, Active);
 			BGP_TIMER_OFF(
 				peer1->t_start); /* created in peer_create() */
 
-			if (peer_active(peer1))
-				BGP_EVENT_ADD(peer1, TCP_connection_open);
+			if (peer_active(peer1)) {
+				if (CHECK_FLAG(peer1->flags,
+					       PEER_FLAG_TIMER_DELAYOPEN))
+					BGP_EVENT_ADD(
+						peer1,
+						TCP_connection_open_w_delay);
+				else
+					BGP_EVENT_ADD(peer1,
+						      TCP_connection_open);
+			}
 
-			return 0;
+			return;
 		}
 	}
 
@@ -472,7 +463,7 @@ static int bgp_accept(struct thread *thread)
 				VRF_LOGNAME(vrf_lookup_by_id(bgp->vrf_id)));
 		}
 		close(bgp_sock);
-		return -1;
+		return;
 	}
 
 	if (CHECK_FLAG(peer1->flags, PEER_FLAG_SHUTDOWN)
@@ -483,7 +474,7 @@ static int bgp_accept(struct thread *thread)
 				inet_sutop(&su, buf), bgp->name_pretty, bgp->as,
 				VRF_LOGNAME(vrf_lookup_by_id(bgp->vrf_id)));
 		close(bgp_sock);
-		return -1;
+		return;
 	}
 
 	/*
@@ -498,7 +489,7 @@ static int bgp_accept(struct thread *thread)
 				"[Event] Closing incoming conn for %s (%p) state %d",
 				peer1->host, peer1, peer1->status);
 		close(bgp_sock);
-		return -1;
+		return;
 	}
 
 	/* Check that at least one AF is activated for the peer. */
@@ -508,7 +499,7 @@ static int bgp_accept(struct thread *thread)
 				"%s - incoming conn rejected - no AF activated for peer",
 				peer1->host);
 		close(bgp_sock);
-		return -1;
+		return;
 	}
 
 	/* Do not try to reconnect if the peer reached maximum
@@ -521,7 +512,7 @@ static int bgp_accept(struct thread *thread)
 				"[Event] Incoming BGP connection rejected from %s due to maximum-prefix or shutdown",
 				peer1->host);
 		close(bgp_sock);
-		return -1;
+		return;
 	}
 
 	if (bgp_debug_neighbor_events(peer1))
@@ -546,9 +537,9 @@ static int bgp_accept(struct thread *thread)
 				peer1->host);
 
 	peer = peer_create(&su, peer1->conf_if, peer1->bgp, peer1->local_as,
-			   peer1->as, peer1->as_type, 0, 0, NULL);
+			   peer1->as, peer1->as_type, NULL);
 	hash_release(peer->bgp->peerhash, peer);
-	hash_get(peer->bgp->peerhash, peer, hash_alloc_intern);
+	(void)hash_get(peer->bgp->peerhash, peer, hash_alloc_intern);
 
 	peer_xfer_config(peer, peer1);
 	bgp_peer_gr_flags_update(peer);
@@ -570,13 +561,16 @@ static int bgp_accept(struct thread *thread)
 	peer->doppelganger = peer1;
 	peer1->doppelganger = peer;
 	peer->fd = bgp_sock;
-	vrf_bind(peer->bgp->vrf_id, bgp_sock, bgp_get_bound_name(peer));
+	frr_with_privs(&bgpd_privs) {
+		vrf_bind(peer->bgp->vrf_id, bgp_sock, bgp_get_bound_name(peer));
+	}
+	bgp_peer_reg_with_nht(peer);
 	bgp_fsm_change_status(peer, Active);
 	BGP_TIMER_OFF(peer->t_start); /* created in peer_create() */
 
 	SET_FLAG(peer->sflags, PEER_STATUS_ACCEPT_PEER);
 	/* Make dummy peer until read Open packet. */
-	if (peer1->status == Established
+	if (peer_established(peer1)
 	    && CHECK_FLAG(peer1->sflags, PEER_STATUS_NSF_MODE)) {
 		/* If we have an existing established connection with graceful
 		 * restart
@@ -595,17 +589,22 @@ static int bgp_accept(struct thread *thread)
 	}
 
 	if (peer_active(peer)) {
-		BGP_EVENT_ADD(peer, TCP_connection_open);
+		if (CHECK_FLAG(peer->flags, PEER_FLAG_TIMER_DELAYOPEN))
+			BGP_EVENT_ADD(peer, TCP_connection_open_w_delay);
+		else
+			BGP_EVENT_ADD(peer, TCP_connection_open);
 	}
 
-	return 0;
+	/*
+	 * If we are doing nht for a peer that is v6 LL based
+	 * massage the event system to make things happy
+	 */
+	bgp_nht_interface_events(peer);
 }
 
 /* BGP socket bind. */
 static char *bgp_get_bound_name(struct peer *peer)
 {
-	char *name = NULL;
-
 	if (!peer)
 		return NULL;
 
@@ -621,14 +620,16 @@ static char *bgp_get_bound_name(struct peer *peer)
 	 * takes precedence over VRF. For IPv4 peering, explicit interface or
 	 * VRF are the situations to bind.
 	 */
-	if (peer->su.sa.sa_family == AF_INET6)
-		name = (peer->conf_if ? peer->conf_if
-				      : (peer->ifname ? peer->ifname
-						      : peer->bgp->name));
-	else
-		name = peer->ifname ? peer->ifname : peer->bgp->name;
+	if (peer->su.sa.sa_family == AF_INET6 && peer->conf_if)
+		return peer->conf_if;
 
-	return name;
+	if (peer->ifname)
+		return peer->ifname;
+
+	if (peer->bgp->inst_type == BGP_INSTANCE_TYPE_VIEW)
+		return NULL;
+
+	return peer->bgp->name;
 }
 
 static int bgp_update_address(struct interface *ifp, const union sockunion *dst,
@@ -639,7 +640,9 @@ static int bgp_update_address(struct interface *ifp, const union sockunion *dst,
 	struct listnode *node;
 	int common;
 
-	sockunion2hostprefix(dst, &d);
+	if (!sockunion2hostprefix(dst, &d))
+		return 1;
+
 	sel = NULL;
 	common = -1;
 
@@ -697,7 +700,8 @@ int bgp_connect(struct peer *peer)
 	ifindex_t ifindex = 0;
 
 	if (peer->conf_if && BGP_PEER_SU_UNSPEC(peer)) {
-		zlog_debug("Peer address not learnt: Returning from connect");
+		if (bgp_debug_neighbor_events(peer))
+			zlog_debug("Peer address not learnt: Returning from connect");
 		return 0;
 	}
 	frr_with_privs(&bgpd_privs) {
@@ -705,15 +709,31 @@ int bgp_connect(struct peer *peer)
 		peer->fd = vrf_sockunion_socket(&peer->su, peer->bgp->vrf_id,
 						bgp_get_bound_name(peer));
 	}
-	if (peer->fd < 0)
+	if (peer->fd < 0) {
+		peer->last_reset = PEER_DOWN_SOCKET_ERROR;
+		if (bgp_debug_neighbor_events(peer))
+			zlog_debug("%s: Failure to create socket for connection to %s, error received: %s(%d)",
+				   __func__, peer->host, safe_strerror(errno),
+				   errno);
 		return -1;
+	}
 
 	set_nonblocking(peer->fd);
 
+	/* Set the user configured MSS to TCP socket */
+	if (CHECK_FLAG(peer->flags, PEER_FLAG_TCP_MSS))
+		sockopt_tcp_mss_set(peer->fd, peer->tcp_mss);
+
 	bgp_socket_set_buffer_size(peer->fd);
 
-	if (bgp_set_socket_ttl(peer, peer->fd) < 0)
+	if (bgp_set_socket_ttl(peer, peer->fd) < 0) {
+		peer->last_reset = PEER_DOWN_SOCKET_ERROR;
+		if (bgp_debug_neighbor_events(peer))
+			zlog_debug("%s: Failure to set socket ttl for connection to %s, error received: %s(%d)",
+				   __func__, peer->host, safe_strerror(errno),
+				   errno);
 		return -1;
+	}
 
 	sockopt_reuseaddr(peer->fd);
 	sockopt_reuseport(peer->fd);
@@ -721,18 +741,16 @@ int bgp_connect(struct peer *peer)
 #ifdef IPTOS_PREC_INTERNETCONTROL
 	frr_with_privs(&bgpd_privs) {
 		if (sockunion_family(&peer->su) == AF_INET)
-			setsockopt_ipv4_tos(peer->fd,
-					    IPTOS_PREC_INTERNETCONTROL);
+			setsockopt_ipv4_tos(peer->fd, bm->tcp_dscp);
 		else if (sockunion_family(&peer->su) == AF_INET6)
-			setsockopt_ipv6_tclass(peer->fd,
-					       IPTOS_PREC_INTERNETCONTROL);
+			setsockopt_ipv6_tclass(peer->fd, bm->tcp_dscp);
 	}
 #endif
 
 	if (peer->password) {
 		uint16_t prefixlen = peer->su.sa.sa_family == AF_INET
-					     ? IPV4_MAX_PREFIXLEN
-					     : IPV6_MAX_PREFIXLEN;
+					     ? IPV4_MAX_BITLEN
+					     : IPV6_MAX_BITLEN;
 
 		bgp_md5_set_connect(peer->fd, &peer->su, prefixlen,
 				    peer->password);
@@ -740,6 +758,7 @@ int bgp_connect(struct peer *peer)
 
 	/* Update source bind. */
 	if (bgp_update_source(peer) < 0) {
+		peer->last_reset = PEER_DOWN_SOCKET_ERROR;
 		return connect_error;
 	}
 
@@ -801,10 +820,9 @@ static int bgp_listener(int sock, struct sockaddr *sa, socklen_t salen,
 
 #ifdef IPTOS_PREC_INTERNETCONTROL
 		if (sa->sa_family == AF_INET)
-			setsockopt_ipv4_tos(sock, IPTOS_PREC_INTERNETCONTROL);
+			setsockopt_ipv4_tos(sock, bm->tcp_dscp);
 		else if (sa->sa_family == AF_INET6)
-			setsockopt_ipv6_tclass(sock,
-					       IPTOS_PREC_INTERNETCONTROL);
+			setsockopt_ipv6_tclass(sock, bm->tcp_dscp);
 #endif
 
 		sockopt_v6only(sa->sa_family, sock);
@@ -829,12 +847,10 @@ static int bgp_listener(int sock, struct sockaddr *sa, socklen_t salen,
 	listener->name = XSTRDUP(MTYPE_BGP_LISTENER, bgp->name);
 
 	/* this socket is in a vrf record bgp back pointer */
-	if (bgp->vrf_id != VRF_DEFAULT
-	    && bgp->inst_type != BGP_INSTANCE_TYPE_VIEW)
+	if (bgp->vrf_id != VRF_DEFAULT)
 		listener->bgp = bgp;
 
 	memcpy(&listener->su, sa, salen);
-	listener->thread = NULL;
 	thread_add_read(bm->master, bgp_accept, listener, sock,
 			&listener->thread);
 	listnode_add(bm->listen_sockets, listener);
@@ -882,7 +898,8 @@ int bgp_socket(struct bgp *bgp, unsigned short port, const char *address)
 		frr_with_privs(&bgpd_privs) {
 			sock = vrf_socket(ainfo->ai_family,
 					  ainfo->ai_socktype,
-					  ainfo->ai_protocol, bgp->vrf_id,
+					  ainfo->ai_protocol,
+					  bgp->vrf_id,
 					  (bgp->inst_type
 					   == BGP_INSTANCE_TYPE_VRF
 					   ? bgp->name : NULL));

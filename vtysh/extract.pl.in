@@ -23,6 +23,8 @@
 ## 02111-1307, USA.  
 ##
 
+use Getopt::Long;
+
 print <<EOF;
 #include <zebra.h>
 
@@ -40,11 +42,13 @@ sub scan_file {
 
     $cppadd = $fabricd ? "-DFABRICD=1" : "";
 
-    open (FH, "@CPP@ -P -DHAVE_CONFIG_H -DVTYSH_EXTRACT_PL -Ivtysh/@top_builddir@ -Ivtysh/@top_srcdir@ -Ivtysh/@top_srcdir@/lib -Ivtysh/@top_builddir@/lib -Ivtysh/@top_srcdir@/bgpd -Ivtysh/@top_srcdir@/bgpd/rfapi @LIBYANG_CFLAGS@ @LUA_INCLUDE@ @CPPFLAGS@ $cppadd $file |");
+    $command_line = "@CPP@ -P -std=gnu11 -DHAVE_CONFIG_H -DVTYSH_EXTRACT_PL -Ivtysh/@top_builddir@ -Ivtysh/@top_srcdir@ -Ivtysh/@top_srcdir@/lib -Ivtysh/@top_builddir@/lib -Ivtysh/@top_srcdir@/bgpd -Ivtysh/@top_srcdir@/bgpd/rfapi @LUA_INCLUDE@ @CPPFLAGS@ @LIBYANG_CFLAGS@ $cppadd $file |";
+    open (FH, $command_line)
+	|| die "Open to the pipeline failed: $!\n\nCommand Issued:\n$command_line";
     local $/; undef $/;
     $line = <FH>;
     if (!close (FH)) {
-	printf "File: $file failed to compile, when extracting cli from it please inspect\n"
+	die "File: $file failed to compile:\n$!\nwhen extracting cli from it please inspect\n"
     }
 
     # ?: makes a group non-capturing
@@ -87,7 +91,7 @@ sub scan_file {
 
         # $protocol is VTYSH_PROTO format for redirection of user input
         if ($file =~ /lib\/keychain\.c$/) {
-            $protocol = "VTYSH_RIPD|VTYSH_EIGRPD";
+            $protocol = "VTYSH_RIPD|VTYSH_EIGRPD|VTYSH_OSPF6D";
         }
         elsif ($file =~ /lib\/routemap\.c$/ || $file =~ /lib\/routemap_cli\.c$/) {
             $protocol = "VTYSH_RMAP";
@@ -101,27 +105,20 @@ sub scan_file {
         elsif ($file =~ /lib\/(filter|filter_cli)\.c$/) {
             $protocol = "VTYSH_ACL";
         }
-        elsif ($file =~ /lib\/lib_vty\.c$/) {
+        elsif ($file =~ /lib\/(lib|log)_vty\.c$/) {
             $protocol = "VTYSH_ALL";
         }
 	elsif ($file =~ /lib\/agentx\.c$/) {
-	    $protocol = "VTYSH_RIPD|VTYSH_OSPFD|VTYSH_OSPF6D|VTYSH_BGPD|VTYSH_ZEBRA";
+	    $protocol = "VTYSH_ISISD|VTYSH_RIPD|VTYSH_OSPFD|VTYSH_OSPF6D|VTYSH_BGPD|VTYSH_ZEBRA";
 	}
 	elsif ($file =~ /lib\/nexthop_group\.c$/) {
 	    $protocol = "VTYSH_NH_GROUP";
 	}
         elsif ($file =~ /lib\/plist\.c$/) {
             if ($defun_array[1] =~ m/ipv6/) {
-                $protocol = "VTYSH_RIPNGD|VTYSH_OSPF6D|VTYSH_BGPD|VTYSH_ZEBRA|VTYSH_BABELD|VTYSH_ISISD|VTYSH_FABRICD";
+                $protocol = "VTYSH_RIPNGD|VTYSH_OSPF6D|VTYSH_BGPD|VTYSH_ZEBRA|VTYSH_PIM6D|VTYSH_BABELD|VTYSH_ISISD|VTYSH_FABRICD";
             } else {
                 $protocol = "VTYSH_RIPD|VTYSH_OSPFD|VTYSH_BGPD|VTYSH_ZEBRA|VTYSH_PIMD|VTYSH_EIGRPD|VTYSH_BABELD|VTYSH_ISISD|VTYSH_FABRICD";
-            }
-        }
-        elsif ($file =~ /lib\/distribute\.c$/) {
-            if ($defun_array[1] =~ m/ipv6/) {
-                $protocol = "VTYSH_RIPNGD";
-            } else {
-                $protocol = "VTYSH_RIPD";
             }
         }
         elsif ($file =~ /lib\/if_rmap\.c$/) {
@@ -131,7 +128,13 @@ sub scan_file {
                 $protocol = "VTYSH_RIPD";
             }
         }
-        elsif ($file =~ /lib\/vty\.c$/) {
+	elsif ($file =~ /lib\/resolver\.c$/) {
+	    $protocol = "VTYSH_NHRPD|VTYSH_BGPD";
+	}
+	elsif ($file =~ /lib\/spf_backoff\.c$/) {
+	    $protocol = "VTYSH_ISISD";
+	}
+        elsif ($file =~ /lib\/(vty|thread)\.c$/) {
            $protocol = "VTYSH_ALL";
         }
         elsif ($file =~ /librfp\/.*\.c$/ || $file =~ /rfapi\/.*\.c$/) {
@@ -139,6 +142,9 @@ sub scan_file {
         }
         elsif ($fabricd) {
            $protocol = "VTYSH_FABRICD";
+        }
+        elsif ($file =~ /pimd\/pim6_.*\.c$/) {
+           $protocol = "VTYSH_PIM6D";
         }
         else {
            ($protocol) = ($file =~ /^(?:.*\/)?([a-z0-9]+)\/[a-zA-Z0-9_\-]+\.c$/);
@@ -199,18 +205,31 @@ sub scan_file {
     }
 }
 
+my $have_isisd = 0;
+my $have_fabricd = 0;
+
+GetOptions('have-isisd' => \$have_isisd, 'have-fabricd' => \$have_fabricd);
+
 foreach (@ARGV) {
     if (/(^|\/)isisd\//) {
         # We scan all the IS-IS files twice, once for isisd,
         # once for fabricd. Exceptions are made for the files
         # that are not shared between the two.
         if (/isis_vty_isisd.c/) {
-            scan_file($_, 0);
+            if ( $have_isisd ) {
+                scan_file($_, 0);
+            }
         } elsif (/isis_vty_fabricd.c/) {
-            scan_file($_, 1);
+            if ( $have_fabricd ) {
+                scan_file($_, 1);
+            }
         } else {
-            scan_file($_, 0);
-            scan_file($_, 1);
+            if ( $have_isisd ) {
+                scan_file($_, 0);
+            }
+            if ( $have_fabricd ) {
+                scan_file($_, 1);
+            }
         }
     } else {
         scan_file($_, 0);
@@ -254,7 +273,7 @@ EOF
 foreach (sort keys %odefun) {
     my ($node, $str) = (split (/,/));
     $cmd = $ocmd{$_};
-    $cmd =~ s/_cmd/_cmd_vtysh/;
+    $cmd =~ s/_cmd$/_cmd_vtysh/;
     printf "  install_element ($node, &$cmd);\n";
 }
 

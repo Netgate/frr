@@ -38,8 +38,8 @@ import platform
 
 # Save the Current Working Directory to find configuration files.
 CWD = os.path.dirname(os.path.realpath(__file__))
-sys.path.append(os.path.join(CWD, '../'))
-sys.path.append(os.path.join(CWD, '../lib/'))
+sys.path.append(os.path.join(CWD, "../"))
+sys.path.append(os.path.join(CWD, "../lib/"))
 
 # Required to instantiate the topology builder class.
 
@@ -47,27 +47,34 @@ sys.path.append(os.path.join(CWD, '../lib/'))
 # Import topogen and topotest helpers
 from lib.topogen import Topogen, get_topogen
 from lib.topotest import version_cmp
-from mininet.topo import Topo
 
 from lib.common_config import (
-    start_topology, write_test_header, check_address_types,
+    start_topology,
+    write_test_header,
+    check_address_types,
     write_test_footer,
-    verify_rib, step, create_route_maps,
-    create_static_routes, stop_router, start_router,
+    step,
+    create_route_maps,
     create_prefix_lists,
     create_bgp_community_lists,
     check_router_status,
     get_frr_ipv6_linklocal,
-    shutdown_bringup_interface
+    shutdown_bringup_interface,
 )
 
 from lib.topolog import logger
 from lib.bgp import (
-    verify_bgp_convergence, create_router_bgp,
-    verify_bgp_community, verify_bgp_attributes,
-    verify_best_path_as_per_bgp_attribute, verify_bgp_rib
+    verify_bgp_convergence,
+    create_router_bgp,
+    verify_bgp_community,
+    verify_bgp_attributes,
+    verify_best_path_as_per_bgp_attribute,
+    verify_bgp_rib,
 )
 from lib.topojson import build_topo_from_json, build_config_from_json
+
+pytestmark = [pytest.mark.bgpd, pytest.mark.staticd]
+
 
 # Reading the data from JSON File for topology creation
 jsonFile = "{}/bgp_vrf_dynamic_route_leak_topo2.json".format(CWD)
@@ -85,19 +92,11 @@ NETWORK3_4 = {"ipv4": "50.50.50.50/32", "ipv6": "50:50::50/128"}
 PREFERRED_NEXT_HOP = "global"
 
 
-class CreateTopo(Topo):
-    """
-    Test BasicTopo - topology 1
+def build_topo(tgen):
+    """Build function"""
 
-    * `Topo`: Topology object
-    """
-
-    def build(self, *_args, **_opts):
-        """Build function"""
-        tgen = get_topogen(self)
-
-        # Building topology from json file
-        build_topo_from_json(tgen, topo)
+    # Building topology from json file
+    build_topo_from_json(tgen, topo)
 
 
 def setup_module(mod):
@@ -115,18 +114,19 @@ def setup_module(mod):
     logger.info("Running setup_module to create topology")
 
     # This function initiates the topology build with Topogen...
-    tgen = Topogen(CreateTopo, mod.__name__)
+    tgen = Topogen(build_topo, mod.__name__)
     # ... and here it calls Mininet initialization functions.
 
     # Starting topology, create tmp files which are loaded to routers
-    #  to start deamons and then start routers
+    #  to start daemons and then start routers
     start_topology(tgen)
 
     # Run these tests for kernel version 4.19 or above
-    if version_cmp(platform.release(), '4.19') < 0:
-        error_msg = ('BGP vrf dynamic route leak tests will not run '
-            '(have kernel "{}", but it requires >= 4.19)'.\
-            format(platform.release()))
+    if version_cmp(platform.release(), "4.19") < 0:
+        error_msg = (
+            "BGP vrf dynamic route leak tests will not run "
+            '(have kernel "{}", but it requires >= 4.19)'.format(platform.release())
+        )
         pytest.skip(error_msg)
 
     # Creating configuration from JSON
@@ -137,8 +137,9 @@ def setup_module(mod):
     ADDR_TYPES = check_address_types()
 
     BGP_CONVERGENCE = verify_bgp_convergence(tgen, topo)
-    assert BGP_CONVERGENCE is True, "setup_module : Failed \n Error: {}". \
-        format(BGP_CONVERGENCE)
+    assert BGP_CONVERGENCE is True, "setup_module : Failed \n Error: {}".format(
+        BGP_CONVERGENCE
+    )
 
     logger.info("Running setup_module() done")
 
@@ -153,8 +154,9 @@ def teardown_module():
     # Stop toplogy and Remove tmp files
     tgen.stop_topology()
 
-    logger.info("Testsuite end time: {}".
-                format(time.asctime(time.localtime(time.time()))))
+    logger.info(
+        "Testsuite end time: {}".format(time.asctime(time.localtime(time.time())))
+    )
     logger.info("=" * 40)
 
 
@@ -163,6 +165,7 @@ def teardown_module():
 #   Testcases
 #
 #####################################################
+
 
 def test_bgp_best_path_with_dynamic_import_p0(request):
     """
@@ -181,10 +184,11 @@ def test_bgp_best_path_with_dynamic_import_p0(request):
 
     for addr_type in ADDR_TYPES:
 
-        step("Redistribute configured static routes into BGP process"
-             " on R1/R2 and R3")
+        step(
+            "Redistribute configured static routes into BGP process" " on R1/R2 and R3"
+        )
 
-        input_dict_1={}
+        input_dict_1 = {}
         DUT = ["r1", "r2", "r3", "r4"]
         VRFS = ["ISR", "ISR", "default", "default"]
         AS_NUM = [100, 100, 300, 400]
@@ -199,24 +203,22 @@ def test_bgp_best_path_with_dynamic_import_p0(request):
                     "vrf": vrf,
                     "address_family": {
                         addr_type: {
-                            "unicast": {
-                                "redistribute": [{
-                                    "redist_type": "static"
-                                }]
-                            }
+                            "unicast": {"redistribute": [{"redist_type": "static"}]}
                         }
-                    }
-                })
+                    },
+                }
+            )
 
         result = create_router_bgp(tgen, topo, input_dict_1)
-        assert result is True, "Testcase {} :Failed \n Error: {}". \
-            format(tc_name, result)
+        assert result is True, "Testcase {} :Failed \n Error: {}".format(
+            tc_name, result
+        )
 
     for addr_type in ADDR_TYPES:
 
         step("Import from default vrf into vrf ISR on R1 and R2 as below")
 
-        input_dict_vrf={}
+        input_dict_vrf = {}
         DUT = ["r1", "r2"]
         VRFS = ["ISR", "ISR"]
         AS_NUM = [100, 100]
@@ -230,21 +232,17 @@ def test_bgp_best_path_with_dynamic_import_p0(request):
                     "local_as": as_num,
                     "vrf": vrf,
                     "address_family": {
-                        addr_type: {
-                            "unicast": {
-                                "import": {
-                                    "vrf": "default"
-                                }
-                            }
-                        }
-                    }
-                })
+                        addr_type: {"unicast": {"import": {"vrf": "default"}}}
+                    },
+                }
+            )
 
         result = create_router_bgp(tgen, topo, input_dict_vrf)
-        assert result is True, "Testcase {} : Failed \n Error: {}". \
-            format(tc_name, result)
+        assert result is True, "Testcase {} : Failed \n Error: {}".format(
+            tc_name, result
+        )
 
-        input_dict_default={}
+        input_dict_default = {}
         DUT = ["r1", "r2"]
         VRFS = ["default", "default"]
         AS_NUM = [100, 100]
@@ -258,36 +256,28 @@ def test_bgp_best_path_with_dynamic_import_p0(request):
                     "local_as": as_num,
                     "vrf": vrf,
                     "address_family": {
-                        addr_type: {
-                            "unicast": {
-                                "import": {
-                                    "vrf": "ISR"
-                                }
-                            }
-                        }
-                    }
-                })
+                        addr_type: {"unicast": {"import": {"vrf": "ISR"}}}
+                    },
+                }
+            )
 
         result = create_router_bgp(tgen, topo, input_dict_default)
-        assert result is True, "Testcase {} : Failed \n Error: {}". \
-            format(tc_name, result)
+        assert result is True, "Testcase {} : Failed \n Error: {}".format(
+            tc_name, result
+        )
 
-    step("Verify ECMP/Next-hop/Imported routes Vs Locally originated "
-         "routes/eBGP routes vs iBGP routes --already covered in almost"
-         " all tests")
+    step(
+        "Verify ECMP/Next-hop/Imported routes Vs Locally originated "
+        "routes/eBGP routes vs iBGP routes --already covered in almost"
+        " all tests"
+    )
 
     for addr_type in ADDR_TYPES:
 
         step("Verify Pre-emption")
 
         input_routes_r3 = {
-            "r3": {
-                "static_routes": [{
-                    "network": [
-                        NETWORK3_3[addr_type]
-                    ]
-                }]
-            }
+            "r3": {"static_routes": [{"network": [NETWORK3_3[addr_type]]}]}
         }
 
         intf_r3_r1 = topo["routers"]["r3"]["links"]["r1-link1"]["interface"]
@@ -297,30 +287,27 @@ def test_bgp_best_path_with_dynamic_import_p0(request):
             nh_r3_r1 = get_frr_ipv6_linklocal(tgen, "r3", intf=intf_r3_r1)
             nh_r4_r1 = get_frr_ipv6_linklocal(tgen, "r4", intf=intf_r4_r1)
         else:
-            nh_r3_r1 = topo["routers"]["r3"]["links"]\
-                ["r1-link1"][addr_type].split("/")[0]
-            nh_r4_r1 = topo["routers"]["r4"]["links"]\
-                ["r1-link1"][addr_type].split("/")[0]
+            nh_r3_r1 = topo["routers"]["r3"]["links"]["r1-link1"][addr_type].split("/")[
+                0
+            ]
+            nh_r4_r1 = topo["routers"]["r4"]["links"]["r1-link1"][addr_type].split("/")[
+                0
+            ]
 
-        result = verify_bgp_rib(tgen, addr_type, "r1", input_routes_r3,
-                                next_hop=[nh_r4_r1])
-        assert result is True, (
-            "Testcase {} : Failed \n Error {}". \
-                format(tc_name, result))
+        result = verify_bgp_rib(
+            tgen, addr_type, "r1", input_routes_r3, next_hop=[nh_r4_r1]
+        )
+        assert result is True, "Testcase {} : Failed \n Error {}".format(
+            tc_name, result
+        )
 
     step("Shutdown interface connected to r1 from r4:")
-    shutdown_bringup_interface(tgen, 'r4', intf_r4_r1, False)
+    shutdown_bringup_interface(tgen, "r4", intf_r4_r1, False)
 
     for addr_type in ADDR_TYPES:
 
         input_routes_r3 = {
-            "r3": {
-                "static_routes": [{
-                    "network": [
-                        NETWORK3_3[addr_type]
-                    ]
-                }]
-            }
+            "r3": {"static_routes": [{"network": [NETWORK3_3[addr_type]]}]}
         }
 
         intf_r3_r1 = topo["routers"]["r3"]["links"]["r1-link1"]["interface"]
@@ -330,31 +317,28 @@ def test_bgp_best_path_with_dynamic_import_p0(request):
             nh_r3_r1 = get_frr_ipv6_linklocal(tgen, "r3", intf=intf_r3_r1)
             nh_r4_r1 = get_frr_ipv6_linklocal(tgen, "r4", intf=intf_r4_r1)
         else:
-            nh_r3_r1 = topo["routers"]["r3"]["links"]\
-                ["r1-link1"][addr_type].split("/")[0]
-            nh_r4_r1 = topo["routers"]["r4"]["links"]\
-                ["r1-link1"][addr_type].split("/")[0]
+            nh_r3_r1 = topo["routers"]["r3"]["links"]["r1-link1"][addr_type].split("/")[
+                0
+            ]
+            nh_r4_r1 = topo["routers"]["r4"]["links"]["r1-link1"][addr_type].split("/")[
+                0
+            ]
 
         step("Verify next-hop is changed")
-        result = verify_bgp_rib(tgen, addr_type, "r1", input_routes_r3,
-                                next_hop=[nh_r3_r1])
-        assert result is True, (
-            "Testcase {} : Failed \n Error {}". \
-                format(tc_name, result))
+        result = verify_bgp_rib(
+            tgen, addr_type, "r1", input_routes_r3, next_hop=[nh_r3_r1]
+        )
+        assert result is True, "Testcase {} : Failed \n Error {}".format(
+            tc_name, result
+        )
 
     step("Bringup interface connected to r1 from r4:")
-    shutdown_bringup_interface(tgen, 'r4', intf_r4_r1, True)
+    shutdown_bringup_interface(tgen, "r4", intf_r4_r1, True)
 
     for addr_type in ADDR_TYPES:
 
         input_routes_r3 = {
-            "r3": {
-                "static_routes": [{
-                    "network": [
-                        NETWORK3_3[addr_type]
-                    ]
-                }]
-            }
+            "r3": {"static_routes": [{"network": [NETWORK3_3[addr_type]]}]}
         }
 
         intf_r3_r1 = topo["routers"]["r3"]["links"]["r1-link1"]["interface"]
@@ -364,17 +348,20 @@ def test_bgp_best_path_with_dynamic_import_p0(request):
             nh_r3_r1 = get_frr_ipv6_linklocal(tgen, "r3", intf=intf_r3_r1)
             nh_r4_r1 = get_frr_ipv6_linklocal(tgen, "r4", intf=intf_r4_r1)
         else:
-            nh_r3_r1 = topo["routers"]["r3"]["links"]\
-                ["r1-link1"][addr_type].split("/")[0]
-            nh_r4_r1 = topo["routers"]["r4"]["links"]\
-                ["r1-link1"][addr_type].split("/")[0]
+            nh_r3_r1 = topo["routers"]["r3"]["links"]["r1-link1"][addr_type].split("/")[
+                0
+            ]
+            nh_r4_r1 = topo["routers"]["r4"]["links"]["r1-link1"][addr_type].split("/")[
+                0
+            ]
 
         step("Verify next-hop is not chnaged aftr shutdown:")
-        result = verify_bgp_rib(tgen, addr_type, "r1", input_routes_r3,
-                                next_hop=[nh_r3_r1])
-        assert result is True, (
-            "Testcase {} : Failed \n Error {}". \
-                format(tc_name, result))
+        result = verify_bgp_rib(
+            tgen, addr_type, "r1", input_routes_r3, next_hop=[nh_r3_r1]
+        )
+        assert result is True, "Testcase {} : Failed \n Error {}".format(
+            tc_name, result
+        )
 
     step("Active-Standby scenario(as-path prepend and Local pref)")
 
@@ -386,18 +373,21 @@ def test_bgp_best_path_with_dynamic_import_p0(request):
             "r1": {
                 "prefix_lists": {
                     addr_type: {
-                        "pf_ls_{}".format(addr_type): [{
-                            "seqid": 10,
-                            "network": NETWORK3_4[addr_type],
-                            "action": "permit"
-                        }]
+                        "pf_ls_{}".format(addr_type): [
+                            {
+                                "seqid": 10,
+                                "network": NETWORK3_4[addr_type],
+                                "action": "permit",
+                            }
+                        ]
                     }
                 }
             }
         }
         result = create_prefix_lists(tgen, input_dict_pf)
         assert result is True, "Testcase {} : Failed \n Error: {}".format(
-            tc_name, result)
+            tc_name, result
+        )
 
     for addr_type in ADDR_TYPES:
 
@@ -406,57 +396,56 @@ def test_bgp_best_path_with_dynamic_import_p0(request):
         input_dict_rm = {
             "r1": {
                 "route_maps": {
-                    "rmap_PATH1_{}".format(addr_type): [{
-                        "action": "permit",
-                        "seq_id": 10,
-                        "match": {
-                            addr_type: {
-                                "prefix_lists":
-                                    "pf_ls_{}".format(addr_type)
-                            }
-                        },
-                        "set": {
-                            "locPrf": 500
+                    "rmap_PATH1_{}".format(addr_type): [
+                        {
+                            "action": "permit",
+                            "seq_id": 10,
+                            "match": {
+                                addr_type: {
+                                    "prefix_lists": "pf_ls_{}".format(addr_type)
+                                }
+                            },
+                            "set": {"locPrf": 500},
                         }
-                    }]
+                    ]
                 }
             }
         }
 
         result = create_route_maps(tgen, input_dict_rm)
-        assert result is True, 'Testcase {} : Failed \n Error: {}'.format(
-            tc_name, result)
+        assert result is True, "Testcase {} : Failed \n Error: {}".format(
+            tc_name, result
+        )
 
         step("Create route-map to match prefix-list and set localpref 600")
 
         input_dict_rm = {
             "r1": {
                 "route_maps": {
-                    "rmap_PATH2_{}".format(addr_type): [{
-                        "action": "permit",
-                        "seq_id": 20,
-                        "match": {
-                            addr_type: {
-                                "prefix_lists":
-                                    "pf_ls_{}".format(addr_type)
-                            }
-                        },
-                        "set": {
-                            "locPrf": 600
+                    "rmap_PATH2_{}".format(addr_type): [
+                        {
+                            "action": "permit",
+                            "seq_id": 20,
+                            "match": {
+                                addr_type: {
+                                    "prefix_lists": "pf_ls_{}".format(addr_type)
+                                }
+                            },
+                            "set": {"locPrf": 600},
                         }
-                    }]
+                    ]
                 }
             }
         }
 
         result = create_route_maps(tgen, input_dict_rm)
-        assert result is True, 'Testcase {} : Failed \n Error: {}'.format(
-            tc_name, result)
+        assert result is True, "Testcase {} : Failed \n Error: {}".format(
+            tc_name, result
+        )
 
-        input_dict_rma={
+        input_dict_rma = {
             "r1": {
-                "bgp":
-                [
+                "bgp": [
                     {
                         "local_as": "100",
                         "address_family": {
@@ -466,36 +455,44 @@ def test_bgp_best_path_with_dynamic_import_p0(request):
                                         "r3": {
                                             "dest_link": {
                                                 "r1-link1": {
-                                                    "route_maps": [{
-                                                        "name": "rmap_PATH1_{}".\
-                                                            format(addr_type),
-                                                        "direction": "in"
-                                                    }]
+                                                    "route_maps": [
+                                                        {
+                                                            "name": "rmap_PATH1_{}".format(
+                                                                addr_type
+                                                            ),
+                                                            "direction": "in",
+                                                        }
+                                                    ]
                                                 }
                                             }
                                         },
                                         "r4": {
                                             "dest_link": {
                                                 "r1-link1": {
-                                                    "route_maps": [{
-                                                        "name": "rmap_PATH2_{}".\
-                                                            format(addr_type),
-                                                        "direction": "in"
-                                                    }]
+                                                    "route_maps": [
+                                                        {
+                                                            "name": "rmap_PATH2_{}".format(
+                                                                addr_type
+                                                            ),
+                                                            "direction": "in",
+                                                        }
+                                                    ]
                                                 }
                                             }
-                                        }
+                                        },
                                     }
                                 }
                             }
-                        }
+                        },
                     }
-                ]}
+                ]
             }
+        }
 
         result = create_router_bgp(tgen, topo, input_dict_rma)
         assert result is True, "Testcase {} : Failed \n Error: {}".format(
-            tc_name, result)
+            tc_name, result
+        )
 
     dut = "r1"
     attribute = "locPrf"
@@ -506,20 +503,18 @@ def test_bgp_best_path_with_dynamic_import_p0(request):
 
         input_routes_r3 = {
             "r3": {
-                "static_routes": [{
-                    "network": [
-                        NETWORK3_3[addr_type], \
-                        NETWORK3_4[addr_type]
-                    ]
-                }]
+                "static_routes": [
+                    {"network": [NETWORK3_3[addr_type], NETWORK3_4[addr_type]]}
+                ]
             }
         }
 
-        result = verify_best_path_as_per_bgp_attribute(tgen, addr_type, dut,
-                                                        input_routes_r3,
-                                                        attribute)
+        result = verify_best_path_as_per_bgp_attribute(
+            tgen, addr_type, dut, input_routes_r3, attribute
+        )
         assert result is True, "Testcase {} : Failed \n Error: {}".format(
-            tc_name, result)
+            tc_name, result
+        )
 
     for addr_type in ADDR_TYPES:
 
@@ -528,26 +523,26 @@ def test_bgp_best_path_with_dynamic_import_p0(request):
         input_dict_rm = {
             "r1": {
                 "route_maps": {
-                    "rmap_PATH1_{}".format(addr_type): [{
-                        "action": "permit",
-                        "seq_id": 10,
-                        "match": {
-                            addr_type: {
-                                "prefix_lists":
-                                    "pf_ls_{}".format(addr_type)
-                            }
-                        },
-                        "set": {
-                            "locPrf": 700
+                    "rmap_PATH1_{}".format(addr_type): [
+                        {
+                            "action": "permit",
+                            "seq_id": 10,
+                            "match": {
+                                addr_type: {
+                                    "prefix_lists": "pf_ls_{}".format(addr_type)
+                                }
+                            },
+                            "set": {"locPrf": 700},
                         }
-                    }]
+                    ]
                 }
             }
         }
 
         result = create_route_maps(tgen, input_dict_rm)
-        assert result is True, 'Testcase {} : Failed \n Error: {}'.format(
-            tc_name, result)
+        assert result is True, "Testcase {} : Failed \n Error: {}".format(
+            tc_name, result
+        )
 
     for addr_type in ADDR_TYPES:
 
@@ -555,20 +550,18 @@ def test_bgp_best_path_with_dynamic_import_p0(request):
 
         input_routes_r3 = {
             "r3": {
-                "static_routes": [{
-                    "network": [
-                        NETWORK3_3[addr_type], \
-                        NETWORK3_4[addr_type]
-                    ]
-                }]
+                "static_routes": [
+                    {"network": [NETWORK3_3[addr_type], NETWORK3_4[addr_type]]}
+                ]
             }
         }
 
-        result = verify_best_path_as_per_bgp_attribute(tgen, addr_type, dut,
-                                                        input_routes_r3,
-                                                        attribute)
+        result = verify_best_path_as_per_bgp_attribute(
+            tgen, addr_type, dut, input_routes_r3, attribute
+        )
         assert result is True, "Testcase {} : Failed \n Error: {}".format(
-            tc_name, result)
+            tc_name, result
+        )
 
     for addr_type in ADDR_TYPES:
 
@@ -577,30 +570,29 @@ def test_bgp_best_path_with_dynamic_import_p0(request):
         input_dict_rm = {
             "r1": {
                 "route_maps": {
-                    "rmap_PATH2_{}".format(addr_type): [{
-                        "action": "permit",
-                        "seq_id": 20,
-                        "match": {
-                            addr_type: {
-                                "prefix_lists":
-                                    "pf_ls_{}".format(addr_type)
-                            }
-                        },
-                        "set": {
-                            "localpref": 700,
-                            "path": {
-                                "as_num": "111",
-                                "as_action": "prepend"
-                            }
+                    "rmap_PATH2_{}".format(addr_type): [
+                        {
+                            "action": "permit",
+                            "seq_id": 20,
+                            "match": {
+                                addr_type: {
+                                    "prefix_lists": "pf_ls_{}".format(addr_type)
+                                }
+                            },
+                            "set": {
+                                "localpref": 700,
+                                "path": {"as_num": "111", "as_action": "prepend"},
+                            },
                         }
-                    }]
+                    ]
                 }
             }
         }
 
         result = create_route_maps(tgen, input_dict_rm)
-        assert result is True, 'Testcase {} : Failed \n Error: {}'.format(
-            tc_name, result)
+        assert result is True, "Testcase {} : Failed \n Error: {}".format(
+            tc_name, result
+        )
 
     attribute = "path"
 
@@ -610,20 +602,18 @@ def test_bgp_best_path_with_dynamic_import_p0(request):
 
         input_routes_r3 = {
             "r3": {
-                "static_routes": [{
-                    "network": [
-                        NETWORK3_3[addr_type], \
-                        NETWORK3_4[addr_type]
-                    ]
-                }]
+                "static_routes": [
+                    {"network": [NETWORK3_3[addr_type], NETWORK3_4[addr_type]]}
+                ]
             }
         }
 
-        result = verify_best_path_as_per_bgp_attribute(tgen, addr_type, dut,
-                                                        input_routes_r3,
-                                                        attribute)
+        result = verify_best_path_as_per_bgp_attribute(
+            tgen, addr_type, dut, input_routes_r3, attribute
+        )
         assert result is True, "Testcase {} : Failed \n Error: {}".format(
-            tc_name, result)
+            tc_name, result
+        )
 
     write_test_footer(tc_name)
 
@@ -645,71 +635,77 @@ def test_modify_route_map_match_set_clauses_p1(request):
 
     for addr_type in ADDR_TYPES:
 
-        step("Configure route-map to set community attribute for a specific"
-            "prefix on R1 in vrf ISR")
+        step(
+            "Configure route-map to set community attribute for a specific"
+            "prefix on R1 in vrf ISR"
+        )
 
         input_dict_pf = {
             "r1": {
                 "prefix_lists": {
                     addr_type: {
-                        "pflist_ABC_{}".format(addr_type): [{
-                            "seqid": 10,
-                            "network": NETWORK1_1[addr_type],
-                            "action": "permit"
-                        }]
+                        "pflist_ABC_{}".format(addr_type): [
+                            {
+                                "seqid": 10,
+                                "network": NETWORK1_1[addr_type],
+                                "action": "permit",
+                            }
+                        ]
                     }
                 }
             }
         }
         result = create_prefix_lists(tgen, input_dict_pf)
         assert result is True, "Testcase {} : Failed \n Error: {}".format(
-            tc_name, result)
+            tc_name, result
+        )
 
     input_dict_cl = {
         "r1": {
             "bgp_community_lists": [
-            {
-                "community_type": "expanded",
-                "action": "permit",
-                "name": "COMM",
-                "value": "100:100"
+                {
+                    "community_type": "expanded",
+                    "action": "permit",
+                    "name": "COMM",
+                    "value": "100:100",
                 }
             ]
         }
     }
     result = create_bgp_community_lists(tgen, input_dict_cl)
-    assert result is True, 'Testcase {} : Failed \n Error: {}'.format(
-        tc_name, result)
+    assert result is True, "Testcase {} : Failed \n Error: {}".format(tc_name, result)
 
     for addr_type in ADDR_TYPES:
         input_dict_rm = {
             "r1": {
                 "route_maps": {
-                    "rmap_XYZ_{}".format(addr_type): [{
-                        "action": "permit",
-                        "match": {
-                            addr_type: {
-                                "prefix_lists":
-                                    "pflist_ABC_{}".format(addr_type)
-                            }
-                        },
-                        "set": {
-                            "community": {"num": "100:100"}
+                    "rmap_XYZ_{}".format(addr_type): [
+                        {
+                            "action": "permit",
+                            "match": {
+                                addr_type: {
+                                    "prefix_lists": "pflist_ABC_{}".format(addr_type)
+                                }
+                            },
+                            "set": {"community": {"num": "100:100"}},
                         }
-                    }]
+                    ]
                 }
             }
         }
         result = create_route_maps(tgen, input_dict_rm)
-        assert result is True, 'Testcase {} : Failed \n Error: {}'.format(
-            tc_name, result)
+        assert result is True, "Testcase {} : Failed \n Error: {}".format(
+            tc_name, result
+        )
 
     for addr_type in ADDR_TYPES:
 
-        step("Apply this route-map on R1 to vrf ISR while redistributing the"
-            " prefixes into BGP")
+        step(
+            "Apply this route-map on R1 to vrf ISR while redistributing the"
+            " prefixes into BGP"
+        )
 
-        input_dict_1={}
+        input_dict_1 = {}
         DUT = ["r1"]
         VRFS = ["ISR"]
         AS_NUM = [100]
@@ -725,54 +721,59 @@ def test_modify_route_map_match_set_clauses_p1(request):
                     "address_family": {
                         addr_type: {
                             "unicast": {
-                                "redistribute": [{
-                                    "redist_type": "static",
+                                "redistribute": [
+                                    {
+                                        "redist_type": "static",
                                         "attribute": {
-                                            "route-map" : "rmap_XYZ_{}".\
-                                                format(addr_type)
-                                        }
+                                            "route-map": "rmap_XYZ_{}".format(addr_type)
+                                        },
                                     }
                                 ]
                             }
                         }
-                    }
-                })
+                    },
+                }
+            )
 
         result = create_router_bgp(tgen, topo, input_dict_1)
-        assert result is True, "Testcase {} :Failed \n Error: {}". \
-            format(tc_name, result)
+        assert result is True, "Testcase {} :Failed \n Error: {}".format(
+            tc_name, result
+        )
 
     for addr_type in ADDR_TYPES:
 
-        step("Configure another route-map for filtering the prefixes based on"
-            " community attribute while importing into default vrf")
+        step(
+            "Configure another route-map for filtering the prefixes based on"
+            " community attribute while importing into default vrf"
+        )
 
         input_dict_rm = {
             "r1": {
                 "route_maps": {
-                    "rmap_IMP_{}".format(addr_type): [{
-                        "action": "permit",
-                        "seq_id": 10,
-                        "match": {
-                            "community_list": {"id": "COMM"}
-                        },
-                        "set": {
-                            "community": {"num": "none"}
+                    "rmap_IMP_{}".format(addr_type): [
+                        {
+                            "action": "permit",
+                            "seq_id": 10,
+                            "match": {"community_list": {"id": "COMM"}},
+                            "set": {"community": {"num": "none"}},
                         }
-                    }]
+                    ]
                 }
             }
         }
         result = create_route_maps(tgen, input_dict_rm)
-        assert result is True, 'Testcase {} : Failed \n Error: {}'.format(
-            tc_name, result)
+        assert result is True, "Testcase {} : Failed \n Error: {}".format(
+            tc_name, result
+        )
 
     for addr_type in ADDR_TYPES:
 
-        step("Apply the route-map while Importing vrf ISR's prefixes into "
-            "default vrf on router R1:")
+        step(
+            "Apply the route-map while Importing vrf ISR's prefixes into "
+            "default vrf on router R1:"
+        )
 
-        input_dict_isr={}
+        input_dict_isr = {}
         DUT = ["r1"]
         VRFS = ["default"]
         AS_NUM = [100]
@@ -786,15 +787,10 @@ def test_modify_route_map_match_set_clauses_p1(request):
                     "local_as": as_num,
                     "vrf": vrf,
                     "address_family": {
-                        addr_type: {
-                            "unicast": {
-                                "import": {
-                                    "vrf": "ISR"
-                                }
-                            }
-                        }
-                    }
-                })
+                        addr_type: {"unicast": {"import": {"vrf": "ISR"}}}
+                    },
+                }
+            )
 
             temp[dut]["bgp"].append(
                 {
@@ -808,34 +804,35 @@ def test_modify_route_map_match_set_clauses_p1(request):
                                 }
                             }
                         }
-                    }
-                })
+                    },
+                }
+            )
 
         result = create_router_bgp(tgen, topo, input_dict_isr)
-        assert result is True, "Testcase {} : Failed \n Error: {}". \
-            format(tc_name, result)
+        assert result is True, "Testcase {} : Failed \n Error: {}".format(
+            tc_name, result
+        )
 
     for addr_type in ADDR_TYPES:
 
-        step("Verify on R1 that only prefixes with community value 100:100"
+        step(
+            "Verify on R1 that only prefixes with community value 100:100"
             "in vrf ISR are imported to vrf default. While importing, the"
-            " community value has been stripped off:")
+            " community value has been stripped off:"
+        )
 
         input_routes_r1 = {
             "r1": {
-                "static_routes": [{
-                    "network": [
-                        NETWORK1_1[addr_type]
-                    ],
-                    "vrf": "default"
-                }]
+                "static_routes": [
+                    {"network": [NETWORK1_1[addr_type]], "vrf": "default"}
+                ]
             }
         }
 
         result = verify_bgp_rib(tgen, addr_type, "r1", input_routes_r1)
-        assert result is True, \
-            "Testcase {} : Failed \n Error {}". \
-                format(tc_name, result)
+        assert result is True, "Testcase {} : Failed \n Error {}".format(
+            tc_name, result
+        )
 
     for addr_type in ADDR_TYPES:
 
@@ -844,119 +841,109 @@ def test_modify_route_map_match_set_clauses_p1(request):
         input_dict_rm = {
             "r1": {
                 "route_maps": {
-                    "rmap_IMP_{}".format(addr_type): [{
-                        "action": "permit",
-                        "seq_id": 10,
-                        "match": {
-                            "community_list": {"id": "COMM"}
-                        },
-                        "set": {
-                            "large_community": {"num": "100:100:100"},
-                            "locPrf": 500,
-                            "path": {
-                                "as_num": "100 100",
-                                "as_action": "prepend"
-                            }
-                        }
-                    }]
-                }
-            }
-        }
-        result = create_route_maps(tgen, input_dict_rm)
-        assert result is True, 'Testcase {} : Failed \n Error: {}'.format(
-            tc_name, result)
-
-    for addr_type in ADDR_TYPES:
-
-        step("Verify that as we continue adding different attributes "
-            "step-by-step in route-map IMP those attributes gets "
-            "attached to prefixes:")
-
-        input_routes_r1 = {
-            "r1": {
-                "static_routes": [{
-                    "network": [
-                        NETWORK1_1[addr_type]
-                    ],
-                    "vrf": "default"
-                }]
-            }
-        }
-
-        input_dict_comm = {
-            "largeCommunity": "100:100:100"
-        }
-
-        result = verify_bgp_community(tgen, addr_type, dut, [NETWORK1_1[addr_type]],
-                                      input_dict_comm)
-        assert result is True, (
-            "Testcase {} : Failed \n Error {}".format(
-            tc_name, result))
-
-        input_rmap = {
-            "r1": {
-                "route_maps": {
                     "rmap_IMP_{}".format(addr_type): [
                         {
+                            "action": "permit",
+                            "seq_id": 10,
+                            "match": {"community_list": {"id": "COMM"}},
                             "set": {
-                                "locPrf": 500
-                            }
+                                "large_community": {"num": "100:100:100"},
+                                "locPrf": 500,
+                                "path": {"as_num": "100 100", "as_action": "prepend"},
+                            },
                         }
                     ]
                 }
             }
         }
+        result = create_route_maps(tgen, input_dict_rm)
+        assert result is True, "Testcase {} : Failed \n Error: {}".format(
+            tc_name, result
+        )
 
-        result = verify_bgp_attributes(tgen, addr_type, "r1",\
-                                       [NETWORK1_1[addr_type]],
-                                       rmap_name="rmap_IMP_{}".format(addr_type),\
-                                       input_dict=input_rmap)
-        assert result is True, "Testcase  : Failed \n Error: {}".format(
-                tc_name, result)
+    for addr_type in ADDR_TYPES:
 
-    step("Change community-list to match a different value then "
-            "100:100.")
+        step(
+            "Verify that as we continue adding different attributes "
+            "step-by-step in route-map IMP those attributes gets "
+            "attached to prefixes:"
+        )
+
+        input_routes_r1 = {
+            "r1": {
+                "static_routes": [
+                    {"network": [NETWORK1_1[addr_type]], "vrf": "default"}
+                ]
+            }
+        }
+
+        input_dict_comm = {"largeCommunity": "100:100:100"}
+
+        result = verify_bgp_community(
+            tgen, addr_type, dut, [NETWORK1_1[addr_type]], input_dict_comm
+        )
+        assert result is True, "Testcase {} : Failed \n Error {}".format(
+            tc_name, result
+        )
+
+        input_rmap = {
+            "r1": {
+                "route_maps": {
+                    "rmap_IMP_{}".format(addr_type): [{"set": {"locPrf": 500}}]
+                }
+            }
+        }
+
+        result = verify_bgp_attributes(
+            tgen,
+            addr_type,
+            "r1",
+            [NETWORK1_1[addr_type]],
+            rmap_name="rmap_IMP_{}".format(addr_type),
+            input_dict=input_rmap,
+        )
+        assert result is True, "Testcase {} : Failed \n Error: {}".format(
+            tc_name, result
+        )
+
+    step("Change community-list to match a different value then " "100:100.")
 
     input_dict_cl = {
         "r1": {
             "bgp_community_lists": [
-            {
-                "community_type": "expanded",
-                "action": "permit",
-                "name": "COMM",
-                "value": "100:100",
-                "delete": True
+                {
+                    "community_type": "expanded",
+                    "action": "permit",
+                    "name": "COMM",
+                    "value": "100:100",
+                    "delete": True,
                 }
             ]
         }
     }
     result = create_bgp_community_lists(tgen, input_dict_cl)
-    assert result is True, 'Testcase {} : Failed \n Error: {}'.format(
-        tc_name, result)
+    assert result is True, "Testcase {} : Failed \n Error: {}".format(tc_name, result)
 
     for addr_type in ADDR_TYPES:
 
         input_routes_r1 = {
             "r1": {
-                "static_routes": [{
-                    "network": [
-                        NETWORK1_1[addr_type]
-                    ],
-                    "vrf": "default"
-                }]
+                "static_routes": [
+                    {"network": [NETWORK1_1[addr_type]], "vrf": "default"}
+                ]
             }
         }
 
-        result = verify_bgp_rib(tgen, addr_type, "r1", input_routes_r1,
-                            expected=False)
-        assert result is not True, (
-            "Testcase {} : Failed \n Error : Routes are still "
-            "present {}".\
-                format(tc_name, result))
+        result = verify_bgp_rib(tgen, addr_type, "r1", input_routes_r1, expected=False)
+        assert (
+            result is not True
+        ), "Testcase {} : Failed \n Error : Routes are still " "present {}".format(
+            tc_name, result
+        )
 
     write_test_footer(tc_name)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     args = ["-s"] + sys.argv[1:]
     sys.exit(pytest.main(args))

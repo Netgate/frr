@@ -3,7 +3,6 @@
 # standard Debian options & profiles
 
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
-export OS_VERSION_ID = $(shell sed -n '/VERSION_ID/ { s/^.*="//; s/"//; p  }' /etc/os-release)
 
 ifneq (,$(filter terse,$(DEB_BUILD_OPTIONS)))
   MAKE_SILENT="V=0"
@@ -22,27 +21,20 @@ else
   CONF_RPKI=--disable-rpki
 endif
 
-ifeq ($(filter pkg.frr.nosystemd,$(DEB_BUILD_PROFILES)),)
-  DH_WITH_SYSTEMD=systemd,
-  CONF_SYSTEMD=--enable-systemd=yes
+ifeq ($(filter pkg.frr.lua,$(DEB_BUILD_PROFILES)),)
+  CONF_LUA=--disable-scripting
 else
-  DH_WITH_SYSTEMD=
-  CONF_SYSTEMD=--enable-systemd=no
+  CONF_LUA=--enable-scripting
 endif
 
 export PYTHON=python3
 
-ifeq ($(OS_VERSION_ID),20.04)
-export LIBYANG_CONFIGURE = --with-libyangdir=${LIBYANG_DIR}
-endif
-
 %:
-	dh $@ --with=$(DH_WITH_SYSTEMD)autoreconf --parallel
+	dh $@
 
 override_dh_auto_configure:
 	$(shell dpkg-buildflags --export=sh); \
 	dh_auto_configure -- \
-		--enable-exampledir=/usr/share/doc/frr/examples/ \
 		--localstatedir=/var/run/frr \
 		--sbindir=/usr/lib/frr \
 		--sysconfdir=/etc/frr \
@@ -52,11 +44,12 @@ override_dh_auto_configure:
 		LIBTOOLFLAGS="-rpath /usr/lib/$(DEB_HOST_MULTIARCH)/frr" \
 		--disable-dependency-tracking \
 		\
-		$(CONF_SYSTEMD) \
 		$(CONF_RPKI) \
+		$(CONF_LUA) \
 		--with-libpam \
 		--enable-doc \
 		--enable-doc-html \
+		--disable-snmp \
 		--enable-fpm \
 		--disable-protobuf \
 		--disable-zeromq \
@@ -70,7 +63,6 @@ override_dh_auto_configure:
 		--enable-configfile-mask=0640 \
 		--enable-logfile-mask=0640 \
 		--disable-nhrpd \
-		$(LIBYANG_CONFIGURE) \
 		# end
 
 override_dh_auto_install:
@@ -80,19 +72,15 @@ override_dh_auto_install:
 	sed -e '1c #!/usr/bin/python3' -i debian/tmp/usr/lib/frr/generate_support_bundle.py
 
 # let dh_systemd_* and dh_installinit do their thing automatically
-ifeq ($(filter pkg.frr.nosystemd,$(DEB_BUILD_PROFILES)),)
-	cp tools/frr-dataplane.service debian/netgate-frr.frr-dataplane.service
-endif
+	#cp tools/frr.service debian/netgate-frr.service
+	cp tools/frr@.service debian/netgate-frr@.service
+	#cp tools/frrinit.sh debian/netgate-frr.init
 	-rm -f debian/tmp/usr/lib/frr/frr
 
 # install config files
 	mkdir -p debian/tmp/etc
 	cp -r tools/etc/* debian/tmp/etc/
 	-rm debian/tmp/etc/frr/daemons.conf
-	# eliminate conflicts with generated file by omitting daemons from pkg
-	-rm debian/tmp/etc/frr/daemons
-
-	sed -e 's#^!log file #!log file /var/log/frr/#' -i debian/tmp/usr/share/doc/frr/examples/*sample*
 
 # drop dev-only files
 	find debian/tmp -name '*.la' -o -name '*.a' -o -name 'lib*.so' | xargs rm -f
@@ -109,21 +97,17 @@ override_dh_shlibdeps:
 	dh_shlibdeps -- \
 		--ignore-missing-info \
 		-l${LIBVPPMGMT_DIR}/usr/lib/${DEB_HOST_MULTIARCH} \
-		-l${LIBTNSRINFRA_DIR}/usr/lib/${DEB_HOST_MULTIARCH} \
-		-l${LIBYANG_DIR}/usr/lib/${DEB_HOST_MULTIARCH}
-
-override_dh_gencontrol:
-ifeq ($(OS_VERSION_ID),20.04)
-	dh_gencontrol -- -Vnetgate:libyang=netgate-libyang
-else
-	dh_gencontrol -- '-Vnetgate:libyang=libyang1 (>=1.0.225)'
-endif
+		-l${VPP_DIR}/build-root/install-vpp-native/vpp/lib \
+		-l${LIBTNSRINFRA_DIR}/usr/lib/${DEB_HOST_MULTIARCH}
 
 override_dh_auto_build:
 	dh_auto_build -- $(MAKE_SILENT)
 
 override_dh_installinit:
-	dh_installinit -r --name=frr-dataplane
+	dh_installinit -r
+
+override_dh_installsystemd:
+	dh_installsystemd -r
 
 override_dh_makeshlibs:
 	dh_makeshlibs -n
@@ -135,8 +119,9 @@ override_dh_auto_clean:
 # we generally do NOT want a full distclean since that wipes both
 # debian/changelog and config.version
 	if test -f Makefile; then make redistclean; fi
-	-rm -f debian/frr.init
-	-rm -f debian/netgate-frr.frr-dataplane.service
+	#-rm -f debian/netgate-frr.init
+	#-rm -f debian/netgate-frr.service
+	-rm -f debian/netgate-frr@.service
 
 override_dh_strip:
 	dh_strip --dbg-package=netgate-frr-dbg
@@ -148,4 +133,4 @@ override_dh_auto_test:
 # at /etc/pam.d/netgate-frr. Override that so it installs to /etc/pam.d/frr.
 override_dh_installpam:
 	install -d debian/netgate-frr/etc/pam.d
-	install -p -m0644 debian/netgate-frr.pam debian/netgate-frr/etc/pam.d/frr
+	install -p -m0644 debian/frr.pam debian/netgate-frr/etc/pam.d/frr

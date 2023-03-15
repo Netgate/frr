@@ -265,11 +265,12 @@ void rfapiCheckRefcount(struct agg_node *rn, safi_t safi, int lockoffset)
 		}
 	}
 
-	if (count_bpi + count_monitor + lockoffset != rn->lock) {
+	if (count_bpi + count_monitor + lockoffset
+	    != agg_node_get_lock_count(rn)) {
 		vnc_zlog_debug_verbose(
 			"%s: count_bpi=%d, count_monitor=%d, lockoffset=%d, rn->lock=%d",
 			__func__, count_bpi, count_monitor, lockoffset,
-			rn->lock);
+			agg_node_get_lock_count(rn));
 		assert(0);
 	}
 }
@@ -297,10 +298,9 @@ static wq_item_status rfapi_deferred_close_workfunc(struct work_queue *q,
 int rfapiGetL2o(struct attr *attr, struct rfapi_l2address_option *l2o)
 {
 	if (attr) {
-
 		struct bgp_attr_encap_subtlv *pEncap;
 
-		for (pEncap = attr->vnc_subtlvs; pEncap;
+		for (pEncap = bgp_attr_get_vnc_subtlvs(attr); pEncap;
 		     pEncap = pEncap->next) {
 
 			if (pEncap->type == BGP_VNC_SUBTLV_TYPE_RFPOPTION) {
@@ -357,7 +357,7 @@ int rfapiGetVncLifetime(struct attr *attr, uint32_t *lifetime)
 
 	if (attr) {
 
-		for (pEncap = attr->vnc_subtlvs; pEncap;
+		for (pEncap = bgp_attr_get_vnc_subtlvs(attr); pEncap;
 		     pEncap = pEncap->next) {
 
 			if (pEncap->type
@@ -388,7 +388,7 @@ int rfapiGetVncTunnelUnAddr(struct attr *attr, struct prefix *p)
 			return 0;
 		/* MPLS carries UN address in next hop */
 		rfapiNexthop2Prefix(attr, p);
-		if (p->family != 0)
+		if (p->family != AF_UNSPEC)
 			return 0;
 
 		return ENOENT;
@@ -405,7 +405,7 @@ int rfapiGetVncTunnelUnAddr(struct attr *attr, struct prefix *p)
 				case 8:
 					if (p) {
 						p->family = AF_INET;
-						p->prefixlen = 32;
+						p->prefixlen = IPV4_MAX_BITLEN;
 						memcpy(p->u.val, pEncap->value,
 						       4);
 					}
@@ -414,7 +414,7 @@ int rfapiGetVncTunnelUnAddr(struct attr *attr, struct prefix *p)
 				case 20:
 					if (p) {
 						p->family = AF_INET6;
-						p->prefixlen = 128;
+						p->prefixlen = IPV6_MAX_BITLEN;
 						memcpy(p->u.val, pEncap->value,
 						       16);
 					}
@@ -445,19 +445,19 @@ int rfapiGetUnAddrOfVpnBi(struct bgp_path_info *bpi, struct prefix *p)
 			if (p) {
 				p->family = bpi->extra->vnc.import.un_family;
 				p->u.prefix4 = bpi->extra->vnc.import.un.addr4;
-				p->prefixlen = 32;
+				p->prefixlen = IPV4_MAX_BITLEN;
 			}
 			return 0;
 		case AF_INET6:
 			if (p) {
 				p->family = bpi->extra->vnc.import.un_family;
 				p->u.prefix6 = bpi->extra->vnc.import.un.addr6;
-				p->prefixlen = 128;
+				p->prefixlen = IPV6_MAX_BITLEN;
 			}
 			return 0;
 		default:
 			if (p)
-				p->family = 0;
+				p->family = AF_UNSPEC;
 #ifdef DEBUG_ENCAP_MONITOR
 			vnc_zlog_debug_verbose(
 				"%s: bpi->extra->vnc.import.un_family is 0, no UN addr",
@@ -611,11 +611,8 @@ rfapiMonitorMoveShorter(struct agg_node *original_vpn_node, int lockoffset)
 
 #ifdef DEBUG_MONITOR_MOVE_SHORTER
 	{
-		char buf[PREFIX_STRLEN];
-
-		prefix2str(&original_vpn_node->p, buf, sizeof(buf));
-		vnc_zlog_debug_verbose("%s: called with node pfx=%s", __func__,
-				       buf);
+		vnc_zlog_debug_verbose("%s: called with node pfx=%pFX",
+				       __func__, &original_vpn_node->p);
 	}
 #endif
 
@@ -750,11 +747,8 @@ rfapiMonitorMoveShorter(struct agg_node *original_vpn_node, int lockoffset)
 
 #ifdef DEBUG_MONITOR_MOVE_SHORTER
 	{
-		char buf[PREFIX_STRLEN];
-
-		prefix2str(&par->p, buf, sizeof(buf));
-		vnc_zlog_debug_verbose("%s: moved to node pfx=%s", __func__,
-				       buf);
+		vnc_zlog_debug_verbose("%s: moved to node pfx=%pFX", __func__,
+				       &par->p);
 	}
 #endif
 
@@ -863,9 +857,9 @@ static void rfapiBgpInfoChainFree(struct bgp_path_info *bpi)
 		if (CHECK_FLAG(bpi->flags, BGP_PATH_REMOVED)
 		    && bpi->extra->vnc.import.timer) {
 
-			struct thread *t =
-				(struct thread *)bpi->extra->vnc.import.timer;
-			struct rfapi_withdraw *wcb = t->arg;
+			struct thread **t =
+				&(bpi->extra->vnc.import.timer);
+			struct rfapi_withdraw *wcb = (*t)->arg;
 
 			XFREE(MTYPE_RFAPI_WITHDRAW, wcb);
 			thread_cancel(t);
@@ -990,7 +984,7 @@ static int rfapiEcommunitiesMatchBeec(struct ecommunity *ecom,
 
 int rfapiEcommunitiesIntersect(struct ecommunity *e1, struct ecommunity *e2)
 {
-	int i, j;
+	uint32_t i, j;
 
 	if (!e1 || !e2)
 		return 0;
@@ -1020,7 +1014,8 @@ int rfapiEcommunitiesIntersect(struct ecommunity *e1, struct ecommunity *e2)
 int rfapiEcommunityGetLNI(struct ecommunity *ecom, uint32_t *lni)
 {
 	if (ecom) {
-		int i;
+		uint32_t i;
+
 		for (i = 0; i < ecom->size; ++i) {
 			uint8_t *p = ecom->val + (i * ECOMMUNITY_SIZE);
 
@@ -1040,7 +1035,8 @@ int rfapiEcommunityGetEthernetTag(struct ecommunity *ecom, uint16_t *tag_id)
 	struct bgp *bgp = bgp_get_default();
 	*tag_id = 0; /* default to untagged */
 	if (ecom) {
-		int i;
+		uint32_t i;
+
 		for (i = 0; i < ecom->size; ++i) {
 			as_t as = 0;
 			int encode = 0;
@@ -1159,7 +1155,7 @@ static int rfapiVpnBiSamePtUn(struct bgp_path_info *bpi1,
 					bpi1->extra->vnc.import.un.addr6;
 				break;
 			default:
-				pfx_un1.family = 0;
+				pfx_un1.family = AF_UNSPEC;
 				break;
 			}
 		}
@@ -1178,13 +1174,13 @@ static int rfapiVpnBiSamePtUn(struct bgp_path_info *bpi1,
 					bpi2->extra->vnc.import.un.addr6;
 				break;
 			default:
-				pfx_un2.family = 0;
+				pfx_un2.family = AF_UNSPEC;
 				break;
 			}
 		}
 	}
 
-	if (pfx_un1.family == 0 || pfx_un2.family == 0)
+	if (pfx_un1.family == AF_UNSPEC || pfx_un2.family == AF_UNSPEC)
 		return 0;
 
 	if (pfx_un1.family != pfx_un2.family)
@@ -1296,10 +1292,11 @@ rfapiRouteInfo2NextHopEntry(struct rfapi_ip_prefix *rprefix,
 
 		memcpy(&vo->v.l2addr.macaddr, &p->u.prefix_eth.octet, ETH_ALEN);
 		/* only low 3 bytes of this are significant */
-		(void)rfapiEcommunityGetLNI(bpi->attr->ecommunity,
+		(void)rfapiEcommunityGetLNI(bgp_attr_get_ecommunity(bpi->attr),
 					    &vo->v.l2addr.logical_net_id);
-		(void)rfapiEcommunityGetEthernetTag(bpi->attr->ecommunity,
-						    &vo->v.l2addr.tag_id);
+		(void)rfapiEcommunityGetEthernetTag(
+			bgp_attr_get_ecommunity(bpi->attr),
+			&vo->v.l2addr.tag_id);
 
 		/* local_nve_id comes from lower byte of RD type */
 		vo->v.l2addr.local_nve_id = bpi->extra->vnc.import.rd.val[1];
@@ -1342,7 +1339,8 @@ rfapiRouteInfo2NextHopEntry(struct rfapi_ip_prefix *rprefix,
 		return NULL;
 	}
 
-	for (pEncap = bpi->attr->vnc_subtlvs; pEncap; pEncap = pEncap->next) {
+	for (pEncap = bgp_attr_get_vnc_subtlvs(bpi->attr); pEncap;
+	     pEncap = pEncap->next) {
 		switch (pEncap->type) {
 		case BGP_VNC_SUBTLV_TYPE_LIFETIME:
 			/* use configured lifetime, not attr lifetime */
@@ -1361,7 +1359,7 @@ rfapiRouteInfo2NextHopEntry(struct rfapi_ip_prefix *rprefix,
 		struct prefix p;
 		/* MPLS carries UN address in next hop */
 		rfapiNexthop2Prefix(bpi->attr, &p);
-		if (p.family != 0) {
+		if (p.family != AF_UNSPEC) {
 			rfapiQprefix2Raddr(&p, &new->un_address);
 			have_vnc_tunnel_un = 1;
 		}
@@ -1555,12 +1553,9 @@ static int rfapiNhlAddNodeRoutes(
 		}
 		if (!skiplist_search(seen_nexthops, &pfx_vn, NULL)) {
 #ifdef DEBUG_RETURNED_NHL
-			char buf[PREFIX_STRLEN];
-
-			prefix2str(&pfx_vn, buf, sizeof(buf));
 			vnc_zlog_debug_verbose(
-				"%s: already put VN/nexthop %s, skip", __func__,
-				buf);
+				"%s: already put VN/nexthop %pFX, skip",
+				__func__, &pfx_vn);
 #endif
 			continue;
 		}
@@ -2377,7 +2372,7 @@ static void rfapiMonitorEncapDelete(struct bgp_path_info *vpn_bpi)
  * quagga lib/thread.h says this must return int even though
  * it doesn't do anything with the return value
  */
-static int rfapiWithdrawTimerVPN(struct thread *t)
+static void rfapiWithdrawTimerVPN(struct thread *t)
 {
 	struct rfapi_withdraw *wcb = t->arg;
 	struct bgp_path_info *bpi = wcb->info;
@@ -2390,13 +2385,13 @@ static int rfapiWithdrawTimerVPN(struct thread *t)
 		vnc_zlog_debug_verbose(
                    "%s: NULL BGP pointer, assume shutdown race condition!!!",
                    __func__);
-		return 0;
+		return;
 	}
 	if (CHECK_FLAG(bgp->flags, BGP_FLAG_DELETE_IN_PROGRESS)) {
 		vnc_zlog_debug_verbose(
 			"%s: BGP delete in progress, assume shutdown race condition!!!",
 			__func__);
-		return 0;
+		return;
 	}
 	assert(wcb->node);
 	assert(bpi);
@@ -2508,7 +2503,6 @@ done:
 	RFAPI_CHECK_REFCOUNT(wcb->node, SAFI_MPLS_VPN, 1 + wcb->lockoffset);
 	agg_unlock_node(wcb->node); /* decr ref count */
 	XFREE(MTYPE_RFAPI_WITHDRAW, wcb);
-	return 0;
 }
 
 /*
@@ -2525,12 +2519,12 @@ void rfapiNexthop2Prefix(struct attr *attr, struct prefix *p)
 	switch (p->family = BGP_MP_NEXTHOP_FAMILY(attr->mp_nexthop_len)) {
 	case AF_INET:
 		p->u.prefix4 = attr->mp_nexthop_global_in;
-		p->prefixlen = 32;
+		p->prefixlen = IPV4_MAX_BITLEN;
 		break;
 
 	case AF_INET6:
 		p->u.prefix6 = attr->mp_nexthop_global;
-		p->prefixlen = 128;
+		p->prefixlen = IPV6_MAX_BITLEN;
 		break;
 
 	default:
@@ -2543,7 +2537,7 @@ void rfapiUnicastNexthop2Prefix(afi_t afi, struct attr *attr, struct prefix *p)
 {
 	if (afi == AFI_IP) {
 		p->family = AF_INET;
-		p->prefixlen = 32;
+		p->prefixlen = IPV4_MAX_BITLEN;
 		p->u.prefix4 = attr->nexthop;
 	} else {
 		rfapiNexthop2Prefix(attr, p);
@@ -2598,10 +2592,8 @@ static void rfapiCopyUnEncap2VPN(struct bgp_path_info *encap_bpi,
 		 * instrumentation to debug segfault of 091127
 		 */
 		vnc_zlog_debug_verbose("%s: vpn_bpi=%p", __func__, vpn_bpi);
-		if (vpn_bpi) {
-			vnc_zlog_debug_verbose("%s: vpn_bpi->extra=%p",
-					       __func__, vpn_bpi->extra);
-		}
+		vnc_zlog_debug_verbose("%s: vpn_bpi->extra=%p", __func__,
+				       vpn_bpi->extra);
 
 		vpn_bpi->extra->vnc.import.un_family = AF_INET;
 		vpn_bpi->extra->vnc.import.un.addr4 =
@@ -2617,7 +2609,7 @@ static void rfapiCopyUnEncap2VPN(struct bgp_path_info *encap_bpi,
 	default:
 		zlog_warn("%s: invalid encap nexthop length: %d", __func__,
 			  encap_bpi->attr->mp_nexthop_len);
-		vpn_bpi->extra->vnc.import.un_family = 0;
+		vpn_bpi->extra->vnc.import.un_family = AF_UNSPEC;
 		break;
 	}
 }
@@ -2642,7 +2634,7 @@ rfapiWithdrawEncapUpdateCachedUn(struct rfapi_import_table *import_table,
 				__func__);
 			return 1;
 		}
-		vpn_bpi->extra->vnc.import.un_family = 0;
+		vpn_bpi->extra->vnc.import.un_family = AF_UNSPEC;
 		memset(&vpn_bpi->extra->vnc.import.un, 0,
 		       sizeof(vpn_bpi->extra->vnc.import.un));
 		if (CHECK_FLAG(vpn_bpi->flags, BGP_PATH_VALID)) {
@@ -2681,7 +2673,7 @@ rfapiWithdrawEncapUpdateCachedUn(struct rfapi_import_table *import_table,
 	return 0;
 }
 
-static int rfapiWithdrawTimerEncap(struct thread *t)
+static void rfapiWithdrawTimerEncap(struct thread *t)
 {
 	struct rfapi_withdraw *wcb = t->arg;
 	struct bgp_path_info *bpi = wcb->info;
@@ -2755,7 +2747,6 @@ done:
 	agg_unlock_node(wcb->node); /* decr ref count */
 	XFREE(MTYPE_RFAPI_WITHDRAW, wcb);
 	skiplist_free(vpn_node_sl);
-	return 0;
 }
 
 
@@ -2767,7 +2758,7 @@ static void
 rfapiBiStartWithdrawTimer(struct rfapi_import_table *import_table,
 			  struct agg_node *rn, struct bgp_path_info *bpi,
 			  afi_t afi, safi_t safi,
-			  int (*timer_service_func)(struct thread *))
+			  void (*timer_service_func)(struct thread *))
 {
 	uint32_t lifetime;
 	struct rfapi_withdraw *wcb;
@@ -2879,12 +2870,12 @@ static int rfapiGetNexthop(struct attr *attr, struct prefix *prefix)
 	switch (BGP_MP_NEXTHOP_FAMILY(attr->mp_nexthop_len)) {
 	case AF_INET:
 		prefix->family = AF_INET;
-		prefix->prefixlen = 32;
+		prefix->prefixlen = IPV4_MAX_BITLEN;
 		prefix->u.prefix4 = attr->mp_nexthop_global_in;
 		break;
 	case AF_INET6:
 		prefix->family = AF_INET6;
-		prefix->prefixlen = 128;
+		prefix->prefixlen = IPV6_MAX_BITLEN;
 		prefix->u.prefix6 = attr->mp_nexthop_global;
 		break;
 	default:
@@ -2954,7 +2945,7 @@ static void rfapiBgpInfoFilteredImportEncap(
 		 * On a withdraw, peer and RD are sufficient to determine if
 		 * we should act.
 		 */
-		if (!attr || !attr->ecommunity) {
+		if (!attr || !bgp_attr_get_ecommunity(attr)) {
 
 			vnc_zlog_debug_verbose(
 				"%s: attr, extra, or ecommunity missing, not importing",
@@ -2962,15 +2953,17 @@ static void rfapiBgpInfoFilteredImportEncap(
 			return;
 		}
 #ifdef RFAPI_REQUIRE_ENCAP_BEEC
-		if (!rfapiEcommunitiesMatchBeec(attr->ecommunity)) {
+		if (!rfapiEcommunitiesMatchBeec(
+			    bgp_attr_get_ecommunity(attr))) {
 			vnc_zlog_debug_verbose(
 				"%s: it=%p: no match for BGP Encapsulation ecommunity",
 				__func__, import_table);
 			return;
 		}
 #endif
-		if (!rfapiEcommunitiesIntersect(import_table->rt_import_list,
-						attr->ecommunity)) {
+		if (!rfapiEcommunitiesIntersect(
+			    import_table->rt_import_list,
+			    bgp_attr_get_ecommunity(attr))) {
 
 			vnc_zlog_debug_verbose(
 				"%s: it=%p: no ecommunity intersection",
@@ -3101,10 +3094,9 @@ static void rfapiBgpInfoFilteredImportEncap(
 				if (CHECK_FLAG(bpi->flags, BGP_PATH_REMOVED)
 				    && bpi->extra->vnc.import.timer) {
 
-					struct thread *t =
-						(struct thread *)bpi->extra->vnc
-							.import.timer;
-					struct rfapi_withdraw *wcb = t->arg;
+					struct thread **t =
+						&(bpi->extra->vnc.import.timer);
+					struct rfapi_withdraw *wcb = (*t)->arg;
 
 					XFREE(MTYPE_RFAPI_WITHDRAW, wcb);
 					thread_cancel(t);
@@ -3194,9 +3186,9 @@ static void rfapiBgpInfoFilteredImportEncap(
 			"%s: removing holddown bpi matching NVE of new route",
 			__func__);
 		if (bpi->extra->vnc.import.timer) {
-			struct thread *t =
-				(struct thread *)bpi->extra->vnc.import.timer;
-			struct rfapi_withdraw *wcb = t->arg;
+			struct thread **t =
+				&(bpi->extra->vnc.import.timer);
+			struct rfapi_withdraw *wcb = (*t)->arg;
 
 			XFREE(MTYPE_RFAPI_WITHDRAW, wcb);
 			thread_cancel(t);
@@ -3416,16 +3408,17 @@ void rfapiBgpInfoFilteredImportVPN(
 	 * we should act.
 	 */
 	if (action == FIF_ACTION_UPDATE) {
-		if (!attr || !attr->ecommunity) {
+		if (!attr || !bgp_attr_get_ecommunity(attr)) {
 
 			vnc_zlog_debug_verbose(
 				"%s: attr, extra, or ecommunity missing, not importing",
 				__func__);
 			return;
 		}
-		if ((import_table != bgp->rfapi->it_ce)
-		    && !rfapiEcommunitiesIntersect(import_table->rt_import_list,
-						   attr->ecommunity)) {
+		if ((import_table != bgp->rfapi->it_ce) &&
+		    !rfapiEcommunitiesIntersect(
+			    import_table->rt_import_list,
+			    bgp_attr_get_ecommunity(attr))) {
 
 			vnc_zlog_debug_verbose(
 				"%s: it=%p: no ecommunity intersection",
@@ -3557,10 +3550,9 @@ void rfapiBgpInfoFilteredImportVPN(
 				if (CHECK_FLAG(bpi->flags, BGP_PATH_REMOVED)
 				    && bpi->extra->vnc.import.timer) {
 
-					struct thread *t =
-						(struct thread *)bpi->extra->vnc
-							.import.timer;
-					struct rfapi_withdraw *wcb = t->arg;
+					struct thread **t =
+						&(bpi->extra->vnc.import.timer);
+					struct rfapi_withdraw *wcb = (*t)->arg;
 
 					XFREE(MTYPE_RFAPI_WITHDRAW, wcb);
 					thread_cancel(t);
@@ -3633,13 +3625,10 @@ void rfapiBgpInfoFilteredImportVPN(
 		rfapiCopyUnEncap2VPN(ern->info, info_new);
 		agg_unlock_node(ern); /* undo lock in route_note_match */
 	} else {
-		char bpf[PREFIX_STRLEN];
-
-		prefix2str(&vn_prefix, bpf, sizeof(bpf));
 		/* Not a big deal, just means VPN route got here first */
-		vnc_zlog_debug_verbose("%s: no encap route for vn addr %s",
-				       __func__, bpf);
-		info_new->extra->vnc.import.un_family = 0;
+		vnc_zlog_debug_verbose("%s: no encap route for vn addr %pFX",
+				       __func__, &vn_prefix);
+		info_new->extra->vnc.import.un_family = AF_UNSPEC;
 	}
 
 	if (rn) {
@@ -3665,7 +3654,8 @@ void rfapiBgpInfoFilteredImportVPN(
 	}
 
 	vnc_zlog_debug_verbose("%s: inserting bpi %p at prefix %pRN #%d",
-			       __func__, info_new, rn, rn->lock);
+			       __func__, info_new, rn,
+			       agg_node_get_lock_count(rn));
 
 	rfapiBgpInfoAttachSorted(rn, info_new, afi, SAFI_MPLS_VPN);
 	rfapiItBiIndexAdd(rn, info_new);
@@ -3778,9 +3768,9 @@ void rfapiBgpInfoFilteredImportVPN(
 			"%s: removing holddown bpi matching NVE of new route",
 			__func__);
 		if (bpi->extra->vnc.import.timer) {
-			struct thread *t =
-				(struct thread *)bpi->extra->vnc.import.timer;
-			struct rfapi_withdraw *wcb = t->arg;
+			struct thread **t =
+				&(bpi->extra->vnc.import.timer);
+			struct rfapi_withdraw *wcb = (*t)->arg;
 
 			XFREE(MTYPE_RFAPI_WITHDRAW, wcb);
 			thread_cancel(t);
@@ -3903,7 +3893,7 @@ void rfapiProcessUpdate(struct peer *peer,
 		 * Find rt containing LNI (Logical Network ID), which
 		 * _should_ always be present when mac address is present
 		 */
-		rc = rfapiEcommunityGetLNI(attr->ecommunity, &lni);
+		rc = rfapiEcommunityGetLNI(bgp_attr_get_ecommunity(attr), &lni);
 
 		vnc_zlog_debug_verbose(
 			"%s: rfapiEcommunityGetLNI returned %d, lni=%d, attr=%p",
@@ -4070,7 +4060,7 @@ static void rfapiProcessPeerDownRt(struct peer *peer,
 	struct agg_node *rn;
 	struct bgp_path_info *bpi;
 	struct agg_table *rt;
-	int (*timer_service_func)(struct thread *);
+	void (*timer_service_func)(struct thread *);
 
 	assert(afi == AFI_IP || afi == AFI_IP6);
 
@@ -4439,13 +4429,9 @@ static void rfapiDeleteRemotePrefixesIt(
 			struct bgp_path_info *next;
 			const struct prefix *rn_p = agg_node_get_prefix(rn);
 
-			if (p && VNC_DEBUG(IMPORT_DEL_REMOTE)) {
-				char p1line[PREFIX_STRLEN];
-
-				prefix2str(p, p1line, sizeof(p1line));
-				vnc_zlog_debug_any("%s: want %s, have %pRN",
-						   __func__, p1line, rn);
-			}
+			if (p && VNC_DEBUG(IMPORT_DEL_REMOTE))
+				vnc_zlog_debug_any("%s: want %pFX, have %pRN",
+						   __func__, p, rn);
 
 			if (p && prefix_cmp(p, rn_p))
 				continue;
@@ -4512,12 +4498,11 @@ static void rfapiDeleteRemotePrefixesIt(
 						continue;
 					if (bpi->extra->vnc.import.timer) {
 
-						struct thread *t =
-							(struct thread *)bpi
-								->extra->vnc
-								.import.timer;
+						struct thread **t =
+							&(bpi->extra->vnc
+								.import.timer);
 						struct rfapi_withdraw *wcb =
-							t->arg;
+							(*t)->arg;
 
 						wcb->import_table
 							->holddown_count[afi] -=

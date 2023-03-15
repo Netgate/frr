@@ -94,7 +94,7 @@ static void sigusr1(void)
 	zlog_rotate();
 }
 
-static struct quagga_signal_t ripd_signals[] = {
+static struct frr_signal_t ripd_signals[] = {
 	{
 		.signal = SIGHUP,
 		.handler = &sighup,
@@ -128,7 +128,8 @@ FRR_DAEMON_INFO(ripd, RIP, .vty_port = RIP_VTY_PORT,
 		.signals = ripd_signals, .n_signals = array_size(ripd_signals),
 
 		.privs = &ripd_privs, .yang_modules = ripd_yang_modules,
-		.n_yang_modules = array_size(ripd_yang_modules), )
+		.n_yang_modules = array_size(ripd_yang_modules),
+);
 
 #define DEPRECATED_OPTIONS ""
 
@@ -160,7 +161,6 @@ int main(int argc, char **argv)
 			break;
 		default:
 			frr_help_exit(1);
-			break;
 		}
 	}
 

@@ -30,7 +30,7 @@
 #include "vrf.h"
 #include "smux.h"
 #include "libfrr.h"
-#include "version.h"
+#include "lib/version.h"
 
 #include "ospf6_proto.h"
 #include "ospf6_lsa.h"
@@ -637,8 +637,10 @@ static uint8_t *ospfv3GeneralGroup(struct variable *v, oid *name,
 {
 	uint16_t sum;
 	uint32_t count;
-	struct ospf6_lsa *lsa = NULL;
+	struct ospf6_lsa *lsa = NULL, *lsanext;
+	struct ospf6 *ospf6;
 
+	ospf6 = ospf6_lookup_by_vrf_id(VRF_DEFAULT);
 	/* Check whether the instance identifier is valid */
 	if (smux_header_generic(v, name, length, exact, var_len, write_method)
 	    == MATCH_FAILED)
@@ -662,9 +664,10 @@ static uint8_t *ospfv3GeneralGroup(struct variable *v, oid *name,
 		return SNMP_INTEGER(3);
 	case OSPFv3AREABDRRTRSTATUS:
 		if (ospf6)
-			return SNMP_INTEGER(ospf6_is_router_abr(ospf6)
-						    ? SNMP_TRUE
-						    : SNMP_FALSE);
+			return SNMP_INTEGER(
+				ospf6_check_and_set_router_abr(ospf6)
+					? SNMP_TRUE
+					: SNMP_FALSE);
 		return SNMP_INTEGER(SNMP_FALSE);
 	case OSPFv3ASBDRRTRSTATUS:
 		if (ospf6)
@@ -679,7 +682,7 @@ static uint8_t *ospfv3GeneralGroup(struct variable *v, oid *name,
 	case OSPFv3ASSCOPELSACHECKSUMSUM:
 		if (ospf6) {
 			sum = 0;
-			for (ALL_LSDB(ospf6->lsdb, lsa))
+			for (ALL_LSDB(ospf6->lsdb, lsa, lsanext))
 				sum += ntohs(lsa->header->checksum);
 			return SNMP_INTEGER(sum);
 		}
@@ -733,7 +736,7 @@ static uint8_t *ospfv3AreaEntry(struct variable *v, oid *name, size_t *length,
 				WriteMethod **write_method)
 {
 	struct ospf6_area *oa, *area = NULL;
-	struct ospf6_lsa *lsa = NULL;
+	struct ospf6_lsa *lsa = NULL, *lsanext;
 	uint32_t area_id = 0;
 	uint32_t count;
 	uint16_t sum;
@@ -741,6 +744,9 @@ static uint8_t *ospfv3AreaEntry(struct variable *v, oid *name, size_t *length,
 	unsigned int len;
 	char a[16];
 	struct ospf6_route *ro;
+	struct ospf6 *ospf6;
+
+	ospf6 = ospf6_lookup_by_vrf_id(VRF_DEFAULT);
 
 	if (ospf6 == NULL)
 		return NULL;
@@ -808,7 +814,7 @@ static uint8_t *ospfv3AreaEntry(struct variable *v, oid *name, size_t *length,
 		return SNMP_INTEGER(area->lsdb->count);
 	case OSPFv3AREASCOPELSACKSUMSUM:
 		sum = 0;
-		for (ALL_LSDB(area->lsdb, lsa))
+		for (ALL_LSDB(area->lsdb, lsa, lsanext))
 			sum += ntohs(lsa->header->checksum);
 		return SNMP_INTEGER(sum);
 	case OSPFv3AREASUMMARY:
@@ -850,6 +856,9 @@ static uint8_t *ospfv3WwLsdbEntry(struct variable *v, oid *name, size_t *length,
 	struct interface *iif;
 	struct ospf6_interface *oi = NULL;
 	struct list *ifslist;
+	struct ospf6 *ospf6;
+
+	ospf6 = ospf6_lookup_by_vrf_id(VRF_DEFAULT);
 
 	if (smux_header_table(v, name, length, exact, var_len, write_method)
 	    == MATCH_FAILED)
@@ -962,8 +971,7 @@ static uint8_t *ospfv3WwLsdbEntry(struct variable *v, oid *name, size_t *length,
 			for (ALL_LIST_ELEMENTS_RO(ifslist, node, iif)) {
 				if (!iif->ifindex)
 					continue;
-				oi = ospf6_interface_lookup_by_ifindex(
-					iif->ifindex, iif->vrf_id);
+				oi = iif->info;
 				if (!oi)
 					continue;
 				if (iif->ifindex < ifindex)
@@ -1030,7 +1038,6 @@ static uint8_t *ospfv3WwLsdbEntry(struct variable *v, oid *name, size_t *length,
 		return SNMP_INTEGER(OSPF6_LSA_IS_KNOWN(lsa->header->type)
 					    ? SNMP_TRUE
 					    : SNMP_FALSE);
-		break;
 	}
 	return NULL;
 }
@@ -1043,13 +1050,16 @@ static uint8_t *ospfv3IfEntry(struct variable *v, oid *name, size_t *length,
 	ifindex_t ifindex = 0;
 	unsigned int instid = 0;
 	struct ospf6_interface *oi = NULL;
-	struct ospf6_lsa *lsa = NULL;
+	struct ospf6_lsa *lsa = NULL, *lsanext;
 	struct interface *iif;
 	struct listnode *i;
 	struct list *ifslist;
 	oid *offset;
 	int offsetlen, len;
 	uint32_t sum;
+	struct ospf6 *ospf6;
+
+	ospf6 = ospf6_lookup_by_vrf_id(VRF_DEFAULT);
 
 	if (smux_header_table(v, name, length, exact, var_len, write_method)
 	    == MATCH_FAILED)
@@ -1095,8 +1105,7 @@ static uint8_t *ospfv3IfEntry(struct variable *v, oid *name, size_t *length,
 		for (ALL_LIST_ELEMENTS_RO(ifslist, i, iif)) {
 			if (!iif->ifindex)
 				continue;
-			oi = ospf6_interface_lookup_by_ifindex(iif->ifindex,
-							       iif->vrf_id);
+			oi = iif->info;
 			if (!oi)
 				continue;
 			if (iif->ifindex > ifindex
@@ -1169,7 +1178,7 @@ static uint8_t *ospfv3IfEntry(struct variable *v, oid *name, size_t *length,
 		return SNMP_INTEGER(oi->lsdb->count);
 	case OSPFv3IFLINKLSACKSUMSUM:
 		sum = 0;
-		for (ALL_LSDB(oi->lsdb, lsa))
+		for (ALL_LSDB(oi->lsdb, lsa, lsanext))
 			sum += ntohs(lsa->header->checksum);
 		return SNMP_INTEGER(sum);
 	case OSPFv3IFDEMANDNBRPROBE:
@@ -1203,6 +1212,9 @@ static uint8_t *ospfv3NbrEntry(struct variable *v, oid *name, size_t *length,
 	struct list *ifslist;
 	oid *offset;
 	int offsetlen, len;
+	struct ospf6 *ospf6;
+
+	ospf6 = ospf6_lookup_by_vrf_id(VRF_DEFAULT);
 
 	if (smux_header_table(v, name, length, exact, var_len, write_method)
 	    == MATCH_FAILED)
@@ -1258,8 +1270,7 @@ static uint8_t *ospfv3NbrEntry(struct variable *v, oid *name, size_t *length,
 		for (ALL_LIST_ELEMENTS_RO(ifslist, i, iif)) {
 			if (!iif->ifindex)
 				continue;
-			oi = ospf6_interface_lookup_by_ifindex(iif->ifindex,
-							       iif->vrf_id);
+			oi = iif->info;
 			if (!oi)
 				continue;
 			for (ALL_LIST_ELEMENTS_RO(oi->neighbor_list, j, on)) {
@@ -1404,4 +1415,5 @@ static int ospf6_snmp_module_init(void)
 
 FRR_MODULE_SETUP(.name = "ospf6d_snmp", .version = FRR_VERSION,
 		 .description = "ospf6d AgentX SNMP module",
-		 .init = ospf6_snmp_module_init, )
+		 .init = ospf6_snmp_module_init,
+);

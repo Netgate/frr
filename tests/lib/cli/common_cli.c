@@ -59,10 +59,14 @@ static void vty_do_exit(int isexit)
 		exit(0);
 }
 
+const struct frr_yang_module_info *const *test_yang_modules = NULL;
+int test_log_prio = ZLOG_DISABLED;
+
 /* main routine. */
 int main(int argc, char **argv)
 {
 	struct thread thread;
+	size_t yangcount;
 
 	/* Set umask before anything for security */
 	umask(0027);
@@ -70,7 +74,7 @@ int main(int argc, char **argv)
 	/* master init. */
 	master = thread_master_create(NULL);
 
-	zlog_aux_init("NONE: ", ZLOG_DISABLED);
+	zlog_aux_init("NONE: ", test_log_prio);
 
 	/* Library inits. */
 	cmd_init(1);
@@ -79,8 +83,11 @@ int main(int argc, char **argv)
 
 	vty_init(master, false);
 	lib_cmd_init();
-	yang_init(true);
-	nb_init(master, NULL, 0, false);
+
+	for (yangcount = 0; test_yang_modules && test_yang_modules[yangcount];
+	     yangcount++)
+		;
+	nb_init(master, test_yang_modules, yangcount, false);
 
 	test_init(argc, argv);
 

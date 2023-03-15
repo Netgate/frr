@@ -43,12 +43,14 @@
 #include "libfrr.h"
 #include "routemap.h"
 #include "nexthop_group.h"
+#include "link_state.h"
 
 #include "sharp_zebra.h"
 #include "sharp_vty.h"
 #include "sharp_globals.h"
+#include "sharp_nht.h"
 
-DEFINE_MGROUP(SHARPD, "sharpd")
+DEFINE_MGROUP(SHARPD, "sharpd");
 
 zebra_capabilities_t _caps_p[] = {
 };
@@ -92,7 +94,7 @@ static void sigusr1(void)
 	zlog_rotate();
 }
 
-struct quagga_signal_t sharp_signals[] = {
+struct frr_signal_t sharp_signals[] = {
 	{
 		.signal = SIGHUP,
 		.handler = &sighup,
@@ -128,7 +130,8 @@ FRR_DAEMON_INFO(sharpd, SHARP, .vty_port = SHARP_VTY_PORT,
 		.n_signals = array_size(sharp_signals),
 
 		.privs = &sharp_privs, .yang_modules = sharpd_yang_modules,
-		.n_yang_modules = array_size(sharpd_yang_modules), )
+		.n_yang_modules = array_size(sharpd_yang_modules),
+);
 
 struct sharp_global sg;
 
@@ -136,6 +139,18 @@ static void sharp_global_init(void)
 {
 	memset(&sg, 0, sizeof(sg));
 	sg.nhs = list_new();
+	sg.ted = NULL;
+	sg.srv6_locators = list_new();
+}
+
+static void sharp_start_configuration(void)
+{
+	zlog_debug("Configuration has started to be read");
+}
+
+static void sharp_end_configuration(void)
+{
+	zlog_debug("Configuration has finished being read");
 }
 
 int main(int argc, char **argv, char **envp)
@@ -156,16 +171,17 @@ int main(int argc, char **argv, char **envp)
 			break;
 		default:
 			frr_help_exit(1);
-			break;
 		}
 	}
 
 	master = frr_init();
 
+	cmd_init_config_callbacks(sharp_start_configuration,
+				  sharp_end_configuration);
 	sharp_global_init();
 
-	nexthop_group_init(NULL, NULL, NULL, NULL);
-	vrf_init(NULL, NULL, NULL, NULL, NULL);
+	sharp_nhgroup_init();
+	vrf_init(NULL, NULL, NULL, NULL);
 
 	sharp_zebra_init();
 

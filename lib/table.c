@@ -27,9 +27,10 @@
 #include "table.h"
 #include "memory.h"
 #include "sockunion.h"
+#include "libfrr_trace.h"
 
-DEFINE_MTYPE_STATIC(LIB, ROUTE_TABLE, "Route table")
-DEFINE_MTYPE(LIB, ROUTE_NODE, "Route node")
+DEFINE_MTYPE_STATIC(LIB, ROUTE_TABLE, "Route table");
+DEFINE_MTYPE(LIB, ROUTE_NODE, "Route node");
 
 static void route_table_free(struct route_table *);
 
@@ -40,7 +41,7 @@ static int route_table_hash_cmp(const struct route_node *a,
 }
 
 DECLARE_HASH(rn_hash_node, struct route_node, nodehash, route_table_hash_cmp,
-	     prefix_hash_key)
+	     prefix_hash_key);
 /*
  * route_table_init_with_delegate
  */
@@ -119,7 +120,8 @@ static void route_table_free(struct route_table *rt)
 		node = node->parent;
 
 		tmp_node->table->count--;
-		tmp_node->lock = 0; /* to cause assert if unlocked after this */
+		tmp_node->lock =
+			0; /* to cause assert if unlocked after this */
 		rn_hash_node_del(&rt->hash, tmp_node);
 		route_node_free(rt, tmp_node);
 
@@ -226,9 +228,9 @@ struct route_node *route_node_match_ipv4(struct route_table *table,
 {
 	struct prefix_ipv4 p;
 
-	memset(&p, 0, sizeof(struct prefix_ipv4));
+	memset(&p, 0, sizeof(p));
 	p.family = AF_INET;
-	p.prefixlen = IPV4_MAX_PREFIXLEN;
+	p.prefixlen = IPV4_MAX_BITLEN;
 	p.prefix = *addr;
 
 	return route_node_match(table, (struct prefix *)&p);
@@ -239,9 +241,9 @@ struct route_node *route_node_match_ipv6(struct route_table *table,
 {
 	struct prefix_ipv6 p;
 
-	memset(&p, 0, sizeof(struct prefix_ipv6));
+	memset(&p, 0, sizeof(p));
 	p.family = AF_INET6;
-	p.prefixlen = IPV6_MAX_PREFIXLEN;
+	p.prefixlen = IPV6_MAX_BITLEN;
 	p.prefix = *addr;
 
 	return route_node_match(table, &p);
@@ -275,6 +277,12 @@ struct route_node *route_node_lookup_maynull(struct route_table *table,
 struct route_node *route_node_get(struct route_table *table,
 				  union prefixconstptr pu)
 {
+	if (frrtrace_enabled(frr_libfrr, route_node_get)) {
+		char buf[PREFIX2STR_BUFFER];
+		prefix2str(pu, buf, sizeof(buf));
+		frrtrace(2, frr_libfrr, route_node_get, table, buf);
+	}
+
 	struct route_node search;
 	struct prefix *p = &search.p;
 
@@ -385,7 +393,7 @@ void route_node_delete(struct route_node *node)
 		route_node_delete(parent);
 }
 
-/* Get fist node and lock it.  This function is useful when one want
+/* Get first node and lock it.  This function is useful when one wants
    to lookup all the node exist in the routing table. */
 struct route_node *route_top(struct route_table *table)
 {

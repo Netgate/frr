@@ -193,7 +193,8 @@ static struct assegment *assegment_prepend_asns(struct assegment *seg,
 	if (num >= AS_SEGMENT_MAX)
 		return seg; /* we don't do huge prepends */
 
-	if ((newas = assegment_data_new(seg->length + num)) == NULL)
+	newas = assegment_data_new(seg->length + num);
+	if (newas == NULL)
 		return seg;
 
 	for (i = 0; i < num; i++)
@@ -327,7 +328,12 @@ void aspath_free(struct aspath *aspath)
 void aspath_unintern(struct aspath **aspath)
 {
 	struct aspath *ret;
-	struct aspath *asp = *aspath;
+	struct aspath *asp;
+
+	if (!*aspath)
+		return;
+
+	asp = *aspath;
 
 	if (asp->refcnt)
 		asp->refcnt--;
@@ -538,7 +544,7 @@ static void aspath_make_str_count(struct aspath *as, bool make_json)
 
 	seg = as->segments;
 
-/* ASN takes 5 to 10 chars plus seperator, see below.
+/* ASN takes 5 to 10 chars plus separator, see below.
  * If there is one differing segment type, we need an additional
  * 2 chars for segment delimiters, and the final '\0'.
  * Hopefully this is large enough to avoid hitting the realloc
@@ -554,17 +560,17 @@ static void aspath_make_str_count(struct aspath *as, bool make_json)
 
 	while (seg) {
 		int i;
-		char seperator;
+		char separator;
 
-		/* Check AS type validity. Set seperator for segment */
+		/* Check AS type validity. Set separator for segment */
 		switch (seg->type) {
 		case AS_SET:
 		case AS_CONFED_SET:
-			seperator = ',';
+			separator = ',';
 			break;
 		case AS_SEQUENCE:
 		case AS_CONFED_SEQUENCE:
-			seperator = ' ';
+			separator = ' ';
 			break;
 		default:
 			XFREE(MTYPE_AS_STR, str_buf);
@@ -578,7 +584,7 @@ static void aspath_make_str_count(struct aspath *as, bool make_json)
 
 /* We might need to increase str_buf, particularly if path has
  * differing segments types, our initial guesstimate above will
- * have been wrong. Need 10 chars for ASN, a seperator each and
+ * have been wrong. Need 10 chars for ASN, a separator each and
  * potentially two segment delimiters, plus a space between each
  * segment and trailing zero.
  *
@@ -601,7 +607,7 @@ static void aspath_make_str_count(struct aspath *as, bool make_json)
 		if (make_json)
 			jseg_list = json_object_new_array();
 
-		/* write out the ASNs, with their seperators, bar the last one*/
+		/* write out the ASNs, with their separators, bar the last one*/
 		for (i = 0; i < seg->length; i++) {
 			if (make_json)
 				json_object_array_add(
@@ -613,7 +619,7 @@ static void aspath_make_str_count(struct aspath *as, bool make_json)
 
 			if (i < (seg->length - 1))
 				len += snprintf(str_buf + len, str_size - len,
-						"%c", seperator);
+						"%c", separator);
 		}
 
 		if (make_json) {
@@ -848,15 +854,12 @@ struct aspath *aspath_parse(struct stream *s, size_t length, int use32bit)
 	if (length % AS16_VALUE_SIZE)
 		return NULL;
 
-	memset(&as, 0, sizeof(struct aspath));
+	memset(&as, 0, sizeof(as));
 	if (assegments_parse(s, length, &as.segments, use32bit) < 0)
 		return NULL;
 
 	/* If already same aspath exist then return it. */
 	find = hash_get(ashash, &as, aspath_hash_alloc);
-
-	/* bug! should not happen, let the daemon crash below */
-	assert(find);
 
 	/* if the aspath was already hashed free temporary memory. */
 	if (find->refcnt) {
@@ -910,77 +913,70 @@ size_t aspath_put(struct stream *s, struct aspath *as, int use32bit)
 	if (!seg || seg->length == 0)
 		return 0;
 
-	if (seg) {
-		/*
-		 * Hey, what do we do when we have > STREAM_WRITABLE(s) here?
-		 * At the moment, we would write out a partial aspath, and our
-		 * peer
-		 * will complain and drop the session :-/
-		 *
-		 * The general assumption here is that many things tested will
-		 * never happen.  And, in real live, up to now, they have not.
-		 */
-		while (seg && (ASSEGMENT_LEN(seg, use32bit)
-			       <= STREAM_WRITEABLE(s))) {
-			struct assegment *next = seg->next;
-			int written = 0;
-			int asns_packed = 0;
-			size_t lenp;
+	/*
+	 * Hey, what do we do when we have > STREAM_WRITABLE(s) here?
+	 * At the moment, we would write out a partial aspath, and our
+	 * peer
+	 * will complain and drop the session :-/
+	 *
+	 * The general assumption here is that many things tested will
+	 * never happen.  And, in real live, up to now, they have not.
+	 */
+	while (seg && (ASSEGMENT_LEN(seg, use32bit) <= STREAM_WRITEABLE(s))) {
+		struct assegment *next = seg->next;
+		int written = 0;
+		int asns_packed = 0;
+		size_t lenp;
 
-			/* Overlength segments have to be split up */
-			while ((seg->length - written) > AS_SEGMENT_MAX) {
-				assegment_header_put(s, seg->type,
-						     AS_SEGMENT_MAX);
-				assegment_data_put(s, (seg->as + written), AS_SEGMENT_MAX,
-						   use32bit);
-				written += AS_SEGMENT_MAX;
-				bytes += ASSEGMENT_SIZE(AS_SEGMENT_MAX,
-							use32bit);
-			}
-
-			/* write the final segment, probably is also the first
-			 */
-			lenp = assegment_header_put(s, seg->type,
-						    seg->length - written);
+		/* Overlength segments have to be split up */
+		while ((seg->length - written) > AS_SEGMENT_MAX) {
+			assegment_header_put(s, seg->type, AS_SEGMENT_MAX);
 			assegment_data_put(s, (seg->as + written),
-					   seg->length - written, use32bit);
-
-			/* Sequence-type segments can be 'packed' together
-			 * Case of a segment which was overlength and split up
-			 * will be missed here, but that doesn't matter.
-			 */
-			while (next && ASSEGMENTS_PACKABLE(seg, next)) {
-				/* NB: We should never normally get here given
-				 * we
-				 * normalise aspath data when parse them.
-				 * However, better
-				 * safe than sorry. We potentially could call
-				 * assegment_normalise here instead, but it's
-				 * cheaper and
-				 * easier to do it on the fly here rather than
-				 * go through
-				 * the segment list twice every time we write
-				 * out
-				 * aspath's.
-				 */
-
-				/* Next segment's data can fit in this one */
-				assegment_data_put(s, next->as, next->length,
-						   use32bit);
-
-				/* update the length of the segment header */
-				stream_putc_at(s, lenp,
-					       seg->length - written
-						       + next->length);
-				asns_packed += next->length;
-
-				next = next->next;
-			}
-
-			bytes += ASSEGMENT_SIZE(
-				seg->length - written + asns_packed, use32bit);
-			seg = next;
+					   AS_SEGMENT_MAX, use32bit);
+			written += AS_SEGMENT_MAX;
+			bytes += ASSEGMENT_SIZE(AS_SEGMENT_MAX, use32bit);
 		}
+
+		/* write the final segment, probably is also the first
+		 */
+		lenp = assegment_header_put(s, seg->type,
+					    seg->length - written);
+		assegment_data_put(s, (seg->as + written),
+				   seg->length - written, use32bit);
+
+		/* Sequence-type segments can be 'packed' together
+		 * Case of a segment which was overlength and split up
+		 * will be missed here, but that doesn't matter.
+		 */
+		while (next && ASSEGMENTS_PACKABLE(seg, next)) {
+			/* NB: We should never normally get here given
+			 * we
+			 * normalise aspath data when parse them.
+			 * However, better
+			 * safe than sorry. We potentially could call
+			 * assegment_normalise here instead, but it's
+			 * cheaper and
+			 * easier to do it on the fly here rather than
+			 * go through
+			 * the segment list twice every time we write
+			 * out
+			 * aspath's.
+			 */
+
+			/* Next segment's data can fit in this one */
+			assegment_data_put(s, next->as, next->length, use32bit);
+
+			/* update the length of the segment header */
+			stream_putc_at(s, lenp,
+				       seg->length - written + next->length);
+			asns_packed += next->length;
+
+			next = next->next;
+		}
+
+		bytes += ASSEGMENT_SIZE(seg->length - written + asns_packed,
+					use32bit);
+		seg = next;
 	}
 	return bytes;
 }
@@ -1007,8 +1003,6 @@ uint8_t *aspath_snmp_pathseg(struct aspath *as, size_t *varlen)
 	*varlen = stream_get_endp(snmp_stream);
 	return stream_pnt(snmp_stream);
 }
-
-#define min(A,B) ((A) < (B) ? (A) : (B))
 
 static struct assegment *aspath_aggregate_as_set_add(struct aspath *aspath,
 						     struct assegment *asset,
@@ -1066,7 +1060,7 @@ struct aspath *aspath_aggregate(struct aspath *as1, struct aspath *as2)
 			break;
 
 		/* Minimum segment length. */
-		minlen = min(seg1->length, seg2->length);
+		minlen = MIN(seg1->length, seg2->length);
 
 		for (match = 0; match < minlen; match++)
 			if (seg1->as[match] != seg2->as[match])
@@ -1261,6 +1255,28 @@ struct aspath *aspath_replace_specific_asn(struct aspath *aspath,
 	return new;
 }
 
+/* Replace all ASNs with our own ASN */
+struct aspath *aspath_replace_all_asn(struct aspath *aspath, as_t our_asn)
+{
+	struct aspath *new;
+	struct assegment *seg;
+
+	new = aspath_dup(aspath);
+	seg = new->segments;
+
+	while (seg) {
+		int i;
+
+		for (i = 0; i < seg->length; i++)
+			seg->as[i] = our_asn;
+
+		seg = seg->next;
+	}
+
+	aspath_str_update(new, false);
+	return new;
+}
+
 /* Replace all private ASNs with our own ASN */
 struct aspath *aspath_replace_private_asns(struct aspath *aspath, as_t asn,
 					   as_t peer_asn)
@@ -1297,6 +1313,7 @@ struct aspath *aspath_remove_private_asns(struct aspath *aspath, as_t peer_asn)
 	int i;
 	int j;
 	int public = 0;
+	int peer = 0;
 
 	new = XCALLOC(MTYPE_AS_PATH, sizeof(struct aspath));
 
@@ -1305,14 +1322,17 @@ struct aspath *aspath_remove_private_asns(struct aspath *aspath, as_t peer_asn)
 	last_new_seg = NULL;
 	seg = aspath->segments;
 	while (seg) {
-	      public
-		= 0;
+		public = 0;
+		peer = 0;
 		for (i = 0; i < seg->length; i++) {
 			// ASN is public
-			if (!BGP_AS_IS_PRIVATE(seg->as[i])) {
-			      public
-				++;
-			}
+			if (!BGP_AS_IS_PRIVATE(seg->as[i]))
+				public++;
+			/* ASN matches peer's.
+			 * Don't double-count if peer_asn is public.
+			 */
+			else if (seg->as[i] == peer_asn)
+				peer++;
 		}
 
 		// The entire segment is public so copy it
@@ -1324,7 +1344,10 @@ struct aspath *aspath_remove_private_asns(struct aspath *aspath, as_t peer_asn)
 		// there are public ASNs then come back and fill in only the
 		// public ASNs.
 		else {
-			new_seg = assegment_new(seg->type, public);
+			/* length needs to account for all retained ASNs
+			 * (public or peer_asn), not just public
+			 */
+			new_seg = assegment_new(seg->type, (public + peer));
 			j = 0;
 			for (i = 0; i < seg->length; i++) {
 				// keep ASN if public or matches peer's ASN
@@ -1913,7 +1936,7 @@ static const char *aspath_gettoken(const char *buf, enum as_token *token,
 {
 	const char *p = buf;
 
-	/* Skip seperators (space for sequences, ',' for sets). */
+	/* Skip separators (space for sequences, ',' for sets). */
 	while (isspace((unsigned char)*p) || *p == ',')
 		p++;
 

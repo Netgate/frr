@@ -21,6 +21,7 @@
 #ifndef _ZEBRA_FRR_H
 #define _ZEBRA_FRR_H
 
+#include "typesafe.h"
 #include "sigevent.h"
 #include "privs.h"
 #include "thread.h"
@@ -40,15 +41,25 @@ extern "C" {
 #define FRR_NO_PRIVSEP		(1 << 0)
 #define FRR_NO_TCPVTY		(1 << 1)
 #define FRR_LIMITED_CLI		(1 << 2)
-#define FRR_NO_CFG_PID_DRY	(1 << 3)
-#define FRR_NO_ZCLIENT		(1 << 4)
+#define FRR_NO_SPLIT_CONFIG	(1 << 3)
+#define FRR_NO_PID		(1 << 4)
+#define FRR_NO_CFG_PID_DRY	(FRR_NO_PID | FRR_NO_SPLIT_CONFIG)
+#define FRR_NO_ZCLIENT		(1 << 5)
 /* If FRR_DETACH_LATER is used, the daemon will keep its parent running
  * until frr_detach() is called.  Normally "somedaemon -d" returns once the
  * main event loop is reached in the daemon;  use this for extra startup bits.
  *
  * Does nothing if -d isn't used.
  */
-#define FRR_DETACH_LATER	(1 << 5)
+#define FRR_DETACH_LATER	(1 << 6)
+
+PREDECL_DLIST(log_args);
+struct log_arg {
+	struct log_args_item itm;
+
+	char target[0];
+};
+DECLARE_DLIST(log_args, struct log_arg, itm);
 
 enum frr_cli_mode {
 	FRR_CLI_CLASSIC = 0,
@@ -81,11 +92,12 @@ struct frr_daemon_info {
 #endif
 	const char *vty_path;
 	const char *module_path;
+	const char *script_path;
 
 	const char *pathspace;
 	bool zpathspace;
 
-	const char *early_logging;
+	struct log_args_head early_logging[1];
 	const char *early_loglevel;
 
 	const char *proghelp;
@@ -93,7 +105,7 @@ struct frr_daemon_info {
 	const char *copyright;
 	char startinfo[128];
 
-	struct quagga_signal_t *signals;
+	struct frr_signal_t *signals;
 	size_t n_signals;
 
 	struct zebra_privs_t *privs;
@@ -102,6 +114,9 @@ struct frr_daemon_info {
 	size_t n_yang_modules;
 
 	bool log_always;
+
+	/* Optional upper limit on the number of fds used in select/poll */
+	uint32_t limit_fds;
 };
 
 /* execname is the daemon's executable (and pidfile and configfile) name,
@@ -120,8 +135,8 @@ struct frr_daemon_info {
 						       __VA_ARGS__};           \
 	FRR_COREMOD_SETUP(.name = #execname,                                   \
 			  .description = #execname " daemon",                  \
-			  .version = FRR_VERSION, )                            \
-/* end */
+			  .version = FRR_VERSION, );                           \
+	MACRO_REQUIRE_SEMICOLON() /* end */
 
 extern void frr_init_vtydir(void);
 extern void frr_preinit(struct frr_daemon_info *daemon, int argc, char **argv);
@@ -134,9 +149,16 @@ extern __attribute__((__noreturn__)) void frr_help_exit(int status);
 extern struct thread_master *frr_init(void);
 extern const char *frr_get_progname(void);
 extern enum frr_cli_mode frr_get_cli_mode(void);
+extern uint32_t frr_get_fd_limit(void);
+extern bool frr_is_startup_fd(int fd);
 
-DECLARE_HOOK(frr_late_init, (struct thread_master * tm), (tm))
-DECLARE_HOOK(frr_very_late_init, (struct thread_master * tm), (tm))
+/* call order of these hooks is as ordered here */
+DECLARE_HOOK(frr_early_init, (struct thread_master * tm), (tm));
+DECLARE_HOOK(frr_late_init, (struct thread_master * tm), (tm));
+/* fork() happens between late_init and config_pre */
+DECLARE_HOOK(frr_config_pre, (struct thread_master * tm), (tm));
+DECLARE_HOOK(frr_config_post, (struct thread_master * tm), (tm));
+
 extern void frr_config_fork(void);
 
 extern void frr_run(struct thread_master *master);
@@ -147,10 +169,10 @@ extern bool frr_zclient_addr(struct sockaddr_storage *sa, socklen_t *sa_len,
 
 /* these two are before the protocol daemon does its own shutdown
  * it's named this way being the counterpart to frr_late_init */
-DECLARE_KOOH(frr_early_fini, (), ())
+DECLARE_KOOH(frr_early_fini, (), ());
 extern void frr_early_fini(void);
 /* and these two are after the daemon did its own cleanup */
-DECLARE_KOOH(frr_fini, (), ())
+DECLARE_KOOH(frr_fini, (), ());
 extern void frr_fini(void);
 
 extern char config_default[512];
@@ -158,9 +180,12 @@ extern char frr_zclientpath[256];
 extern const char frr_sysconfdir[];
 extern char frr_vtydir[256];
 extern const char frr_moduledir[];
+extern const char frr_scriptdir[];
 
 extern char frr_protoname[];
 extern char frr_protonameinst[];
+/* always set in the spot where we *would* fork even if we don't do so */
+extern bool frr_is_after_fork;
 
 extern bool debug_memstats_at_exit;
 

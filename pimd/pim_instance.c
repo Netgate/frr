@@ -25,6 +25,7 @@
 #include "lib_errors.h"
 
 #include "pimd.h"
+#include "pim_instance.h"
 #include "pim_ssm.h"
 #include "pim_rpf.h"
 #include "pim_rp.h"
@@ -92,7 +93,6 @@ static struct pim_instance *pim_instance_init(struct vrf *vrf)
 	pim->ecmp_enable = false;
 	pim->ecmp_rebalance_enable = false;
 
-	pim->vrf_id = vrf->vrf_id;
 	pim->vrf = vrf;
 
 	pim->spt.switchover = PIM_SPT_IMMEDIATE;
@@ -115,6 +115,8 @@ static struct pim_instance *pim_instance_init(struct vrf *vrf)
 
 	pim->send_v6_secondary = 1;
 
+	pim->gm_socket = -1;
+
 	pim_rp_init(pim);
 
 	pim_bsm_proc_init(pim);
@@ -126,6 +128,12 @@ static struct pim_instance *pim_instance_init(struct vrf *vrf)
 	pim_instance_mlag_init(pim);
 
 	pim->last_route_change_time = -1;
+
+	/* MSDP global timer defaults. */
+	pim->msdp.hold_time = PIM_MSDP_PEER_HOLD_TIME;
+	pim->msdp.keep_alive = PIM_MSDP_PEER_KA_TIME;
+	pim->msdp.connection_retry = PIM_MSDP_PEER_CONNECT_RETRY_TIME;
+
 	return pim;
 }
 
@@ -175,8 +183,17 @@ static int pim_vrf_delete(struct vrf *vrf)
 static int pim_vrf_enable(struct vrf *vrf)
 {
 	struct pim_instance *pim = (struct pim_instance *)vrf->info;
+	struct interface *ifp;
 
-	zlog_debug("%s: for %s", __func__, vrf->name);
+	zlog_debug("%s: for %s %u", __func__, vrf->name, vrf->vrf_id);
+
+	FOR_ALL_INTERFACES (vrf, ifp) {
+		if (!ifp->info)
+			continue;
+
+		pim_if_create_pimreg(pim);
+		break;
+	}
 
 	pim_mroute_socket_enable(pim);
 
@@ -206,7 +223,7 @@ static int pim_vrf_config_write(struct vty *vty)
 		pim_global_config_write_worker(pim, vty);
 
 		if (vrf->vrf_id != VRF_DEFAULT)
-			vty_endframe(vty, " exit-vrf\n!\n");
+			vty_endframe(vty, "exit-vrf\n!\n");
 	}
 
 	return 0;
@@ -214,13 +231,27 @@ static int pim_vrf_config_write(struct vty *vty)
 
 void pim_vrf_init(void)
 {
-	vrf_init(pim_vrf_new, pim_vrf_enable, pim_vrf_disable,
-		 pim_vrf_delete, NULL);
+	vrf_init(pim_vrf_new, pim_vrf_enable, pim_vrf_disable, pim_vrf_delete);
 
-	vrf_cmd_init(pim_vrf_config_write, &pimd_privs);
+	vrf_cmd_init(pim_vrf_config_write);
 }
 
 void pim_vrf_terminate(void)
 {
+	struct vrf *vrf;
+
+	RB_FOREACH (vrf, vrf_name_head, &vrfs_by_name) {
+		struct pim_instance *pim;
+
+		pim = vrf->info;
+		if (!pim)
+			continue;
+
+		pim_ssmpingd_destroy(pim);
+		pim_instance_terminate(pim);
+
+		vrf->info = NULL;
+	}
+
 	vrf_terminate();
 }

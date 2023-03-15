@@ -197,13 +197,12 @@ extern int stream_put_in_addr_at(struct stream *s, size_t putp,
 				 const struct in_addr *addr);
 extern int stream_put_in6_addr_at(struct stream *s, size_t putp,
 				  const struct in6_addr *addr);
-extern int stream_put_prefix_addpath(struct stream *s,
-				     const struct prefix *p,
-				     int addpath_encode,
+extern int stream_put_prefix_addpath(struct stream *s, const struct prefix *p,
+				     bool addpath_capable,
 				     uint32_t addpath_tx_id);
 extern int stream_put_prefix(struct stream *s, const struct prefix *p);
 extern int stream_put_labeled_prefix(struct stream *, const struct prefix *,
-				     mpls_label_t *, int addpath_encode,
+				     mpls_label_t *, bool addpath_capable,
 				     uint32_t addpath_tx_id);
 extern void stream_get(void *, struct stream *, size_t);
 extern bool stream_get2(void *data, struct stream *s, size_t size);
@@ -261,6 +260,16 @@ extern int stream_empty(struct stream *); /* is the stream empty? */
 
 /* debugging */
 extern void stream_hexdump(const struct stream *s);
+
+/**
+ * Reorganize the buffer data so it can fit more. This function is normally
+ * called right after stream data is consumed so we can read more data
+ * (the functions that consume data start with `stream_get*()` and macros
+ * `STREAM_GET*()`).
+ *
+ * \param s stream pointer.
+ */
+extern void stream_pulldown(struct stream *s);
 
 /* deprecated */
 extern uint8_t *stream_pnt(struct stream *);
@@ -384,6 +393,16 @@ static inline const uint8_t *ptr_get_be32(const uint8_t *ptr, uint32_t *out)
 	memcpy(&tmp, ptr, sizeof(tmp));
 	*out = ntohl(tmp);
 	return ptr + 4;
+}
+
+static inline uint8_t *ptr_get_be16(uint8_t *ptr, uint16_t *out)
+{
+	uint16_t tmp;
+
+	memcpy(&tmp, ptr, sizeof(tmp));
+	*out = ntohs(tmp);
+
+	return ptr + 2;
 }
 
 /*

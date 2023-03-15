@@ -32,7 +32,6 @@
 #include "sockunion.h"
 #include "connected.h"
 #include "memory.h"
-#include "zebra_memory.h"
 #include "ioctl.h"
 #include "log.h"
 #include "table.h"
@@ -62,7 +61,7 @@ extern struct zebra_privs_t zserv_privs;
  * Alignment of zero-sized sockaddrs is nonsensical, but historically
  * BSD defines RT_ROUNDUP(0) to be the alignment interval (rather than
  * 0).  We follow this practice without questioning it, but it is a
- * bug if quagga calls ROUNDUP with 0.
+ * bug if frr calls ROUNDUP with 0.
  */
 #ifdef __APPLE__
 #define ROUNDUP_TYPE	int
@@ -79,12 +78,6 @@ extern struct zebra_privs_t zserv_privs;
 #if defined(RT_ROUNDUP)
 #define ROUNDUP(a)	RT_ROUNDUP(a)
 #endif /* defined(RT_ROUNDUP) */
-
-#if defined(SUNOS_5)
-/* Solaris has struct sockaddr_in[6] definitions at 16 / 32 bytes size,
- * so the whole concept doesn't really apply. */
-#define ROUNDUP(a)      (a)
-#endif
 
 /*
  * If ROUNDUP has not yet been defined in terms of platform-provided
@@ -166,6 +159,9 @@ const struct message rtm_type_str[] = {{RTM_ADD, "RTM_ADD"},
 #ifdef RTM_IFANNOUNCE
 				       {RTM_IFANNOUNCE, "RTM_IFANNOUNCE"},
 #endif /* RTM_IFANNOUNCE */
+#ifdef RTM_IEEE80211
+				       {RTM_IEEE80211, "RTM_IEEE80211"},
+#endif
 				       {0}};
 
 static const struct message rtm_flag_str[] = {{RTF_UP, "UP"},
@@ -450,18 +446,20 @@ static int ifan_read(struct if_announcemsghdr *ifan)
 				__func__, ifan->ifan_index, ifan->ifan_name);
 
 		/* Create Interface */
-		ifp = if_get_by_name(ifan->ifan_name, VRF_DEFAULT);
+		ifp = if_get_by_name(ifan->ifan_name, VRF_DEFAULT,
+				     VRF_DEFAULT_NAME);
 		if_set_index(ifp, ifan->ifan_index);
 
 		if_get_metric(ifp);
 		if_add_update(ifp);
 	} else if (ifp != NULL && ifan->ifan_what == IFAN_DEPARTURE)
-		if_delete_update(ifp);
+		if_delete_update(&ifp);
 
-	if_get_flags(ifp);
-	if_get_mtu(ifp);
-	if_get_metric(ifp);
-
+	if (ifp) {
+		if_get_flags(ifp);
+		if_get_mtu(ifp);
+		if_get_metric(ifp);
+	}
 	if (IS_ZEBRA_DEBUG_KERNEL)
 		zlog_debug("%s: interface %s index %d", __func__,
 			   ifan->ifan_name, ifan->ifan_index);
@@ -536,7 +534,7 @@ int ifm_read(struct if_msghdr *ifm)
 	/* paranoia: sanity check structure */
 	if (ifm->ifm_msglen < sizeof(struct if_msghdr)) {
 		flog_err(EC_ZEBRA_NETLINK_LENGTH_ERROR,
-			 "ifm_read: ifm->ifm_msglen %d too short\n",
+			 "ifm_read: ifm->ifm_msglen %d too short",
 			 ifm->ifm_msglen);
 		return -1;
 	}
@@ -546,18 +544,6 @@ int ifm_read(struct if_msghdr *ifm)
 	 * where a socakddr might be if one follows the message.
 	 */
 	cp = (void *)(ifm + 1);
-
-#ifdef SUNOS_5
-	/*
-	 * XXX This behavior should be narrowed to only the kernel versions
-	 * for which the structures returned do not match the headers.
-	 *
-	 * if_msghdr_t on 64 bit kernels in Solaris 9 and earlier versions
-	 * is 12 bytes larger than the 32 bit version.
-	 */
-	if (((struct sockaddr *)cp)->sa_family == AF_UNSPEC)
-		cp += 12;
-#endif
 
 	/* Look up for RTA_IFP and skip others. */
 	for (maskbit = 1; maskbit; maskbit <<= 1) {
@@ -643,7 +629,8 @@ int ifm_read(struct if_msghdr *ifm)
 		if (ifp == NULL) {
 			/* Interface that zebra was not previously aware of, so
 			 * create. */
-			ifp = if_create_name(ifname, VRF_DEFAULT);
+			ifp = if_get_by_name(ifname, VRF_DEFAULT,
+					     VRF_DEFAULT_NAME);
 			if (IS_ZEBRA_DEBUG_KERNEL)
 				zlog_debug("%s: creating ifp for ifindex %d",
 					   __func__, ifm->ifm_index);
@@ -739,10 +726,10 @@ int ifm_read(struct if_msghdr *ifm)
 			 * will still behave correctly if run on a platform
 			 * without
 			 */
-			if_delete_update(ifp);
+			if_delete_update(&ifp);
 		}
 #endif /* RTM_IFANNOUNCE */
-		if (if_is_up(ifp)) {
+		if (ifp && if_is_up(ifp)) {
 #if defined(__bsdi__)
 			if_kvm_get_mtu(ifp);
 #else
@@ -752,14 +739,16 @@ int ifm_read(struct if_msghdr *ifm)
 		}
 	}
 
+	if (ifp) {
 #ifdef HAVE_NET_RT_IFLIST
-	ifp->stats = ifm->ifm_data;
+		ifp->stats = ifm->ifm_data;
 #endif /* HAVE_NET_RT_IFLIST */
-	ifp->speed = ifm->ifm_data.ifi_baudrate / 1000000;
+		ifp->speed = ifm->ifm_data.ifi_baudrate / 1000000;
 
-	if (IS_ZEBRA_DEBUG_KERNEL)
-		zlog_debug("%s: interface %s index %d", __func__, ifp->name,
-			   ifp->ifindex);
+		if (IS_ZEBRA_DEBUG_KERNEL)
+			zlog_debug("%s: interface %s index %d", __func__,
+				   ifp->name, ifp->ifindex);
+	}
 
 	return 0;
 }
@@ -826,23 +815,17 @@ static void ifam_read_mesg(struct ifa_msghdr *ifm, union sockunion *addr,
 		switch (sockunion_family(addr)) {
 		case AF_INET:
 		case AF_INET6: {
-			char buf[4][INET6_ADDRSTRLEN];
 			int masklen =
 				(sockunion_family(addr) == AF_INET)
 					? ip_masklen(mask->sin.sin_addr)
 					: ip6_masklen(mask->sin6.sin6_addr);
 			zlog_debug(
-				"%s: ifindex %d, ifname %s, ifam_addrs {%s}, ifam_flags 0x%x, addr %s/%d broad %s dst %s gateway %s",
+				"%s: ifindex %d, ifname %s, ifam_addrs {%s}, ifam_flags 0x%x, addr %pSU/%d broad %pSU dst %pSU gateway %pSU",
 				__func__, ifm->ifam_index,
 				(ifnlen ? ifname : "(nil)"),
 				rtatostr(ifm->ifam_addrs, fbuf, sizeof(fbuf)),
-				ifm->ifam_flags,
-				sockunion2str(addr, buf[0], sizeof(buf[0])),
-				masklen,
-				sockunion2str(brd, buf[1], sizeof(buf[1])),
-				sockunion2str(&dst, buf[2], sizeof(buf[2])),
-				sockunion2str(&gateway, buf[2],
-					      sizeof(buf[2])));
+				ifm->ifam_flags, addr, masklen, brd, &dst,
+				&gateway);
 		} break;
 		default:
 			zlog_debug("%s: ifindex %d, ifname %s, ifam_addrs {%s}",
@@ -868,8 +851,8 @@ int ifam_read(struct ifa_msghdr *ifam)
 	bool dest_same = false;
 	char ifname[INTERFACE_NAMSIZ];
 	short ifnlen = 0;
-	char isalias = 0;
-	int flags = 0;
+	bool isalias = false;
+	uint32_t flags = 0;
 
 	ifname[0] = ifname[INTERFACE_NAMSIZ - 1] = '\0';
 
@@ -884,7 +867,13 @@ int ifam_read(struct ifa_msghdr *ifam)
 	}
 
 	if (ifnlen && strncmp(ifp->name, ifname, INTERFACE_NAMSIZ))
-		isalias = 1;
+		isalias = true;
+
+	/*
+	 * Mark the alias prefixes as secondary
+	 */
+	if (isalias)
+		SET_FLAG(flags, ZEBRA_IFA_SECONDARY);
 
 	/* N.B. The info in ifa_msghdr does not tell us whether the RTA_BRD
 	   field contains a broadcast address or a peer address, so we are
@@ -946,23 +935,6 @@ int ifam_read(struct ifa_msghdr *ifam)
 	/* Check interface flag for implicit up of the interface. */
 	if_refresh(ifp);
 
-#ifdef SUNOS_5
-	/* In addition to lacking IFANNOUNCE, on SUNOS IFF_UP is strange.
-	 * See comments for SUNOS_5 in interface.c::if_flags_mangle.
-	 *
-	 * Here we take care of case where the real IFF_UP was previously
-	 * unset (as kept in struct zebra_if.primary_state) and the mangled
-	 * IFF_UP (ie IFF_UP set || listcount(connected) has now transitioned
-	 * to unset due to the lost non-primary address having DELADDR'd.
-	 *
-	 * we must delete the interface, because in between here and next
-	 * event for this interface-name the administrator could unplumb
-	 * and replumb the interface.
-	 */
-	if (!if_is_up(ifp))
-		if_delete_update(ifp);
-#endif /* SUNOS_5 */
-
 	return 0;
 }
 
@@ -981,7 +953,7 @@ static int rtm_read_mesg(struct rt_msghdr *rtm, union sockunion *dest,
 	/* rt_msghdr version check. */
 	if (rtm->rtm_version != RTM_VERSION)
 		flog_warn(EC_ZEBRA_RTM_VERSION_MISMATCH,
-			  "Routing message version different %d should be %d.This may cause problem\n",
+			  "Routing message version different %d should be %d.This may cause problem",
 			  rtm->rtm_version, RTM_VERSION);
 
 	/* Be sure structure is cleared */
@@ -1036,7 +1008,7 @@ static int rtm_read_mesg(struct rt_msghdr *rtm, union sockunion *dest,
 void rtm_read(struct rt_msghdr *rtm)
 {
 	int flags;
-	uint8_t zebra_flags;
+	uint32_t zebra_flags;
 	union sockunion dest, mask, gate;
 	char ifname[INTERFACE_NAMSIZ + 1];
 	short ifnlen = 0;
@@ -1045,6 +1017,8 @@ void rtm_read(struct rt_msghdr *rtm)
 	ifindex_t ifindex = 0;
 	afi_t afi;
 	char fbuf[64];
+	int32_t proto = ZEBRA_ROUTE_KERNEL;
+	uint8_t distance = 0;
 
 	zebra_flags = 0;
 
@@ -1076,8 +1050,11 @@ void rtm_read(struct rt_msghdr *rtm)
 	if (!(flags & RTF_GATEWAY))
 		return;
 
-	if (flags & RTF_PROTO1)
+	if (flags & RTF_PROTO1) {
 		SET_FLAG(zebra_flags, ZEBRA_FLAG_SELFROUTE);
+		proto = ZEBRA_ROUTE_STATIC;
+		distance = 255;
+	}
 
 	memset(&nh, 0, sizeof(nh));
 
@@ -1102,7 +1079,7 @@ void rtm_read(struct rt_msghdr *rtm)
 		p.family = AF_INET;
 		p.u.prefix4 = dest.sin.sin_addr;
 		if (flags & RTF_HOST)
-			p.prefixlen = IPV4_MAX_PREFIXLEN;
+			p.prefixlen = IPV4_MAX_BITLEN;
 		else
 			p.prefixlen = ip_masklen(mask.sin.sin_addr);
 
@@ -1115,7 +1092,7 @@ void rtm_read(struct rt_msghdr *rtm)
 		p.family = AF_INET6;
 		p.u.prefix6 = dest.sin6.sin6_addr;
 		if (flags & RTF_HOST)
-			p.prefixlen = IPV6_MAX_PREFIXLEN;
+			p.prefixlen = IPV6_MAX_BITLEN;
 		else
 			p.prefixlen = ip6_masklen(mask.sin6.sin6_addr);
 
@@ -1142,16 +1119,16 @@ void rtm_read(struct rt_msghdr *rtm)
 	if (rtm->rtm_type == RTM_CHANGE)
 		rib_delete(afi, SAFI_UNICAST, VRF_DEFAULT, ZEBRA_ROUTE_KERNEL,
 			   0, zebra_flags, &p, NULL, NULL, 0, RT_TABLE_MAIN, 0,
-			   0, true, false);
+			   0, true);
 	if (rtm->rtm_type == RTM_GET || rtm->rtm_type == RTM_ADD
 	    || rtm->rtm_type == RTM_CHANGE)
-		rib_add(afi, SAFI_UNICAST, VRF_DEFAULT, ZEBRA_ROUTE_KERNEL, 0,
-			zebra_flags, &p, NULL, &nh, 0, RT_TABLE_MAIN,
-			0, 0, 0, 0);
+		rib_add(afi, SAFI_UNICAST, VRF_DEFAULT, proto, 0, zebra_flags,
+			&p, NULL, &nh, 0, RT_TABLE_MAIN, 0, 0, distance, 0,
+			false);
 	else
-		rib_delete(afi, SAFI_UNICAST, VRF_DEFAULT, ZEBRA_ROUTE_KERNEL,
-			   0, zebra_flags, &p, NULL, &nh, 0, RT_TABLE_MAIN, 0,
-			   0, true, false);
+		rib_delete(afi, SAFI_UNICAST, VRF_DEFAULT, proto, 0,
+			   zebra_flags, &p, NULL, &nh, 0, RT_TABLE_MAIN, 0,
+			   distance, true);
 }
 
 /* Interface function for the kernel routing table updates.  Support
@@ -1179,7 +1156,7 @@ int rtm_write(int message, union sockunion *dest, union sockunion *mask,
 		return ZEBRA_ERR_EPERM;
 
 	/* Clear and set rt_msghdr values */
-	memset(&msg, 0, sizeof(struct rt_msghdr));
+	memset(&msg, 0, sizeof(msg));
 	msg.rtm.rtm_version = RTM_VERSION;
 	msg.rtm.rtm_type = message;
 	msg.rtm.rtm_seq = msg_seq++;
@@ -1326,7 +1303,7 @@ static void rtmsg_debug(struct rt_msghdr *rtm)
 #endif /* RTAX_MAX */
 
 /* Kernel routing table and interface updates via routing socket. */
-static int kernel_read(struct thread *thread)
+static void kernel_read(struct thread *thread)
 {
 	int sock;
 	int nbytes;
@@ -1375,12 +1352,37 @@ static int kernel_read(struct thread *thread)
 
 	nbytes = read(sock, &buf, sizeof(buf));
 
-	if (nbytes <= 0) {
-		if (nbytes < 0 && errno != EWOULDBLOCK && errno != EAGAIN)
+	if (nbytes < 0) {
+		if (errno == ENOBUFS) {
+#ifdef __FreeBSD__
+			/*
+			 * ENOBUFS indicates a temporary resource
+			 * shortage and is not harmful for consistency of
+			 * reading the routing socket.  Ignore it.
+			 */
+			thread_add_read(zrouter.master, kernel_read, NULL, sock,
+					NULL);
+			return;
+#else
+			flog_err(EC_ZEBRA_RECVMSG_OVERRUN,
+				 "routing socket overrun: %s",
+				 safe_strerror(errno));
+			/*
+			 *  In this case we are screwed.
+			 *  There is no good way to
+			 *  recover zebra at this point.
+			 */
+			exit(-1);
+#endif
+		}
+		if (errno != EAGAIN && errno != EWOULDBLOCK)
 			flog_err_sys(EC_LIB_SOCKET, "routing socket error: %s",
 				     safe_strerror(errno));
-		return 0;
+		return;
 	}
+
+	if (nbytes == 0)
+		return;
 
 	thread_add_read(zrouter.master, kernel_read, NULL, sock, NULL);
 
@@ -1397,7 +1399,7 @@ static int kernel_read(struct thread *thread)
 		zlog_debug(
 			"kernel_read: rtm->rtm_msglen %d, nbytes %d, type %d",
 			rtm->rtm_msglen, nbytes, rtm->rtm_type);
-		return -1;
+		return;
 	}
 
 	switch (rtm->rtm_type) {
@@ -1420,15 +1422,20 @@ static int kernel_read(struct thread *thread)
 #endif /* RTM_IFANNOUNCE */
 	default:
 		if (IS_ZEBRA_DEBUG_KERNEL)
-			zlog_debug("Unprocessed RTM_type: %d", rtm->rtm_type);
+			zlog_debug(
+				"Unprocessed RTM_type: %s(%d)",
+				lookup_msg(rtm_type_str, rtm->rtm_type, NULL),
+				rtm->rtm_type);
 		break;
 	}
-	return 0;
 }
 
 /* Make routing socket. */
 static void routing_socket(struct zebra_ns *zns)
 {
+	uint32_t default_rcvbuf;
+	socklen_t optlen;
+
 	frr_with_privs(&zserv_privs) {
 		routing_sock = ns_socket(AF_ROUTE, SOCK_RAW, 0, zns->ns_id);
 
@@ -1447,12 +1454,38 @@ static void routing_socket(struct zebra_ns *zns)
 		return;
 	}
 
+#ifdef SO_RERROR
+	/* Allow reporting of route(4) buffer overflow errors */
+	int n = 1;
+
+	if (setsockopt(routing_sock, SOL_SOCKET, SO_RERROR, &n, sizeof(n)) < 0)
+		flog_err_sys(EC_LIB_SOCKET,
+			     "Can't set SO_RERROR on routing socket");
+#endif
+
 	/* XXX: Socket should be NONBLOCK, however as we currently
 	 * discard failed writes, this will lead to inconsistencies.
 	 * For now, socket must be blocking.
 	 */
 	/*if (fcntl (routing_sock, F_SETFL, O_NONBLOCK) < 0)
 	  zlog_warn ("Can't set O_NONBLOCK to routing socket");*/
+
+	/*
+	 * Attempt to set a more useful receive buffer size
+	 */
+	optlen = sizeof(default_rcvbuf);
+	if (getsockopt(routing_sock, SOL_SOCKET, SO_RCVBUF, &default_rcvbuf,
+		       &optlen) == -1)
+		flog_err_sys(EC_LIB_SOCKET,
+			     "routing_sock sockopt SOL_SOCKET SO_RCVBUF");
+	else {
+		for (; rcvbufsize > default_rcvbuf &&
+		       setsockopt(routing_sock, SOL_SOCKET, SO_RCVBUF,
+				  &rcvbufsize, sizeof(rcvbufsize)) == -1 &&
+		       errno == ENOBUFS;
+		     rcvbufsize /= 2)
+			;
+	}
 
 	/* kernel_read needs rewrite. */
 	thread_add_read(zrouter.master, kernel_read, NULL, routing_sock, NULL);
@@ -1468,6 +1501,28 @@ void kernel_init(struct zebra_ns *zns)
 void kernel_terminate(struct zebra_ns *zns, bool complete)
 {
 	return;
+}
+
+/*
+ * Global init for platform-/OS-specific things
+ */
+void kernel_router_init(void)
+{
+}
+
+/*
+ * Global deinit for platform-/OS-specific things
+ */
+void kernel_router_terminate(void)
+{
+}
+
+/*
+ * Called by the dplane pthread to read incoming OS messages and dispatch them.
+ */
+int kernel_dplane_read(struct zebra_dplane_info *info)
+{
+	return 0;
 }
 
 void kernel_update_multi(struct dplane_ctx_q *ctx_list)
@@ -1540,6 +1595,12 @@ void kernel_update_multi(struct dplane_ctx_q *ctx_list)
 		case DPLANE_OP_RULE_DELETE:
 		case DPLANE_OP_RULE_UPDATE:
 			res = kernel_pbr_rule_update(ctx);
+			break;
+
+		case DPLANE_OP_INTF_INSTALL:
+		case DPLANE_OP_INTF_UPDATE:
+		case DPLANE_OP_INTF_DELETE:
+			res = kernel_intf_update(ctx);
 			break;
 
 		/* Ignore 'notifications' - no-op */

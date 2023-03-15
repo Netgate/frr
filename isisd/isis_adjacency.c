@@ -31,6 +31,7 @@
 #include "thread.h"
 #include "if.h"
 #include "stream.h"
+#include "bfd.h"
 
 #include "isisd/isis_constants.h"
 #include "isisd/isis_common.h"
@@ -49,12 +50,23 @@
 #include "isisd/fabricd.h"
 #include "isisd/isis_nb.h"
 
-static struct isis_adjacency *adj_alloc(const uint8_t *id)
+DEFINE_MTYPE_STATIC(ISISD, ISIS_ADJACENCY, "ISIS adjacency");
+DEFINE_MTYPE(ISISD, ISIS_ADJACENCY_INFO, "ISIS adjacency info");
+
+static struct isis_adjacency *adj_alloc(struct isis_circuit *circuit,
+					const uint8_t *id)
 {
 	struct isis_adjacency *adj;
 
 	adj = XCALLOC(MTYPE_ISIS_ADJACENCY, sizeof(struct isis_adjacency));
 	memcpy(adj->sysid, id, ISIS_SYS_ID_LEN);
+
+	adj->snmp_idx = ++circuit->snmp_adj_idx_gen;
+
+	if (circuit->snmp_adj_list == NULL)
+		circuit->snmp_adj_list = list_new();
+
+	adj->snmp_list_node = listnode_add(circuit->snmp_adj_list, adj);
 
 	return adj;
 }
@@ -65,7 +77,7 @@ struct isis_adjacency *isis_new_adj(const uint8_t *id, const uint8_t *snpa,
 	struct isis_adjacency *adj;
 	int i;
 
-	adj = adj_alloc(id); /* P2P kludge */
+	adj = adj_alloc(circuit, id); /* P2P kludge */
 
 	if (snpa) {
 		memcpy(adj->snpa, snpa, ETH_ALEN);
@@ -138,7 +150,7 @@ struct isis_adjacency *isis_adj_find(const struct isis_area *area, int level,
 	return NULL;
 }
 
-DEFINE_HOOK(isis_adj_state_change_hook, (struct isis_adjacency *adj), (adj))
+DEFINE_HOOK(isis_adj_state_change_hook, (struct isis_adjacency *adj), (adj));
 
 void isis_delete_adj(void *arg)
 {
@@ -146,8 +158,10 @@ void isis_delete_adj(void *arg)
 
 	if (!adj)
 		return;
+	/* Remove self from snmp list without walking the list*/
+	list_delete_node(adj->circuit->snmp_adj_list, adj->snmp_list_node);
 
-	THREAD_TIMER_OFF(adj->t_expire);
+	thread_cancel(&adj->t_expire);
 	if (adj->adj_state != ISIS_ADJ_DOWN)
 		adj->adj_state = ISIS_ADJ_DOWN;
 
@@ -155,8 +169,8 @@ void isis_delete_adj(void *arg)
 
 	XFREE(MTYPE_ISIS_ADJACENCY_INFO, adj->area_addresses);
 	XFREE(MTYPE_ISIS_ADJACENCY_INFO, adj->ipv4_addresses);
-	XFREE(MTYPE_ISIS_ADJACENCY_INFO, adj->ipv6_addresses);
-
+	XFREE(MTYPE_ISIS_ADJACENCY_INFO, adj->ll_ipv6_addrs);
+	XFREE(MTYPE_ISIS_ADJACENCY_INFO, adj->global_ipv6_addrs);
 	adj_mt_finish(adj);
 	list_delete(&adj->adj_sids);
 
@@ -250,22 +264,26 @@ void isis_adj_process_threeway(struct isis_adjacency *adj,
 
 	adj->threeway_state = next_tw_state;
 }
+const char *isis_adj_name(const struct isis_adjacency *adj)
+{
+	if (!adj)
+		return "NONE";
+
+	struct isis_dynhn *dyn;
+
+	dyn = dynhn_find_by_id(adj->circuit->isis, adj->sysid);
+	if (dyn)
+		return dyn->hostname;
+	else
+		return sysid_print(adj->sysid);
+}
 void isis_log_adj_change(struct isis_adjacency *adj,
 			 enum isis_adj_state old_state,
 			 enum isis_adj_state new_state, const char *reason)
 {
-	const char *adj_name;
-	struct isis_dynhn *dyn;
-
-	dyn = dynhn_find_by_id(adj->sysid);
-	if (dyn)
-		adj_name = dyn->hostname;
-	else
-		adj_name = sysid_print(adj->sysid);
-
 	zlog_info(
 		"%%ADJCHANGE: Adjacency to %s (%s) for %s changed from %s to %s, %s",
-		adj_name, adj->circuit->interface->name,
+		isis_adj_name(adj), adj->circuit->interface->name,
 		adj_level2string(adj->level), adj_state2string(old_state),
 		adj_state2string(new_state), reason ? reason : "unspecified");
 }
@@ -292,7 +310,6 @@ void isis_adj_state_change(struct isis_adjacency **padj,
 	if (circuit->area->log_adj_changes)
 		isis_log_adj_change(adj, old_state, new_state, reason);
 
-	circuit->adj_state_changes++;
 #ifndef FABRICD
 	/* send northbound notification */
 	isis_notif_adj_state_change(adj, new_state, reason);
@@ -303,21 +320,26 @@ void isis_adj_state_change(struct isis_adjacency **padj,
 			if ((adj->level & level) == 0)
 				continue;
 			if (new_state == ISIS_ADJ_UP) {
+				circuit->adj_state_changes++;
 				circuit->upadjcount[level - 1]++;
 				/* update counter & timers for debugging
 				 * purposes */
 				adj->last_flap = time(NULL);
 				adj->flaps++;
 			} else if (old_state == ISIS_ADJ_UP) {
-				listnode_delete(circuit->u.bc.adjdb[level - 1],
-						adj);
+				circuit->adj_state_changes++;
 
 				circuit->upadjcount[level - 1]--;
 				if (circuit->upadjcount[level - 1] == 0)
 					isis_tx_queue_clean(circuit->tx_queue);
 
-				if (new_state == ISIS_ADJ_DOWN)
+				if (new_state == ISIS_ADJ_DOWN) {
+					listnode_delete(
+						circuit->u.bc.adjdb[level - 1],
+						adj);
+
 					del = true;
+				}
 			}
 
 			if (circuit->u.bc.lan_neighs[level - 1]) {
@@ -356,14 +378,17 @@ void isis_adj_state_change(struct isis_adjacency **padj,
 							 &circuit->t_send_csnp[1]);
 				}
 			} else if (old_state == ISIS_ADJ_UP) {
-				if (adj->circuit->u.p2p.neighbor == adj)
-					adj->circuit->u.p2p.neighbor = NULL;
 				circuit->upadjcount[level - 1]--;
 				if (circuit->upadjcount[level - 1] == 0)
 					isis_tx_queue_clean(circuit->tx_queue);
 
-				if (new_state == ISIS_ADJ_DOWN)
+				if (new_state == ISIS_ADJ_DOWN) {
+					if (adj->circuit->u.p2p.neighbor == adj)
+						adj->circuit->u.p2p.neighbor =
+							NULL;
+
 					del = true;
+				}
 			}
 		}
 	}
@@ -383,7 +408,7 @@ void isis_adj_print(struct isis_adjacency *adj)
 
 	if (!adj)
 		return;
-	dyn = dynhn_find_by_id(adj->sysid);
+	dyn = dynhn_find_by_id(adj->circuit->isis, adj->sysid);
 	if (dyn)
 		zlog_debug("%s", dyn->hostname);
 
@@ -393,14 +418,14 @@ void isis_adj_print(struct isis_adjacency *adj)
 	if (adj->ipv4_address_count) {
 		zlog_debug("IPv4 Address(es):");
 		for (unsigned int i = 0; i < adj->ipv4_address_count; i++)
-			zlog_debug("%s", inet_ntoa(adj->ipv4_addresses[i]));
+			zlog_debug("%pI4", &adj->ipv4_addresses[i]);
 	}
 
-	if (adj->ipv6_address_count) {
+	if (adj->ll_ipv6_count) {
 		zlog_debug("IPv6 Address(es):");
-		for (unsigned int i = 0; i < adj->ipv6_address_count; i++) {
+		for (unsigned int i = 0; i < adj->ll_ipv6_count; i++) {
 			char buf[INET6_ADDRSTRLEN];
-			inet_ntop(AF_INET6, &adj->ipv6_addresses[i], buf,
+			inet_ntop(AF_INET6, &adj->ll_ipv6_addrs[i], buf,
 				  sizeof(buf));
 			zlog_debug("%s", buf);
 		}
@@ -424,7 +449,7 @@ const char *isis_adj_yang_state(enum isis_adj_state state)
 	}
 }
 
-int isis_adj_expire(struct thread *thread)
+void isis_adj_expire(struct thread *thread)
 {
 	struct isis_adjacency *adj;
 
@@ -437,8 +462,220 @@ int isis_adj_expire(struct thread *thread)
 
 	/* trigger the adj expire event */
 	isis_adj_state_change(&adj, ISIS_ADJ_DOWN, "holding time expired");
+}
 
-	return 0;
+/*
+ * show isis neighbor [detail] json
+ */
+void isis_adj_print_json(struct isis_adjacency *adj, struct json_object *json,
+			 char detail)
+{
+	json_object *iface_json, *ipv4_addr_json, *ipv6_link_json,
+		*ipv6_non_link_json, *topo_json, *dis_flaps_json,
+		*area_addr_json, *adj_sid_json;
+	time_t now;
+	struct isis_dynhn *dyn;
+	int level;
+	char buf[256];
+
+	json_object_string_add(json, "adj", isis_adj_name(adj));
+
+	if (detail == ISIS_UI_LEVEL_BRIEF) {
+		if (adj->circuit)
+			json_object_string_add(json, "interface",
+					       adj->circuit->interface->name);
+		else
+			json_object_string_add(json, "interface",
+					       "NULL circuit!");
+		json_object_int_add(json, "level", adj->level);
+		json_object_string_add(json, "state",
+				       adj_state2string(adj->adj_state));
+		now = time(NULL);
+		if (adj->last_upd) {
+			if (adj->last_upd + adj->hold_time < now)
+				json_object_string_add(json, "last-upd",
+						       "expiring");
+			else
+				json_object_string_add(
+					json, "expires-in",
+					time2string(adj->last_upd +
+						    adj->hold_time - now));
+		}
+		json_object_string_add(json, "snpa", snpa_print(adj->snpa));
+	}
+
+	if (detail == ISIS_UI_LEVEL_DETAIL) {
+		struct sr_adjacency *sra;
+		struct listnode *anode;
+
+		level = adj->level;
+		iface_json = json_object_new_object();
+		json_object_object_add(json, "interface", iface_json);
+		if (adj->circuit)
+			json_object_string_add(iface_json, "name",
+					       adj->circuit->interface->name);
+		else
+			json_object_string_add(iface_json, "name",
+					       "null-circuit");
+		json_object_int_add(json, "level", adj->level);
+		json_object_string_add(iface_json, "state",
+				       adj_state2string(adj->adj_state));
+		now = time(NULL);
+		if (adj->last_upd) {
+			if (adj->last_upd + adj->hold_time < now)
+				json_object_string_add(iface_json, "last-upd",
+						       "expiring");
+			else
+				json_object_string_add(
+					json, "expires-in",
+					time2string(adj->last_upd +
+						    adj->hold_time - now));
+		} else
+			json_object_string_add(json, "expires-in",
+					       time2string(adj->hold_time));
+		json_object_int_add(iface_json, "adj-flaps", adj->flaps);
+		json_object_string_add(iface_json, "last-ago",
+				       time2string(now - adj->last_flap));
+		json_object_string_add(iface_json, "circuit-type",
+				       circuit_t2string(adj->circuit_t));
+		json_object_string_add(iface_json, "speaks",
+				       nlpid2string(&adj->nlpids));
+		if (adj->mt_count != 1 ||
+		    adj->mt_set[0] != ISIS_MT_IPV4_UNICAST) {
+			topo_json = json_object_new_object();
+			json_object_object_add(iface_json, "topologies",
+					       topo_json);
+			for (unsigned int i = 0; i < adj->mt_count; i++) {
+				snprintfrr(buf, sizeof(buf), "topo-%d", i);
+				json_object_string_add(
+					topo_json, buf,
+					isis_mtid2str(adj->mt_set[i]));
+			}
+		}
+		json_object_string_add(iface_json, "snpa",
+				       snpa_print(adj->snpa));
+		if (adj->circuit &&
+		    (adj->circuit->circ_type == CIRCUIT_T_BROADCAST)) {
+			dyn = dynhn_find_by_id(adj->circuit->isis, adj->lanid);
+			if (dyn) {
+				snprintfrr(buf, sizeof(buf), "%s-%02x",
+					   dyn->hostname,
+					   adj->lanid[ISIS_SYS_ID_LEN]);
+				json_object_string_add(iface_json, "lan-id",
+						       buf);
+			} else {
+				snprintfrr(buf, sizeof(buf), "%s-%02x",
+					   sysid_print(adj->lanid),
+					   adj->lanid[ISIS_SYS_ID_LEN]);
+				json_object_string_add(iface_json, "lan-id",
+						       buf);
+			}
+
+			json_object_int_add(iface_json, "lan-prio",
+					    adj->prio[adj->level - 1]);
+
+			dis_flaps_json = json_object_new_object();
+			json_object_object_add(iface_json, "dis-flaps",
+					       dis_flaps_json);
+			json_object_string_add(
+				dis_flaps_json, "dis-record",
+				isis_disflag2string(
+					adj->dis_record[ISIS_LEVELS + level - 1]
+						.dis));
+			json_object_int_add(dis_flaps_json, "last",
+					    adj->dischanges[level - 1]);
+			json_object_string_add(
+				dis_flaps_json, "ago",
+				time2string(now - (adj->dis_record[ISIS_LEVELS +
+								   level - 1]
+							   .last_dis_change)));
+		}
+
+		if (adj->area_address_count) {
+			area_addr_json = json_object_new_object();
+			json_object_object_add(iface_json, "area-address",
+					       area_addr_json);
+			for (unsigned int i = 0; i < adj->area_address_count;
+			     i++) {
+				json_object_string_add(
+					area_addr_json, "isonet",
+					isonet_print(adj->area_addresses[i]
+							     .area_addr,
+						     adj->area_addresses[i]
+							     .addr_len));
+			}
+		}
+		if (adj->ipv4_address_count) {
+			ipv4_addr_json = json_object_new_object();
+			json_object_object_add(iface_json, "ipv4-address",
+					       ipv4_addr_json);
+			for (unsigned int i = 0; i < adj->ipv4_address_count;
+			     i++){
+				inet_ntop(AF_INET, &adj->ipv4_addresses[i], buf,
+					  sizeof(buf));
+			json_object_string_add(ipv4_addr_json, "ipv4", buf);
+		}
+		}
+		if (adj->ll_ipv6_count) {
+			ipv6_link_json = json_object_new_object();
+			json_object_object_add(iface_json, "ipv6-link-local",
+					       ipv6_link_json);
+			for (unsigned int i = 0; i < adj->ll_ipv6_count; i++) {
+				char buf[INET6_ADDRSTRLEN];
+				inet_ntop(AF_INET6, &adj->ll_ipv6_addrs[i], buf,
+					  sizeof(buf));
+				json_object_string_add(ipv6_link_json, "ipv6",
+						       buf);
+			}
+		}
+		if (adj->global_ipv6_count) {
+			ipv6_non_link_json = json_object_new_object();
+			json_object_object_add(iface_json, "ipv6-global",
+					       ipv6_non_link_json);
+			for (unsigned int i = 0; i < adj->global_ipv6_count;
+			     i++) {
+				char buf[INET6_ADDRSTRLEN];
+				inet_ntop(AF_INET6, &adj->global_ipv6_addrs[i],
+					  buf, sizeof(buf));
+				json_object_string_add(ipv6_non_link_json,
+						       "ipv6", buf);
+			}
+		}
+
+		adj_sid_json = json_object_new_object();
+		json_object_object_add(iface_json, "adj-sid", adj_sid_json);
+		for (ALL_LIST_ELEMENTS_RO(adj->adj_sids, anode, sra)) {
+			const char *adj_type;
+			const char *backup;
+			uint32_t sid;
+
+			switch (sra->adj->circuit->circ_type) {
+			case CIRCUIT_T_BROADCAST:
+				adj_type = "LAN Adjacency-SID";
+				sid = sra->u.ladj_sid->sid;
+				break;
+			case CIRCUIT_T_P2P:
+				adj_type = "Adjacency-SID";
+				sid = sra->u.adj_sid->sid;
+				break;
+			default:
+				continue;
+			}
+			backup = (sra->type == ISIS_SR_LAN_BACKUP) ? " (backup)"
+								   : "";
+
+			json_object_string_add(adj_sid_json, "nexthop",
+					       (sra->nexthop.family == AF_INET)
+						       ? "IPv4"
+						       : "IPv6");
+			json_object_string_add(adj_sid_json, "adj-type",
+					       adj_type);
+			json_object_string_add(adj_sid_json, "is-backup",
+					       backup);
+			json_object_int_add(adj_sid_json, "sid", sid);
+		}
+	}
+	return;
 }
 
 /*
@@ -451,11 +688,7 @@ void isis_adj_print_vty(struct isis_adjacency *adj, struct vty *vty,
 	struct isis_dynhn *dyn;
 	int level;
 
-	dyn = dynhn_find_by_id(adj->sysid);
-	if (dyn)
-		vty_out(vty, "  %-20s", dyn->hostname);
-	else
-		vty_out(vty, "  %-20s", sysid_print(adj->sysid));
+	vty_out(vty, " %-20s", isis_adj_name(adj));
 
 	if (detail == ISIS_UI_LEVEL_BRIEF) {
 		if (adj->circuit)
@@ -466,8 +699,7 @@ void isis_adj_print_vty(struct isis_adjacency *adj, struct vty *vty,
 		vty_out(vty, "%-13s", adj_state2string(adj->adj_state));
 		now = time(NULL);
 		if (adj->last_upd) {
-			if (adj->last_upd + adj->hold_time
-			    < (unsigned long long)now)
+			if (adj->last_upd + adj->hold_time < now)
 				vty_out(vty, " Expiring");
 			else
 				vty_out(vty, " %-9llu",
@@ -494,8 +726,7 @@ void isis_adj_print_vty(struct isis_adjacency *adj, struct vty *vty,
 		vty_out(vty, ", State: %s", adj_state2string(adj->adj_state));
 		now = time(NULL);
 		if (adj->last_upd) {
-			if (adj->last_upd + adj->hold_time
-			    < (unsigned long long)now)
+			if (adj->last_upd + adj->hold_time < now)
 				vty_out(vty, " Expiring");
 			else
 				vty_out(vty, ", Expires in %s",
@@ -523,7 +754,7 @@ void isis_adj_print_vty(struct isis_adjacency *adj, struct vty *vty,
 		vty_out(vty, "    SNPA: %s", snpa_print(adj->snpa));
 		if (adj->circuit
 		    && (adj->circuit->circ_type == CIRCUIT_T_BROADCAST)) {
-			dyn = dynhn_find_by_id(adj->lanid);
+			dyn = dynhn_find_by_id(adj->circuit->isis, adj->lanid);
 			if (dyn)
 				vty_out(vty, ", LAN id: %s.%02x", dyn->hostname,
 					adj->lanid[ISIS_SYS_ID_LEN]);
@@ -562,18 +793,36 @@ void isis_adj_print_vty(struct isis_adjacency *adj, struct vty *vty,
 			vty_out(vty, "    IPv4 Address(es):\n");
 			for (unsigned int i = 0; i < adj->ipv4_address_count;
 			     i++)
-				vty_out(vty, "      %s\n",
-					inet_ntoa(adj->ipv4_addresses[i]));
+				vty_out(vty, "      %pI4\n",
+					&adj->ipv4_addresses[i]);
 		}
-		if (adj->ipv6_address_count) {
+		if (adj->ll_ipv6_count) {
 			vty_out(vty, "    IPv6 Address(es):\n");
-			for (unsigned int i = 0; i < adj->ipv6_address_count;
-			     i++) {
+			for (unsigned int i = 0; i < adj->ll_ipv6_count; i++) {
 				char buf[INET6_ADDRSTRLEN];
-				inet_ntop(AF_INET6, &adj->ipv6_addresses[i],
+				inet_ntop(AF_INET6, &adj->ll_ipv6_addrs[i],
 					  buf, sizeof(buf));
 				vty_out(vty, "      %s\n", buf);
 			}
+		}
+		if (adj->global_ipv6_count) {
+			vty_out(vty, "    Global IPv6 Address(es):\n");
+			for (unsigned int i = 0; i < adj->global_ipv6_count;
+			     i++) {
+				char buf[INET6_ADDRSTRLEN];
+				inet_ntop(AF_INET6, &adj->global_ipv6_addrs[i],
+					  buf, sizeof(buf));
+				vty_out(vty, "      %s\n", buf);
+			}
+		}
+		if (adj->circuit && adj->circuit->bfd_config.enabled) {
+			vty_out(vty, "    BFD is %s%s\n",
+				adj->bfd_session ? "active, status "
+						 : "configured",
+				!adj->bfd_session
+					? ""
+					: bfd_get_status_str(bfd_sess_status(
+						  adj->bfd_session)));
 		}
 		for (ALL_LIST_ELEMENTS_RO(adj->adj_sids, anode, sra)) {
 			const char *adj_type;

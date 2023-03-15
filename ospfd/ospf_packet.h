@@ -33,11 +33,11 @@
 #define OSPF_LS_UPD_MIN_SIZE      4U
 #define OSPF_LS_ACK_MIN_SIZE      0U
 
-#define OSPF_MSG_HELLO         1  /* OSPF Hello Message. */
-#define OSPF_MSG_DB_DESC       2  /* OSPF Database Descriptoin Message. */
-#define OSPF_MSG_LS_REQ        3  /* OSPF Link State Request Message. */
-#define OSPF_MSG_LS_UPD        4  /* OSPF Link State Update Message. */
-#define OSPF_MSG_LS_ACK        5  /* OSPF Link State Acknoledgement Message. */
+#define OSPF_MSG_HELLO 1   /* OSPF Hello Message. */
+#define OSPF_MSG_DB_DESC 2 /* OSPF Database Description Message. */
+#define OSPF_MSG_LS_REQ 3  /* OSPF Link State Request Message. */
+#define OSPF_MSG_LS_UPD 4  /* OSPF Link State Update Message. */
+#define OSPF_MSG_LS_ACK 5  /* OSPF Link State Acknowledgement Message. */
 
 #define OSPF_SEND_PACKET_DIRECT         1
 #define OSPF_SEND_PACKET_INDIRECT       2
@@ -139,7 +139,7 @@ extern struct ospf_packet *ospf_fifo_head(struct ospf_fifo *);
 extern void ospf_fifo_flush(struct ospf_fifo *);
 extern void ospf_fifo_free(struct ospf_fifo *);
 
-extern int ospf_read(struct thread *);
+extern void ospf_read(struct thread *thread);
 extern void ospf_hello_send(struct ospf_interface *);
 extern void ospf_db_desc_send(struct ospf_neighbor *);
 extern void ospf_db_desc_resend(struct ospf_neighbor *);
@@ -152,10 +152,10 @@ extern void ospf_ls_ack_send_delayed(struct ospf_interface *);
 extern void ospf_ls_retransmit(struct ospf_interface *, struct ospf_lsa *);
 extern void ospf_ls_req_event(struct ospf_neighbor *);
 
-extern int ospf_ls_upd_timer(struct thread *);
-extern int ospf_ls_ack_timer(struct thread *);
-extern int ospf_poll_timer(struct thread *);
-extern int ospf_hello_reply_timer(struct thread *);
+extern void ospf_ls_upd_timer(struct thread *thread);
+extern void ospf_ls_ack_timer(struct thread *thread);
+extern void ospf_poll_timer(struct thread *thread);
+extern void ospf_hello_reply_timer(struct thread *thread);
 
 extern const struct message ospf_packet_type_str[];
 extern const size_t ospf_packet_type_str_max;

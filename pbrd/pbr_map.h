@@ -85,12 +85,34 @@ struct pbr_map_sequence {
 	uint32_t ruleno;
 
 	/*
+	 * src and dst ports
+	 */
+	uint16_t src_prt;
+	uint16_t dst_prt;
+
+	/*
+	 * The ip protocol we want to match on
+	 */
+	uint8_t ip_proto;
+
+	/*
 	 * Our policy Catchers
 	 */
 	struct prefix *src;
 	struct prefix *dst;
 	uint8_t dsfield;
 	uint32_t mark;
+
+	/*
+	 * Actions
+	 */
+	uint8_t action_pcp;
+	uint8_t action_vlan_id;
+#define PBR_MAP_STRIP_INNER_ANY (1 << 0)
+	uint8_t action_vlan_flags;
+
+#define PBR_MAP_UNDEFINED_QUEUE_ID 0
+	uint32_t action_queue_id;
 
 	/*
 	 * Family of the src/dst.  Needed when deleting since we clear them
@@ -147,12 +169,13 @@ struct pbr_map_sequence {
 #define PBR_MAP_INVALID_BOTH_NHANDGRP    (1 << 3)
 #define PBR_MAP_INVALID_EMPTY            (1 << 4)
 #define PBR_MAP_INVALID_VRF              (1 << 5)
+#define PBR_MAP_INVALID_SET_STRIP_VLAN (1 << 6)
 	uint64_t reason;
 
-	QOBJ_FIELDS
+	QOBJ_FIELDS;
 };
 
-DECLARE_QOBJ_TYPE(pbr_map_sequence)
+DECLARE_QOBJ_TYPE(pbr_map_sequence);
 
 extern struct pbr_map_entry_head pbr_maps;
 

@@ -23,6 +23,7 @@
 #include <math.h>
 
 #include "printfrr.h"
+#include "frrstr.h"
 #include "prefix.h"
 #include "linklist.h"
 #include "memory.h"
@@ -51,6 +52,7 @@
 #include "bgpd/bgp_aspath.h"
 #include "bgpd/bgp_regex.h"
 #include "bgpd/bgp_community.h"
+#include "bgpd/bgp_community_alias.h"
 #include "bgpd/bgp_ecommunity.h"
 #include "bgpd/bgp_lcommunity.h"
 #include "bgpd/bgp_clist.h"
@@ -70,6 +72,8 @@
 #include "bgpd/bgp_addpath.h"
 #include "bgpd/bgp_mac.h"
 #include "bgpd/bgp_network.h"
+#include "bgpd/bgp_trace.h"
+#include "bgpd/bgp_rpki.h"
 
 #ifdef ENABLE_BGP_VNC
 #include "bgpd/rfapi/rfapi_backend.h"
@@ -89,10 +93,23 @@
 #include "bgpd/bgp_route_clippy.c"
 #endif
 
+DEFINE_HOOK(bgp_snmp_update_stats,
+	    (struct bgp_node *rn, struct bgp_path_info *pi, bool added),
+	    (rn, pi, added));
+
+DEFINE_HOOK(bgp_rpki_prefix_status,
+	    (struct peer *peer, struct attr *attr,
+	     const struct prefix *prefix),
+	    (peer, attr, prefix));
+
+/* Render dest to prefix_rd based on safi */
+static const struct prefix_rd *bgp_rd_from_dest(const struct bgp_dest *dest,
+						safi_t safi);
+
 /* Extern from bgp_dump.c */
 extern const char *bgp_origin_str[];
 extern const char *bgp_origin_long_str[];
-const char *get_afi_safi_str(afi_t afi, safi_t safi, bool for_json);
+
 /* PMSI strings. */
 #define PMSI_TNLTYPE_STR_NO_INFO "No info"
 #define PMSI_TNLTYPE_STR_DEFAULT PMSI_TNLTYPE_STR_NO_INFO
@@ -109,12 +126,21 @@ static const struct message bgp_pmsi_tnltype_str[] = {
 };
 
 #define VRFID_NONE_STR "-"
+#define SOFT_RECONFIG_TASK_MAX_PREFIX 25000
 
 DEFINE_HOOK(bgp_process,
 	    (struct bgp * bgp, afi_t afi, safi_t safi, struct bgp_dest *bn,
 	     struct peer *peer, bool withdraw),
-	    (bgp, afi, safi, bn, peer, withdraw))
+	    (bgp, afi, safi, bn, peer, withdraw));
 
+/** Test if path is suppressed. */
+static bool bgp_path_suppressed(struct bgp_path_info *pi)
+{
+	if (pi->extra == NULL || pi->extra->aggr_suppressors == NULL)
+		return false;
+
+	return listcount(pi->extra->aggr_suppressors) > 0;
+}
 
 struct bgp_dest *bgp_afi_node_get(struct bgp_table *table, afi_t afi,
 				  safi_t safi, const struct prefix *p,
@@ -216,7 +242,7 @@ void bgp_path_info_extra_free(struct bgp_path_info_extra **extra)
 			unsigned refcount;
 
 			bpi = bgp_path_info_lock(bpi);
-			refcount = bpi->net->lock - 1;
+			refcount = bgp_dest_get_lock_count(bpi->net) - 1;
 			bgp_dest_unlock_node((struct bgp_dest *)bpi->net);
 			if (!refcount)
 				bpi->net = NULL;
@@ -228,6 +254,12 @@ void bgp_path_info_extra_free(struct bgp_path_info_extra **extra)
 
 	if (e->bgp_orig)
 		bgp_unlock(e->bgp_orig);
+
+	if (e->aggr_suppressors)
+		list_delete(&e->aggr_suppressors);
+
+	if (e->mh_info)
+		bgp_evpn_path_mh_info_free(e->mh_info);
 
 	if ((*extra)->bgp_fs_iprule)
 		list_delete(&((*extra)->bgp_fs_iprule));
@@ -275,21 +307,9 @@ struct bgp_path_info *bgp_path_info_unlock(struct bgp_path_info *path)
 	path->lock--;
 
 	if (path->lock == 0) {
-#if 0
-      zlog_debug ("%s: unlocked and freeing", __func__);
-      zlog_backtrace (LOG_DEBUG);
-#endif
 		bgp_path_info_free(path);
 		return NULL;
 	}
-
-#if 0
-  if (path->lock == 1)
-    {
-      zlog_debug ("%s: unlocked to 1", __func__);
-      zlog_backtrace (LOG_DEBUG);
-    }
-#endif
 
 	return path;
 }
@@ -314,8 +334,8 @@ static int bgp_dest_set_defer_flag(struct bgp_dest *dest, bool delete)
 	if (CHECK_FLAG(dest->flags, BGP_NODE_PROCESS_SCHEDULED)) {
 		if (BGP_DEBUG(update, UPDATE_OUT))
 			zlog_debug(
-				"Route %pRN is in workqueue and being processed, not deferred.",
-				bgp_dest_to_rnode(dest));
+				"Route %pBD is in workqueue and being processed, not deferred.",
+				dest);
 
 		return 0;
 	}
@@ -359,14 +379,12 @@ static int bgp_dest_set_defer_flag(struct bgp_dest *dest, bool delete)
 	 */
 	if (set_flag && table) {
 		if (bgp && (bgp->gr_info[afi][safi].t_select_deferral)) {
+			if (!CHECK_FLAG(dest->flags, BGP_NODE_SELECT_DEFER))
+				bgp->gr_info[afi][safi].gr_deferred++;
 			SET_FLAG(dest->flags, BGP_NODE_SELECT_DEFER);
-			if (dest->rt_node == NULL)
-				dest->rt_node = listnode_add(
-					bgp->gr_info[afi][safi].route_list,
-					dest);
 			if (BGP_DEBUG(update, UPDATE_OUT))
-				zlog_debug("DEFER route %pRN, dest %p, node %p",
-					   dest, dest, dest->rt_node);
+				zlog_debug("DEFER route %pBD, dest %p", dest,
+					   dest);
 			return 0;
 		}
 	}
@@ -389,6 +407,7 @@ void bgp_path_info_add(struct bgp_dest *dest, struct bgp_path_info *pi)
 	bgp_dest_lock_node(dest);
 	peer_lock(pi->peer); /* bgp_path_info peer reference */
 	bgp_dest_set_defer_flag(dest, false);
+	hook_call(bgp_snmp_update_stats, dest, pi, true);
 }
 
 /* Do the actual removal of info from RIB, for use by bgp_process
@@ -404,6 +423,7 @@ void bgp_path_info_reap(struct bgp_dest *dest, struct bgp_path_info *pi)
 
 	bgp_path_info_mpath_dequeue(pi);
 	bgp_path_info_unlock(pi);
+	hook_call(bgp_snmp_update_stats, dest, pi, false);
 	bgp_dest_unlock_node(dest);
 }
 
@@ -506,13 +526,33 @@ static uint32_t bgp_med_value(struct attr *attr, struct bgp *bgp)
 	}
 }
 
-void bgp_path_info_path_with_addpath_rx_str(struct bgp_path_info *pi, char *buf)
+void bgp_path_info_path_with_addpath_rx_str(struct bgp_path_info *pi, char *buf,
+					    size_t buf_len)
 {
 	if (pi->addpath_rx_id)
-		sprintf(buf, "path %s (addpath rxid %d)", pi->peer->host,
-			pi->addpath_rx_id);
+		snprintf(buf, buf_len, "path %s (addpath rxid %d)",
+			 pi->peer->host, pi->addpath_rx_id);
 	else
-		sprintf(buf, "path %s", pi->peer->host);
+		snprintf(buf, buf_len, "path %s", pi->peer->host);
+}
+
+
+/*
+ * Get the ultimate path info.
+ */
+struct bgp_path_info *bgp_get_imported_bpi_ultimate(struct bgp_path_info *info)
+{
+	struct bgp_path_info *bpi_ultimate;
+
+	if (info->sub_type != BGP_ROUTE_IMPORTED)
+		return info;
+
+	for (bpi_ultimate = info;
+	     bpi_ultimate->extra && bpi_ultimate->extra->parent;
+	     bpi_ultimate = bpi_ultimate->extra->parent)
+		;
+
+	return bpi_ultimate;
 }
 
 /* Compare two bgp route entity.  If 'new' is preferable over 'exist' return 1.
@@ -523,9 +563,10 @@ static int bgp_path_info_cmp(struct bgp *bgp, struct bgp_path_info *new,
 			     char *pfx_buf, afi_t afi, safi_t safi,
 			     enum bgp_path_selection_reason *reason)
 {
+	const struct prefix *new_p;
 	struct attr *newattr, *existattr;
-	bgp_peer_sort_t new_sort;
-	bgp_peer_sort_t exist_sort;
+	enum bgp_peer_sort new_sort;
+	enum bgp_peer_sort exist_sort;
 	uint32_t new_pref;
 	uint32_t exist_pref;
 	uint32_t new_med;
@@ -540,6 +581,8 @@ static int bgp_path_info_cmp(struct bgp *bgp, struct bgp_path_info *new,
 	int internal_as_route;
 	int confed_as_route;
 	int ret = 0;
+	int igp_metric_ret = 0;
+	int peer_sort_ret = -1;
 	char new_buf[PATH_ADDPATH_STR_BUFFER];
 	char exist_buf[PATH_ADDPATH_STR_BUFFER];
 	uint32_t new_mm_seq;
@@ -550,6 +593,8 @@ static int bgp_path_info_cmp(struct bgp *bgp, struct bgp_path_info *new,
 	bool same_esi;
 	bool old_proxy;
 	bool new_proxy;
+	bool new_origin, exist_origin;
+	struct bgp_path_info *bpi_ultimate;
 
 	*paths_eq = 0;
 
@@ -561,31 +606,68 @@ static int bgp_path_info_cmp(struct bgp *bgp, struct bgp_path_info *new,
 		return 0;
 	}
 
-	if (debug)
-		bgp_path_info_path_with_addpath_rx_str(new, new_buf);
+	if (debug) {
+		bpi_ultimate = bgp_get_imported_bpi_ultimate(new);
+		bgp_path_info_path_with_addpath_rx_str(bpi_ultimate, new_buf,
+						       sizeof(new_buf));
+	}
 
 	if (exist == NULL) {
 		*reason = bgp_path_selection_first;
 		if (debug)
-			zlog_debug("%s: %s is the initial bestpath", pfx_buf,
-				   new_buf);
+			zlog_debug("%s(%s): %s is the initial bestpath",
+				   pfx_buf, bgp->name_pretty, new_buf);
 		return 1;
 	}
 
 	if (debug) {
-		bgp_path_info_path_with_addpath_rx_str(exist, exist_buf);
-		zlog_debug("%s: Comparing %s flags 0x%x with %s flags 0x%x",
-			   pfx_buf, new_buf, new->flags, exist_buf,
-			   exist->flags);
+		bpi_ultimate = bgp_get_imported_bpi_ultimate(exist);
+		bgp_path_info_path_with_addpath_rx_str(bpi_ultimate, exist_buf,
+						       sizeof(exist_buf));
+		zlog_debug("%s(%s): Comparing %s flags 0x%x with %s flags 0x%x",
+			   pfx_buf, bgp->name_pretty, new_buf, new->flags,
+			   exist_buf, exist->flags);
 	}
 
 	newattr = new->attr;
 	existattr = exist->attr;
 
+	/* A BGP speaker that has advertised the "Long-lived Graceful Restart
+	 * Capability" to a neighbor MUST perform the following upon receiving
+	 * a route from that neighbor with the "LLGR_STALE" community, or upon
+	 * attaching the "LLGR_STALE" community itself per Section 4.2:
+	 *
+	 * Treat the route as the least-preferred in route selection (see
+	 * below). See the Risks of Depreferencing Routes section (Section 5.2)
+	 * for a discussion of potential risks inherent in doing this.
+	 */
+	if (bgp_attr_get_community(newattr) &&
+	    community_include(bgp_attr_get_community(newattr),
+			      COMMUNITY_LLGR_STALE)) {
+		if (debug)
+			zlog_debug(
+				"%s: %s wins over %s due to LLGR_STALE community",
+				pfx_buf, new_buf, exist_buf);
+		return 0;
+	}
+
+	if (bgp_attr_get_community(existattr) &&
+	    community_include(bgp_attr_get_community(existattr),
+			      COMMUNITY_LLGR_STALE)) {
+		if (debug)
+			zlog_debug(
+				"%s: %s loses to %s due to LLGR_STALE community",
+				pfx_buf, new_buf, exist_buf);
+		return 1;
+	}
+
+	new_p = bgp_dest_get_prefix(new->net);
+
 	/* For EVPN routes, we cannot just go by local vs remote, we have to
 	 * look at the MAC mobility sequence number, if present.
 	 */
-	if (safi == SAFI_EVPN) {
+	if ((safi == SAFI_EVPN)
+	    && (new_p->u.prefix_evpn.route_type == BGP_EVPN_MAC_IP_ROUTE)) {
 		/* This is an error condition described in RFC 7432 Section
 		 * 15.2. The RFC
 		 * states that in this scenario "the PE MUST alert the operator"
@@ -598,13 +680,13 @@ static int bgp_path_info_cmp(struct bgp *bgp, struct bgp_path_info *new,
 		 */
 		if (newattr->sticky != existattr->sticky) {
 			if (!debug) {
-				prefix2str(
-					bgp_dest_get_prefix(new->net), pfx_buf,
-					sizeof(*pfx_buf) * PREFIX2STR_BUFFER);
-				bgp_path_info_path_with_addpath_rx_str(new,
-								       new_buf);
+				prefix2str(new_p, pfx_buf,
+					   sizeof(*pfx_buf)
+						   * PREFIX2STR_BUFFER);
 				bgp_path_info_path_with_addpath_rx_str(
-					exist, exist_buf);
+					new, new_buf, sizeof(new_buf));
+				bgp_path_info_path_with_addpath_rx_str(
+					exist, exist_buf, sizeof(exist_buf));
 			}
 
 			if (newattr->sticky && !existattr->sticky) {
@@ -723,18 +805,18 @@ static int bgp_path_info_cmp(struct bgp *bgp, struct bgp_path_info *new,
 			*reason = bgp_path_selection_evpn_lower_ip;
 			if (debug)
 				zlog_debug(
-					"%s: %s wins over %s due to same MM seq %u and lower IP %s",
+					"%s: %s wins over %s due to same MM seq %u and lower IP %pI4",
 					pfx_buf, new_buf, exist_buf, new_mm_seq,
-					inet_ntoa(new->attr->nexthop));
+					&new->attr->nexthop);
 			return 1;
 		}
 		if (nh_cmp > 0) {
 			*reason = bgp_path_selection_evpn_lower_ip;
 			if (debug)
 				zlog_debug(
-					"%s: %s loses to %s due to same MM seq %u and higher IP %s",
+					"%s: %s loses to %s due to same MM seq %u and higher IP %pI4",
 					pfx_buf, new_buf, exist_buf, new_mm_seq,
-					inet_ntoa(new->attr->nexthop));
+					&new->attr->nexthop);
 			return 0;
 		}
 	}
@@ -794,8 +876,12 @@ static int bgp_path_info_cmp(struct bgp *bgp, struct bgp_path_info *new,
 	 *  - BGP_ROUTE_AGGREGATE
 	 *  - BGP_ROUTE_REDISTRIBUTE
 	 */
-	if (!(new->sub_type == BGP_ROUTE_NORMAL ||
-	      new->sub_type == BGP_ROUTE_IMPORTED)) {
+	new_origin = !(new->sub_type == BGP_ROUTE_NORMAL ||
+		       new->sub_type == BGP_ROUTE_IMPORTED);
+	exist_origin = !(exist->sub_type == BGP_ROUTE_NORMAL ||
+			 exist->sub_type == BGP_ROUTE_IMPORTED);
+
+	if (new_origin && !exist_origin) {
 		*reason = bgp_path_selection_local_route;
 		if (debug)
 			zlog_debug(
@@ -804,8 +890,7 @@ static int bgp_path_info_cmp(struct bgp *bgp, struct bgp_path_info *new,
 		return 1;
 	}
 
-	if (!(exist->sub_type == BGP_ROUTE_NORMAL ||
-	      exist->sub_type == BGP_ROUTE_IMPORTED)) {
+	if (!new_origin && exist_origin) {
 		*reason = bgp_path_selection_local_route;
 		if (debug)
 			zlog_debug(
@@ -813,6 +898,14 @@ static int bgp_path_info_cmp(struct bgp *bgp, struct bgp_path_info *new,
 				pfx_buf, new_buf, exist_buf);
 		return 0;
 	}
+
+	/* Here if these are imported routes then get ultimate pi for
+	 * path compare.
+	 */
+	new = bgp_get_imported_bpi_ultimate(new);
+	exist = bgp_get_imported_bpi_ultimate(exist);
+	newattr = new->attr;
+	existattr = exist->attr;
 
 	/* 4. AS path length check. */
 	if (!CHECK_FLAG(bgp->flags, BGP_FLAG_ASPATH_IGNORE)) {
@@ -940,7 +1033,9 @@ static int bgp_path_info_cmp(struct bgp *bgp, struct bgp_path_info *new,
 			zlog_debug(
 				"%s: %s wins over %s due to eBGP peer > iBGP peer",
 				pfx_buf, new_buf, exist_buf);
-		return 1;
+		if (!CHECK_FLAG(bgp->flags, BGP_FLAG_PEERTYPE_MULTIPATH_RELAX))
+			return 1;
+		peer_sort_ret = 1;
 	}
 
 	if (exist_sort == BGP_PEER_EBGP
@@ -950,7 +1045,9 @@ static int bgp_path_info_cmp(struct bgp *bgp, struct bgp_path_info *new,
 			zlog_debug(
 				"%s: %s loses to %s due to iBGP peer < eBGP peer",
 				pfx_buf, new_buf, exist_buf);
-		return 0;
+		if (!CHECK_FLAG(bgp->flags, BGP_FLAG_PEERTYPE_MULTIPATH_RELAX))
+			return 0;
+		peer_sort_ret = 0;
 	}
 
 	/* 8. IGP metric check. */
@@ -962,19 +1059,19 @@ static int bgp_path_info_cmp(struct bgp *bgp, struct bgp_path_info *new,
 		existm = exist->extra->igpmetric;
 
 	if (newm < existm) {
-		if (debug)
+		if (debug && peer_sort_ret < 0)
 			zlog_debug(
-				"%s: %s wins over %s due to IGP metric %d < %d",
+				"%s: %s wins over %s due to IGP metric %u < %u",
 				pfx_buf, new_buf, exist_buf, newm, existm);
-		ret = 1;
+		igp_metric_ret = 1;
 	}
 
 	if (newm > existm) {
-		if (debug)
+		if (debug && peer_sort_ret < 0)
 			zlog_debug(
-				"%s: %s loses to %s due to IGP metric %d > %d",
+				"%s: %s loses to %s due to IGP metric %u > %u",
 				pfx_buf, new_buf, exist_buf, newm, existm);
-		ret = 0;
+		igp_metric_ret = 0;
 	}
 
 	/* 9. Same IGP metric. Compare the cluster list length as
@@ -982,31 +1079,28 @@ static int bgp_path_info_cmp(struct bgp *bgp, struct bgp_path_info *new,
 	   pair (newm, existm) with the cluster list length. Prefer the
 	   path with smaller cluster list length.                       */
 	if (newm == existm) {
-		if (peer_sort_lookup(new->peer) == BGP_PEER_IBGP
-		    && peer_sort_lookup(exist->peer) == BGP_PEER_IBGP
-		    && (mpath_cfg == NULL
-			|| CHECK_FLAG(
-				   mpath_cfg->ibgp_flags,
-				   BGP_FLAG_IBGP_MULTIPATH_SAME_CLUSTERLEN))) {
+		if (peer_sort_lookup(new->peer) == BGP_PEER_IBGP &&
+		    peer_sort_lookup(exist->peer) == BGP_PEER_IBGP &&
+		    (mpath_cfg == NULL || mpath_cfg->same_clusterlen)) {
 			newm = BGP_CLUSTER_LIST_LENGTH(new->attr);
 			existm = BGP_CLUSTER_LIST_LENGTH(exist->attr);
 
 			if (newm < existm) {
-				if (debug)
+				if (debug && peer_sort_ret < 0)
 					zlog_debug(
-						"%s: %s wins over %s due to CLUSTER_LIST length %d < %d",
+						"%s: %s wins over %s due to CLUSTER_LIST length %u < %u",
 						pfx_buf, new_buf, exist_buf,
 						newm, existm);
-				ret = 1;
+				igp_metric_ret = 1;
 			}
 
 			if (newm > existm) {
-				if (debug)
+				if (debug && peer_sort_ret < 0)
 					zlog_debug(
-						"%s: %s loses to %s due to CLUSTER_LIST length %d > %d",
+						"%s: %s loses to %s due to CLUSTER_LIST length %u > %u",
 						pfx_buf, new_buf, exist_buf,
 						newm, existm);
-				ret = 0;
+				igp_metric_ret = 0;
 			}
 		}
 	}
@@ -1020,7 +1114,10 @@ static int bgp_path_info_cmp(struct bgp *bgp, struct bgp_path_info *new,
 				zlog_debug(
 					"%s: %s wins over %s due to confed-external peer > confed-internal peer",
 					pfx_buf, new_buf, exist_buf);
-			return 1;
+			if (!CHECK_FLAG(bgp->flags,
+					BGP_FLAG_PEERTYPE_MULTIPATH_RELAX))
+				return 1;
+			peer_sort_ret = 1;
 		}
 
 		if (exist_sort == BGP_PEER_CONFED
@@ -1030,7 +1127,10 @@ static int bgp_path_info_cmp(struct bgp *bgp, struct bgp_path_info *new,
 				zlog_debug(
 					"%s: %s loses to %s due to confed-internal peer < confed-external peer",
 					pfx_buf, new_buf, exist_buf);
-			return 0;
+			if (!CHECK_FLAG(bgp->flags,
+					BGP_FLAG_PEERTYPE_MULTIPATH_RELAX))
+				return 0;
+			peer_sort_ret = 0;
 		}
 	}
 
@@ -1091,19 +1191,39 @@ static int bgp_path_info_cmp(struct bgp *bgp, struct bgp_path_info *new,
 		 * TODO: If unequal cost ibgp multipath is enabled we can
 		 * mark the paths as equal here instead of returning
 		 */
-		if (debug) {
-			if (ret == 1)
-				zlog_debug(
-					"%s: %s wins over %s after IGP metric comparison",
-					pfx_buf, new_buf, exist_buf);
-			else
-				zlog_debug(
-					"%s: %s loses to %s after IGP metric comparison",
-					pfx_buf, new_buf, exist_buf);
+
+		/* Prior to the addition of BGP_FLAG_PEERTYPE_MULTIPATH_RELAX,
+		 * if either step 7 or 10 (peer type checks) yielded a winner,
+		 * that result was returned immediately. Returning from step 10
+		 * ignored the return value computed in steps 8 and 9 (IGP
+		 * metric checks). In order to preserve that behavior, if
+		 * peer_sort_ret is set, return that rather than igp_metric_ret.
+		 */
+		ret = peer_sort_ret;
+		if (peer_sort_ret < 0) {
+			ret = igp_metric_ret;
+			if (debug) {
+				if (ret == 1)
+					zlog_debug(
+						"%s: %s wins over %s after IGP metric comparison",
+						pfx_buf, new_buf, exist_buf);
+				else
+					zlog_debug(
+						"%s: %s loses to %s after IGP metric comparison",
+						pfx_buf, new_buf, exist_buf);
+			}
+			*reason = bgp_path_selection_igp_metric;
 		}
-		*reason = bgp_path_selection_igp_metric;
 		return ret;
 	}
+
+	/*
+	 * At this point, the decision whether to set *paths_eq = 1 has been
+	 * completed. If we deferred returning because of bestpath peer-type
+	 * relax configuration, return now.
+	 */
+	if (peer_sort_ret >= 0)
+		return peer_sort_ret;
 
 	/* 12. If both paths are external, prefer the path that was received
 	   first (the oldest one).  This step minimizes route-flap, since a
@@ -1130,10 +1250,10 @@ static int bgp_path_info_cmp(struct bgp *bgp, struct bgp_path_info *new,
 		}
 	}
 
-	/* 13. Router-ID comparision. */
+	/* 13. Router-ID comparison. */
 	/* If one of the paths is "stale", the corresponding peer router-id will
 	 * be 0 and would always win over the other path. If originator id is
-	 * used for the comparision, it will decide which path is better.
+	 * used for the comparison, it will decide which path is better.
 	 */
 	if (newattr->flag & ATTR_FLAG_BIT(BGP_ATTR_ORIGINATOR_ID))
 		new_id.s_addr = newattr->originator_id.s_addr;
@@ -1162,7 +1282,7 @@ static int bgp_path_info_cmp(struct bgp *bgp, struct bgp_path_info *new,
 		return 0;
 	}
 
-	/* 14. Cluster length comparision. */
+	/* 14. Cluster length comparison. */
 	new_cluster = BGP_CLUSTER_LIST_LENGTH(new->attr);
 	exist_cluster = BGP_CLUSTER_LIST_LENGTH(exist->attr);
 
@@ -1186,7 +1306,7 @@ static int bgp_path_info_cmp(struct bgp *bgp, struct bgp_path_info *new,
 		return 0;
 	}
 
-	/* 15. Neighbor address comparision. */
+	/* 15. Neighbor address comparison. */
 	/* Do this only if neither path is "stale" as stale paths do not have
 	 * valid peer information (as the connection may or may not be up).
 	 */
@@ -1288,6 +1408,7 @@ static enum filter_type bgp_input_filter(struct peer *peer,
 					 safi_t safi)
 {
 	struct bgp_filter *filter;
+	enum filter_type ret = FILTER_PERMIT;
 
 	filter = &peer->filter[afi][safi];
 
@@ -1299,26 +1420,43 @@ static enum filter_type bgp_input_filter(struct peer *peer,
 	if (DISTRIBUTE_IN_NAME(filter)) {
 		FILTER_EXIST_WARN(DISTRIBUTE, distribute, filter);
 
-		if (access_list_apply(DISTRIBUTE_IN(filter), p) == FILTER_DENY)
-			return FILTER_DENY;
+		if (access_list_apply(DISTRIBUTE_IN(filter), p)
+		    == FILTER_DENY) {
+			ret = FILTER_DENY;
+			goto done;
+		}
 	}
 
 	if (PREFIX_LIST_IN_NAME(filter)) {
 		FILTER_EXIST_WARN(PREFIX_LIST, prefix, filter);
 
-		if (prefix_list_apply(PREFIX_LIST_IN(filter), p) == PREFIX_DENY)
-			return FILTER_DENY;
+		if (prefix_list_apply(PREFIX_LIST_IN(filter), p)
+		    == PREFIX_DENY) {
+			ret = FILTER_DENY;
+			goto done;
+		}
 	}
 
 	if (FILTER_LIST_IN_NAME(filter)) {
 		FILTER_EXIST_WARN(FILTER_LIST, as, filter);
 
 		if (as_list_apply(FILTER_LIST_IN(filter), attr->aspath)
-		    == AS_FILTER_DENY)
-			return FILTER_DENY;
+		    == AS_FILTER_DENY) {
+			ret = FILTER_DENY;
+			goto done;
+		}
 	}
 
-	return FILTER_PERMIT;
+done:
+	if (frrtrace_enabled(frr_bgp, input_filter)) {
+		char pfxprint[PREFIX2STR_BUFFER];
+
+		prefix2str(p, pfxprint, sizeof(pfxprint));
+		frrtrace(5, frr_bgp, input_filter, peer, pfxprint, afi, safi,
+			 ret == FILTER_PERMIT ? "permit" : "deny");
+	}
+
+	return ret;
 #undef FILTER_EXIST_WARN
 }
 
@@ -1328,6 +1466,7 @@ static enum filter_type bgp_output_filter(struct peer *peer,
 					  safi_t safi)
 {
 	struct bgp_filter *filter;
+	enum filter_type ret = FILTER_PERMIT;
 
 	filter = &peer->filter[afi][safi];
 
@@ -1339,47 +1478,65 @@ static enum filter_type bgp_output_filter(struct peer *peer,
 	if (DISTRIBUTE_OUT_NAME(filter)) {
 		FILTER_EXIST_WARN(DISTRIBUTE, distribute, filter);
 
-		if (access_list_apply(DISTRIBUTE_OUT(filter), p) == FILTER_DENY)
-			return FILTER_DENY;
+		if (access_list_apply(DISTRIBUTE_OUT(filter), p)
+		    == FILTER_DENY) {
+			ret = FILTER_DENY;
+			goto done;
+		}
 	}
 
 	if (PREFIX_LIST_OUT_NAME(filter)) {
 		FILTER_EXIST_WARN(PREFIX_LIST, prefix, filter);
 
 		if (prefix_list_apply(PREFIX_LIST_OUT(filter), p)
-		    == PREFIX_DENY)
-			return FILTER_DENY;
+		    == PREFIX_DENY) {
+			ret = FILTER_DENY;
+			goto done;
+		}
 	}
 
 	if (FILTER_LIST_OUT_NAME(filter)) {
 		FILTER_EXIST_WARN(FILTER_LIST, as, filter);
 
 		if (as_list_apply(FILTER_LIST_OUT(filter), attr->aspath)
-		    == AS_FILTER_DENY)
-			return FILTER_DENY;
+		    == AS_FILTER_DENY) {
+			ret = FILTER_DENY;
+			goto done;
+		}
 	}
 
-	return FILTER_PERMIT;
+	if (frrtrace_enabled(frr_bgp, output_filter)) {
+		char pfxprint[PREFIX2STR_BUFFER];
+
+		prefix2str(p, pfxprint, sizeof(pfxprint));
+		frrtrace(5, frr_bgp, output_filter, peer, pfxprint, afi, safi,
+			 ret == FILTER_PERMIT ? "permit" : "deny");
+	}
+
+done:
+	return ret;
 #undef FILTER_EXIST_WARN
 }
 
 /* If community attribute includes no_export then return 1. */
 static bool bgp_community_filter(struct peer *peer, struct attr *attr)
 {
-	if (attr->community) {
+	if (bgp_attr_get_community(attr)) {
 		/* NO_ADVERTISE check. */
-		if (community_include(attr->community, COMMUNITY_NO_ADVERTISE))
+		if (community_include(bgp_attr_get_community(attr),
+				      COMMUNITY_NO_ADVERTISE))
 			return true;
 
 		/* NO_EXPORT check. */
-		if (peer->sort == BGP_PEER_EBGP
-		    && community_include(attr->community, COMMUNITY_NO_EXPORT))
+		if (peer->sort == BGP_PEER_EBGP &&
+		    community_include(bgp_attr_get_community(attr),
+				      COMMUNITY_NO_EXPORT))
 			return true;
 
 		/* NO_EXPORT_SUBCONFED check. */
 		if (peer->sort == BGP_PEER_EBGP
 		    || peer->sort == BGP_PEER_CONFED)
-			if (community_include(attr->community,
+			if (community_include(bgp_attr_get_community(attr),
 					      COMMUNITY_NO_EXPORT_SUBCONFED))
 				return true;
 	}
@@ -1390,14 +1547,15 @@ static bool bgp_community_filter(struct peer *peer, struct attr *attr)
 static bool bgp_cluster_filter(struct peer *peer, struct attr *attr)
 {
 	struct in_addr cluster_id;
+	struct cluster_list *cluster = bgp_attr_get_cluster(attr);
 
-	if (attr->cluster) {
+	if (cluster) {
 		if (peer->bgp->config & BGP_CONFIG_CLUSTER_ID)
 			cluster_id = peer->bgp->cluster_id;
 		else
 			cluster_id = peer->bgp->router_id;
 
-		if (cluster_loop_check(attr->cluster, cluster_id))
+		if (cluster_loop_check(cluster, cluster_id))
 			return true;
 	}
 	return false;
@@ -1436,8 +1594,8 @@ static int bgp_input_modifier(struct peer *peer, const struct prefix *p,
 
 	/* Route map apply. */
 	if (rmap) {
-		memset(&rmap_path, 0, sizeof(struct bgp_path_info));
-		/* Duplicate current value to new strucutre for modification. */
+		memset(&rmap_path, 0, sizeof(rmap_path));
+		/* Duplicate current value to new structure for modification. */
 		rmap_path.peer = peer;
 		rmap_path.attr = attr;
 		rmap_path.extra = &extra;
@@ -1451,7 +1609,7 @@ static int bgp_input_modifier(struct peer *peer, const struct prefix *p,
 		SET_FLAG(peer->rmap_type, PEER_RMAP_TYPE_IN);
 
 		/* Apply BGP route map to the attribute. */
-		ret = route_map_apply(rmap, p, RMAP_BGP, &rmap_path);
+		ret = route_map_apply(rmap, p, &rmap_path);
 
 		peer->rmap_type = 0;
 
@@ -1492,9 +1650,9 @@ static int bgp_output_modifier(struct peer *peer, const struct prefix *p,
 	if (rmap == NULL)
 		return RMAP_DENY;
 
-	memset(&rmap_path, 0, sizeof(struct bgp_path_info));
+	memset(&rmap_path, 0, sizeof(rmap_path));
 	/* Route map apply. */
-	/* Duplicate current value to new strucutre for modification. */
+	/* Duplicate current value to new structure for modification. */
 	rmap_path.peer = peer;
 	rmap_path.attr = attr;
 
@@ -1502,7 +1660,7 @@ static int bgp_output_modifier(struct peer *peer, const struct prefix *p,
 	SET_FLAG(peer->rmap_type, PEER_RMAP_TYPE_OUT);
 
 	/* Apply BGP route map to the attribute. */
-	ret = route_map_apply(rmap, p, RMAP_BGP, &rmap_path);
+	ret = route_map_apply(rmap, p, &rmap_path);
 
 	peer->rmap_type = rmap_type;
 
@@ -1539,13 +1697,11 @@ static void bgp_peer_remove_private_as(struct bgp *bgp, afi_t afi, safi_t safi,
 				attr->aspath = aspath_replace_private_asns(
 					attr->aspath, bgp->as, peer->as);
 
-			// The entire aspath consists of private ASNs so create
-			// an empty aspath
-			else if (aspath_private_as_check(attr->aspath))
-				attr->aspath = aspath_empty_get();
-
-			// There are some public and some private ASNs, remove
-			// the private ASNs
+			/*
+			 * Even if the aspath consists of just private ASNs we
+			 * need to walk the AS-Path to maintain all instances
+			 * of the peer's ASN to break possible loops.
+			 */
 			else
 				attr->aspath = aspath_remove_private_asns(
 					attr->aspath, peer->as);
@@ -1561,7 +1717,12 @@ static void bgp_peer_remove_private_as(struct bgp *bgp, afi_t afi, safi_t safi,
 				attr->aspath = aspath_replace_private_asns(
 					attr->aspath, bgp->as, peer->as);
 			else
-				attr->aspath = aspath_empty_get();
+				/*
+				 * Walk the aspath to retain any instances of
+				 * the peer_asn
+				 */
+				attr->aspath = aspath_remove_private_asns(
+					attr->aspath, peer->as);
 		}
 	}
 }
@@ -1578,6 +1739,35 @@ static void bgp_peer_as_override(struct bgp *bgp, afi_t afi, safi_t safi,
 	}
 }
 
+void bgp_attr_add_llgr_community(struct attr *attr)
+{
+	struct community *old;
+	struct community *new;
+	struct community *merge;
+	struct community *llgr;
+
+	old = bgp_attr_get_community(attr);
+	llgr = community_str2com("llgr-stale");
+
+	assert(llgr);
+
+	if (old) {
+		merge = community_merge(community_dup(old), llgr);
+
+		if (old->refcnt == 0)
+			community_free(&old);
+
+		new = community_uniq_sort(merge);
+		community_free(&merge);
+	} else {
+		new = community_dup(llgr);
+	}
+
+	community_free(&llgr);
+
+	bgp_attr_set_community(attr, new);
+}
+
 void bgp_attr_add_gshut_community(struct attr *attr)
 {
 	struct community *old;
@@ -1585,7 +1775,7 @@ void bgp_attr_add_gshut_community(struct attr *attr)
 	struct community *merge;
 	struct community *gshut;
 
-	old = attr->community;
+	old = bgp_attr_get_community(attr);
 	gshut = community_str2com("graceful-shutdown");
 
 	assert(gshut);
@@ -1603,13 +1793,30 @@ void bgp_attr_add_gshut_community(struct attr *attr)
 	}
 
 	community_free(&gshut);
-	attr->community = new;
-	attr->flag |= ATTR_FLAG_BIT(BGP_ATTR_COMMUNITIES);
+	bgp_attr_set_community(attr, new);
 
 	/* When we add the graceful-shutdown community we must also
 	 * lower the local-preference */
 	attr->flag |= ATTR_FLAG_BIT(BGP_ATTR_LOCAL_PREF);
 	attr->local_pref = BGP_GSHUT_LOCAL_PREF;
+}
+
+
+/* Notify BGP Conditional advertisement scanner process. */
+void bgp_notify_conditional_adv_scanner(struct update_subgroup *subgrp)
+{
+	struct peer *peer = SUBGRP_PEER(subgrp);
+	afi_t afi = SUBGRP_AFI(subgrp);
+	safi_t safi = SUBGRP_SAFI(subgrp);
+	struct bgp_filter *filter = &peer->filter[afi][safi];
+
+	if (!ADVERTISE_MAP_NAME(filter))
+		return;
+
+	if (!CHECK_FLAG(peer->flags, PEER_FLAG_CONFIG_NODE))
+		return;
+
+	peer->advmap_table_change = true;
 }
 
 
@@ -1627,7 +1834,8 @@ void subgroup_announce_reset_nhop(uint8_t family, struct attr *attr)
 
 bool subgroup_announce_check(struct bgp_dest *dest, struct bgp_path_info *pi,
 			     struct update_subgroup *subgrp,
-			     const struct prefix *p, struct attr *attr)
+			     const struct prefix *p, struct attr *attr,
+			     struct attr *post_attr)
 {
 	struct bgp_filter *filter;
 	struct peer *from;
@@ -1635,7 +1843,6 @@ bool subgroup_announce_check(struct bgp_dest *dest, struct bgp_path_info *pi,
 	struct peer *onlypeer;
 	struct bgp *bgp;
 	struct attr *piattr;
-	char buf[PREFIX_STRLEN];
 	route_map_result_t ret;
 	int transparent;
 	int reflect;
@@ -1661,6 +1868,17 @@ bool subgroup_announce_check(struct bgp_dest *dest, struct bgp_path_info *pi,
 	piattr = bgp_path_info_mpath_count(pi) ? bgp_path_info_mpath_attr(pi)
 					       : pi->attr;
 
+	if (CHECK_FLAG(peer->af_flags[afi][safi], PEER_FLAG_MAX_PREFIX_OUT) &&
+	    peer->pmax_out[afi][safi] != 0 &&
+	    subgrp->pscount >= peer->pmax_out[afi][safi]) {
+		if (BGP_DEBUG(update, UPDATE_OUT) ||
+		    BGP_DEBUG(update, UPDATE_PREFIX)) {
+			zlog_debug("%s reached maximum prefix to be send (%u)",
+				   peer->host, peer->pmax_out[afi][safi]);
+		}
+		return false;
+	}
+
 #ifdef ENABLE_BGP_VNC
 	if (((afi == AFI_IP) || (afi == AFI_IP6)) && (safi == SAFI_MPLS_VPN)
 	    && ((pi->type == ZEBRA_ROUTE_BGP_DIRECT)
@@ -1671,9 +1889,8 @@ bool subgroup_announce_check(struct bgp_dest *dest, struct bgp_path_info *pi,
 		 * though they can have peer pointers that reference other
 		 * systems
 		 */
-		prefix2str(p, buf, PREFIX_STRLEN);
-		zlog_debug("%s: pfx %s bgp_direct->vpn route peer safe",
-			   __func__, buf);
+		zlog_debug("%s: pfx %pFX bgp_direct->vpn route peer safe",
+			   __func__, p);
 		samepeer_safe = 1;
 	}
 #endif
@@ -1706,10 +1923,8 @@ bool subgroup_announce_check(struct bgp_dest *dest, struct bgp_path_info *pi,
 	}
 
 	/* Aggregate-address suppress check. */
-	if (pi->extra && pi->extra->suppress)
-		if (!UNSUPPRESS_MAP_NAME(filter)) {
-			return false;
-		}
+	if (bgp_path_suppressed(pi) && !UNSUPPRESS_MAP_NAME(filter))
+		return false;
 
 	/*
 	 * If we are doing VRF 2 VRF leaking via the import
@@ -1726,11 +1941,10 @@ bool subgroup_announce_check(struct bgp_dest *dest, struct bgp_path_info *pi,
 		mpls_label_t label = bgp_adv_label(dest, pi, peer, afi, safi);
 		if (!bgp_is_valid_label(&label)) {
 			if (bgp_debug_update(NULL, p, subgrp->update_group, 0))
-				zlog_debug("u%" PRIu64 ":s%" PRIu64" %s/%d is filtered - no label (%p)",
+				zlog_debug("u%" PRIu64 ":s%" PRIu64
+					   " %pFX is filtered - no label (%p)",
 					   subgrp->update_group->id, subgrp->id,
-					   inet_ntop(p->family, &p->u.prefix,
-						     buf, SU_ADDRSTRLEN),
-					   p->prefixlen, &label);
+					   p, &label);
 			return false;
 		}
 	}
@@ -1760,8 +1974,8 @@ bool subgroup_announce_check(struct bgp_dest *dest, struct bgp_path_info *pi,
 	/* If community is not disabled check the no-export and local. */
 	if (!transparent && bgp_community_filter(peer, piattr)) {
 		if (bgp_debug_update(NULL, p, subgrp->update_group, 0))
-			zlog_debug(
-				"subgrpannouncecheck: community filter check fail");
+			zlog_debug("%s: community filter check fail for %pFX",
+				   __func__, p);
 		return false;
 	}
 
@@ -1771,9 +1985,8 @@ bool subgroup_announce_check(struct bgp_dest *dest, struct bgp_path_info *pi,
 	    && (IPV4_ADDR_SAME(&onlypeer->remote_id, &piattr->originator_id))) {
 		if (bgp_debug_update(NULL, p, subgrp->update_group, 0))
 			zlog_debug(
-				"%s [Update:SEND] %s originator-id is same as remote router-id",
-				onlypeer->host,
-				prefix2str(p, buf, sizeof(buf)));
+				"%s [Update:SEND] %pFX originator-id is same as remote router-id",
+				onlypeer->host, p);
 		return false;
 	}
 
@@ -1788,10 +2001,8 @@ bool subgroup_announce_check(struct bgp_dest *dest, struct bgp_path_info *pi,
 				if (bgp_debug_update(NULL, p,
 						     subgrp->update_group, 0))
 					zlog_debug(
-						"%s [Update:SEND] %s is filtered via ORF",
-						peer->host,
-						prefix2str(p, buf,
-							   sizeof(buf)));
+						"%s [Update:SEND] %pFX is filtered via ORF",
+						peer->host, p);
 				return false;
 			}
 		}
@@ -1799,8 +2010,8 @@ bool subgroup_announce_check(struct bgp_dest *dest, struct bgp_path_info *pi,
 	/* Output filter check. */
 	if (bgp_output_filter(peer, p, piattr, afi, safi) == FILTER_DENY) {
 		if (bgp_debug_update(NULL, p, subgrp->update_group, 0))
-			zlog_debug("%s [Update:SEND] %s is filtered",
-				   peer->host, prefix2str(p, buf, sizeof(buf)));
+			zlog_debug("%s [Update:SEND] %pFX is filtered",
+				   peer->host, p);
 		return false;
 	}
 
@@ -1855,8 +2066,16 @@ bool subgroup_announce_check(struct bgp_dest *dest, struct bgp_path_info *pi,
 		}
 	}
 
-	/* For modify attribute, copy it to temporary structure. */
-	*attr = *piattr;
+	/* For modify attribute, copy it to temporary structure.
+	 * post_attr comes from BGP conditional advertisements, where
+	 * attributes are already processed by advertise-map route-map,
+	 * and this needs to be saved instead of overwriting from the
+	 * path attributes.
+	 */
+	if (post_attr)
+		*attr = *post_attr;
+	else
+		*attr = *piattr;
 
 	/* If local-preference is not set. */
 	if ((peer->sort == BGP_PEER_IBGP || peer->sort == BGP_PEER_CONFED)
@@ -1927,7 +2146,7 @@ bool subgroup_announce_check(struct bgp_dest *dest, struct bgp_path_info *pi,
 		if ((CHECK_FLAG(peer->af_flags[afi][safi],
 				PEER_FLAG_NEXTHOP_LOCAL_UNCHANGED)
 		     && IN6_IS_ADDR_LINKLOCAL(&attr->mp_nexthop_local))
-		    || (!reflect
+		    || (!reflect && !transparent
 			&& IN6_IS_ADDR_LINKLOCAL(&peer->nexthop.v6_local)
 			&& peer->shared_network
 			&& (from == bgp->peer_self
@@ -1949,8 +2168,35 @@ bool subgroup_announce_check(struct bgp_dest *dest, struct bgp_path_info *pi,
 	bgp_peer_remove_private_as(bgp, afi, safi, peer, attr);
 	bgp_peer_as_override(bgp, afi, safi, peer, attr);
 
+	if (filter->advmap.update_type == UPDATE_TYPE_WITHDRAW &&
+	    filter->advmap.aname &&
+	    route_map_lookup_by_name(filter->advmap.aname)) {
+		struct bgp_path_info rmap_path = {0};
+		struct bgp_path_info_extra dummy_rmap_path_extra = {0};
+		struct attr dummy_attr = *attr;
+
+		/* Fill temp path_info */
+		prep_for_rmap_apply(&rmap_path, &dummy_rmap_path_extra, dest,
+				    pi, peer, &dummy_attr);
+
+		struct route_map *amap =
+			route_map_lookup_by_name(filter->advmap.aname);
+
+		ret = route_map_apply(amap, p, &rmap_path);
+
+		bgp_attr_flush(&dummy_attr);
+
+		/*
+		 * The conditional advertisement mode is Withdraw and this
+		 * prefix is a conditional prefix. Don't advertise it
+		 */
+		if (ret == RMAP_PERMITMATCH)
+			return false;
+	}
+
 	/* Route map & unsuppress-map apply. */
-	if (ROUTE_MAP_OUT_NAME(filter) || (pi->extra && pi->extra->suppress)) {
+	if (!post_attr &&
+	    (ROUTE_MAP_OUT_NAME(filter) || bgp_path_suppressed(pi))) {
 		struct bgp_path_info rmap_path = {0};
 		struct bgp_path_info_extra dummy_rmap_path_extra = {0};
 		struct attr dummy_attr = {0};
@@ -1975,21 +2221,23 @@ bool subgroup_announce_check(struct bgp_dest *dest, struct bgp_path_info *pi,
 
 		SET_FLAG(peer->rmap_type, PEER_RMAP_TYPE_OUT);
 
-		if (pi->extra && pi->extra->suppress)
+		if (bgp_path_suppressed(pi))
 			ret = route_map_apply(UNSUPPRESS_MAP(filter), p,
-					      RMAP_BGP, &rmap_path);
+					      &rmap_path);
 		else
 			ret = route_map_apply(ROUTE_MAP_OUT(filter), p,
-					      RMAP_BGP, &rmap_path);
+					      &rmap_path);
 
+		bgp_attr_flush(&dummy_attr);
 		peer->rmap_type = 0;
 
 		if (ret == RMAP_DENYMATCH) {
 			if (bgp_debug_update(NULL, p, subgrp->update_group, 0))
-				zlog_debug("%s [Update:SEND] %s is filtered by route-map",
-				peer->host, prefix2str(p, buf, sizeof(buf)));
-
-			bgp_attr_flush(attr);
+				zlog_debug(
+					"%s [Update:SEND] %pFX is filtered by route-map '%s'",
+					peer->host, p,
+					ROUTE_MAP_OUT_NAME(filter));
+			bgp_attr_flush(rmap_path.attr);
 			return false;
 		}
 	}
@@ -2004,8 +2252,16 @@ bool subgroup_announce_check(struct bgp_dest *dest, struct bgp_path_info *pi,
 	 * implementations.
 	 */
 	if (CHECK_FLAG(bgp->flags, BGP_FLAG_EBGP_REQUIRES_POLICY))
-		if (!bgp_outbound_policy_exists(peer, filter))
+		if (!bgp_outbound_policy_exists(peer, filter)) {
+			if (monotime_since(&bgp->ebgprequirespolicywarning,
+					   NULL) > FIFTEENMINUTE2USEC ||
+			    bgp->ebgprequirespolicywarning.tv_sec == 0) {
+				zlog_warn(
+					"EBGP inbound/outbound policy not properly setup, please configure in order for your peering to work correctly");
+				monotime(&bgp->ebgprequirespolicywarning);
+			}
 			return false;
+		}
 
 	/* draft-ietf-idr-deprecate-as-set-confed-set
 	 * Filter routes having AS_SET or AS_CONFED_SET in the path.
@@ -2021,7 +2277,7 @@ bool subgroup_announce_check(struct bgp_dest *dest, struct bgp_path_info *pi,
 	if (aspath_check_as_zero(attr->aspath))
 		return false;
 
-	if (CHECK_FLAG(bgp->flags, BGP_FLAG_GRACEFUL_SHUTDOWN)) {
+	if (bgp_in_graceful_shutdown(bgp)) {
 		if (peer->sort == BGP_PEER_IBGP
 		    || peer->sort == BGP_PEER_CONFED) {
 			attr->flag |= ATTR_FLAG_BIT(BGP_ATTR_LOCAL_PREF);
@@ -2030,6 +2286,21 @@ bool subgroup_announce_check(struct bgp_dest *dest, struct bgp_path_info *pi,
 			bgp_attr_add_gshut_community(attr);
 		}
 	}
+
+	/* A BGP speaker that has advertised the "Long-lived Graceful Restart
+	 * Capability" to a neighbor MUST perform the following upon receiving
+	 * a route from that neighbor with the "LLGR_STALE" community, or upon
+	 * attaching the "LLGR_STALE" community itself per Section 4.2:
+	 *
+	 * The route SHOULD NOT be advertised to any neighbor from which the
+	 * Long-lived Graceful Restart Capability has not been received.
+	 */
+	if (bgp_attr_get_community(attr) &&
+	    community_include(bgp_attr_get_community(attr),
+			      COMMUNITY_LLGR_STALE) &&
+	    !CHECK_FLAG(peer->cap, PEER_CAP_LLGR_RCV) &&
+	    !CHECK_FLAG(peer->cap, PEER_CAP_LLGR_ADV))
+		return false;
 
 	/* After route-map has been applied, we check to see if the nexthop to
 	 * be carried in the attribute (that is used for the announcement) can
@@ -2146,13 +2417,18 @@ bool subgroup_announce_check(struct bgp_dest *dest, struct bgp_path_info *pi,
 	    bgp_path_info_mpath_chkwtd(bgp, pi) &&
 	    (cum_bw = bgp_path_info_mpath_cumbw(pi)) != 0 &&
 	    !CHECK_FLAG(attr->rmap_change_flags, BATTR_RMAP_LINK_BW_SET))
-		attr->ecommunity = ecommunity_replace_linkbw(
-					bgp->as, attr->ecommunity, cum_bw);
+		bgp_attr_set_ecommunity(
+			attr,
+			ecommunity_replace_linkbw(
+				bgp->as, bgp_attr_get_ecommunity(attr), cum_bw,
+				CHECK_FLAG(
+					peer->flags,
+					PEER_FLAG_DISABLE_LINK_BW_ENCODING_IEEE)));
 
 	return true;
 }
 
-static int bgp_route_select_timer_expire(struct thread *thread)
+static void bgp_route_select_timer_expire(struct thread *thread)
 {
 	struct afi_safi_info *info;
 	afi_t afi;
@@ -2173,7 +2449,7 @@ static int bgp_route_select_timer_expire(struct thread *thread)
 	XFREE(MTYPE_TMP, info);
 
 	/* Best path selection */
-	return bgp_best_path_select_defer(bgp, afi, safi);
+	bgp_best_path_select_defer(bgp, afi, safi);
 }
 
 void bgp_best_selection(struct bgp *bgp, struct bgp_dest *dest,
@@ -2219,7 +2495,7 @@ void bgp_best_selection(struct bgp *bgp, struct bgp_dest *dest,
 			if (BGP_PATH_HOLDDOWN(pi1))
 				continue;
 			if (pi1->peer != bgp->peer_self)
-				if (pi1->peer->status != Established)
+				if (!peer_established(pi1->peer))
 					continue;
 
 			new_select = pi1;
@@ -2267,11 +2543,12 @@ void bgp_best_selection(struct bgp *bgp, struct bgp_dest *dest,
 
 			if (debug) {
 				bgp_path_info_path_with_addpath_rx_str(
-					new_select, path_buf);
-				zlog_debug("%s: %s is the bestpath from AS %u",
-					   pfx_buf, path_buf,
-					   aspath_get_first_as(
-						   new_select->attr->aspath));
+					new_select, path_buf, sizeof(path_buf));
+				zlog_debug(
+					"%pBD(%s): %s is the bestpath from AS %u",
+					dest, bgp->name_pretty, path_buf,
+					aspath_get_first_as(
+						new_select->attr->aspath));
 			}
 		}
 	}
@@ -2303,7 +2580,7 @@ void bgp_best_selection(struct bgp *bgp, struct bgp_dest *dest,
 
 		if (pi->peer && pi->peer != bgp->peer_self
 		    && !CHECK_FLAG(pi->peer->sflags, PEER_STATUS_NSF_WAIT))
-			if (pi->peer->status != Established) {
+			if (!peer_established(pi->peer)) {
 
 				if (debug)
 					zlog_debug(
@@ -2340,13 +2617,13 @@ void bgp_best_selection(struct bgp *bgp, struct bgp_dest *dest,
 	 */
 	if (debug) {
 		if (new_select)
-			bgp_path_info_path_with_addpath_rx_str(new_select,
-							       path_buf);
+			bgp_path_info_path_with_addpath_rx_str(
+				new_select, path_buf, sizeof(path_buf));
 		else
 			snprintf(path_buf, sizeof(path_buf), "NONE");
 		zlog_debug(
-			"%s: After path selection, newbest is %s oldbest was %s",
-			pfx_buf, path_buf,
+			"%pBD(%s): After path selection, newbest is %s oldbest was %s",
+			dest, bgp->name_pretty, path_buf,
 			old_select ? old_select->peer->host : "NONE");
 	}
 
@@ -2356,13 +2633,14 @@ void bgp_best_selection(struct bgp *bgp, struct bgp_dest *dest,
 
 			if (debug)
 				bgp_path_info_path_with_addpath_rx_str(
-					pi, path_buf);
+					pi, path_buf, sizeof(path_buf));
 
 			if (pi == new_select) {
 				if (debug)
 					zlog_debug(
-						"%s: %s is the bestpath, add to the multipath list",
-						pfx_buf, path_buf);
+						"%pBD(%s): %s is the bestpath, add to the multipath list",
+						dest, bgp->name_pretty,
+						path_buf);
 				bgp_mp_list_add(&mp_list, pi);
 				continue;
 			}
@@ -2373,14 +2651,14 @@ void bgp_best_selection(struct bgp *bgp, struct bgp_dest *dest,
 			if (pi->peer && pi->peer != bgp->peer_self
 			    && !CHECK_FLAG(pi->peer->sflags,
 					   PEER_STATUS_NSF_WAIT))
-				if (pi->peer->status != Established)
+				if (!peer_established(pi->peer))
 					continue;
 
 			if (!bgp_path_info_nexthop_cmp(pi, new_select)) {
 				if (debug)
 					zlog_debug(
-						"%s: %s has the same nexthop as the bestpath, skip it",
-						pfx_buf, path_buf);
+						"%pBD: %s has the same nexthop as the bestpath, skip it",
+						dest, path_buf);
 				continue;
 			}
 
@@ -2391,14 +2669,14 @@ void bgp_best_selection(struct bgp *bgp, struct bgp_dest *dest,
 			if (paths_eq) {
 				if (debug)
 					zlog_debug(
-						"%s: %s is equivalent to the bestpath, add to the multipath list",
-						pfx_buf, path_buf);
+						"%pBD: %s is equivalent to the bestpath, add to the multipath list",
+						dest, path_buf);
 				bgp_mp_list_add(&mp_list, pi);
 			}
 		}
 	}
 
-	bgp_path_info_mpath_update(dest, new_select, old_select, &mp_list,
+	bgp_path_info_mpath_update(bgp, dest, new_select, old_select, &mp_list,
 				   mpath_cfg);
 	bgp_path_info_mpath_aggregate_update(new_select, old_select);
 	bgp_mp_list_clear(&mp_list);
@@ -2425,34 +2703,49 @@ void subgroup_process_announce_selected(struct update_subgroup *subgrp,
 	struct attr attr;
 	afi_t afi;
 	safi_t safi;
+	struct bgp *bgp;
+	bool advertise;
 
 	p = bgp_dest_get_prefix(dest);
 	afi = SUBGRP_AFI(subgrp);
 	safi = SUBGRP_SAFI(subgrp);
+	bgp = SUBGRP_INST(subgrp);
 	onlypeer = ((SUBGRP_PCOUNT(subgrp) == 1) ? (SUBGRP_PFIRST(subgrp))->peer
 						 : NULL);
 
-	if (BGP_DEBUG(update, UPDATE_OUT)) {
-		char buf_prefix[PREFIX_STRLEN];
-		prefix2str(p, buf_prefix, sizeof(buf_prefix));
-		zlog_debug("%s: p=%s, selected=%p", __func__, buf_prefix,
-			   selected);
-	}
+	if (BGP_DEBUG(update, UPDATE_OUT))
+		zlog_debug("%s: p=%pFX, selected=%p", __func__, p, selected);
 
 	/* First update is deferred until ORF or ROUTE-REFRESH is received */
 	if (onlypeer && CHECK_FLAG(onlypeer->af_sflags[afi][safi],
 				   PEER_STATUS_ORF_WAIT_REFRESH))
 		return;
 
-	memset(&attr, 0, sizeof(struct attr));
+	memset(&attr, 0, sizeof(attr));
 	/* It's initialized in bgp_announce_check() */
 
-	/* Announcement to the subgroup.  If the route is filtered withdraw it.
+	/* Announcement to the subgroup. If the route is filtered withdraw it.
+	 * If BGP_NODE_FIB_INSTALL_PENDING is set and data plane install status
+	 * is pending (BGP_NODE_FIB_INSTALL_PENDING), do not advertise the
+	 * route
 	 */
+	advertise = bgp_check_advertise(bgp, dest);
+
 	if (selected) {
-		if (subgroup_announce_check(dest, selected, subgrp, p, &attr))
-			bgp_adj_out_set_subgroup(dest, subgrp, &attr, selected);
-		else
+		if (subgroup_announce_check(dest, selected, subgrp, p, &attr,
+					    NULL)) {
+			/* Route is selected, if the route is already installed
+			 * in FIB, then it is advertised
+			 */
+			if (advertise) {
+				if (!bgp_check_withdrawal(bgp, dest))
+					bgp_adj_out_set_subgroup(
+						dest, subgrp, &attr, selected);
+				else
+					bgp_adj_out_unset_subgroup(
+						dest, subgrp, 1, addpath_tx_id);
+			}
+		} else
 			bgp_adj_out_unset_subgroup(dest, subgrp, 1,
 						   addpath_tx_id);
 	}
@@ -2551,7 +2844,7 @@ static void bgp_process_evpn_route_injection(struct bgp *bgp, afi_t afi,
 			RESET_FLAG(dummy_attr.rmap_change_flags);
 
 			ret = route_map_apply(bgp->adv_cmd_rmap[afi][safi].map,
-					      p, RMAP_BGP, &rmap_path);
+					      p, &rmap_path);
 
 			if (ret == RMAP_DENYMATCH) {
 				bgp_attr_flush(&dummy_attr);
@@ -2567,6 +2860,28 @@ static void bgp_process_evpn_route_injection(struct bgp *bgp, afi_t afi,
 	} else if (advertise_type5_routes(bgp, afi) && old_select
 		   && is_route_injectable_into_evpn(old_select))
 		bgp_evpn_withdraw_type5_route(bgp, p, afi, safi);
+}
+
+/*
+ * Utility to determine whether a particular path_info should use
+ * the IMPLICIT_NULL label. This is pretty specialized: it's only called
+ * in a path where we basically _know_ this is a BGP-LU route.
+ */
+static bool bgp_lu_need_imp_null(const struct bgp_path_info *new_select)
+{
+	/* Certain types get imp null; so do paths where the nexthop is
+	 * not labeled.
+	 */
+	if (new_select->sub_type == BGP_ROUTE_STATIC
+	    || new_select->sub_type == BGP_ROUTE_AGGREGATE
+	    || new_select->sub_type == BGP_ROUTE_REDISTRIBUTE)
+		return true;
+	else if (new_select->extra == NULL ||
+		 !bgp_is_valid_label(&new_select->extra->label[0]))
+		/* TODO -- should be configurable? */
+		return true;
+	else
+		return false;
 }
 
 /*
@@ -2601,14 +2916,14 @@ static void bgp_process_main_one(struct bgp *bgp, struct bgp_dest *dest,
 			debug = bgp_debug_bestpath(dest);
 		if (debug)
 			zlog_debug(
-				"%s: bgp delete in progress, ignoring event, p=%pRN",
+				"%s: bgp delete in progress, ignoring event, p=%pBD",
 				__func__, dest);
 		return;
 	}
 	/* Is it end of initial update? (after startup) */
 	if (!dest) {
-		quagga_timestamp(3, bgp->update_delay_zebra_resume_time,
-				 sizeof(bgp->update_delay_zebra_resume_time));
+		frr_timestamp(3, bgp->update_delay_zebra_resume_time,
+			      sizeof(bgp->update_delay_zebra_resume_time));
 
 		bgp->main_zebra_update_hold = 0;
 		FOREACH_AFI_SAFI (afi, safi) {
@@ -2625,8 +2940,9 @@ static void bgp_process_main_one(struct bgp *bgp, struct bgp_dest *dest,
 
 	debug = bgp_debug_bestpath(dest);
 	if (debug)
-		zlog_debug("%s: p=%pRN afi=%s, safi=%s start", __func__, dest,
-			   afi2str(afi), safi2str(safi));
+		zlog_debug("%s: p=%pBDi(%s) afi=%s, safi=%s start", __func__,
+			   dest, bgp->name_pretty, afi2str(afi),
+			   safi2str(safi));
 
 	/* The best path calculation for the route is deferred if
 	 * BGP_NODE_SELECT_DEFER is set
@@ -2660,14 +2976,13 @@ static void bgp_process_main_one(struct bgp *bgp, struct bgp_dest *dest,
 				 * implicit-null for local routes, aggregate
 				 * and redistributed routes
 				 */
-				if (new_select->sub_type == BGP_ROUTE_STATIC
-				    || new_select->sub_type
-						== BGP_ROUTE_AGGREGATE
-				    || new_select->sub_type
-						== BGP_ROUTE_REDISTRIBUTE) {
+				if (bgp_lu_need_imp_null(new_select)) {
 					if (CHECK_FLAG(
 						    dest->flags,
-						    BGP_NODE_REGISTERED_FOR_LABEL))
+						    BGP_NODE_REGISTERED_FOR_LABEL)
+					    || CHECK_FLAG(
+						    dest->flags,
+						    BGP_NODE_LABEL_REQUESTED))
 						bgp_unregister_for_label(dest);
 					label_ntop(MPLS_LABEL_IMPLICIT_NULL, 1,
 						   &dest->local_label);
@@ -2677,18 +2992,21 @@ static void bgp_process_main_one(struct bgp *bgp, struct bgp_dest *dest,
 							       new_select);
 			}
 		} else if (CHECK_FLAG(dest->flags,
-				      BGP_NODE_REGISTERED_FOR_LABEL)) {
+				      BGP_NODE_REGISTERED_FOR_LABEL)
+			   || CHECK_FLAG(dest->flags,
+					 BGP_NODE_LABEL_REQUESTED)) {
 			bgp_unregister_for_label(dest);
 		}
-	} else if (CHECK_FLAG(dest->flags, BGP_NODE_REGISTERED_FOR_LABEL)) {
+	} else if (CHECK_FLAG(dest->flags, BGP_NODE_REGISTERED_FOR_LABEL)
+		   || CHECK_FLAG(dest->flags, BGP_NODE_LABEL_REQUESTED)) {
 		bgp_unregister_for_label(dest);
 	}
 
 	if (debug)
 		zlog_debug(
-			"%s: p=%pRN afi=%s, safi=%s, old_select=%p, new_select=%p",
-			__func__, dest, afi2str(afi), safi2str(safi),
-			old_select, new_select);
+			"%s: p=%pBD(%s) afi=%s, safi=%s, old_select=%p, new_select=%p",
+			__func__, dest, bgp->name_pretty, afi2str(afi),
+			safi2str(safi), old_select, new_select);
 
 	/* If best route remains the same and this is not due to user-initiated
 	 * clear, see exactly what needs to be done.
@@ -2704,6 +3022,11 @@ static void bgp_process_main_one(struct bgp *bgp, struct bgp_dest *dest,
 #endif
 			if (bgp_fibupd_safi(safi)
 			    && !bgp_option_check(BGP_OPT_NO_FIB)) {
+
+				if (BGP_SUPPRESS_FIB_ENABLED(bgp)
+				    && new_select->sub_type == BGP_ROUTE_NORMAL)
+					SET_FLAG(dest->flags,
+						 BGP_NODE_FIB_INSTALL_PENDING);
 
 				if (new_select->type == ZEBRA_ROUTE_BGP
 				    && (new_select->sub_type == BGP_ROUTE_NORMAL
@@ -2804,10 +3127,15 @@ static void bgp_process_main_one(struct bgp *bgp, struct bgp_dest *dest,
 	/* FIB update. */
 	if (bgp_fibupd_safi(safi) && (bgp->inst_type != BGP_INSTANCE_TYPE_VIEW)
 	    && !bgp_option_check(BGP_OPT_NO_FIB)) {
+
 		if (new_select && new_select->type == ZEBRA_ROUTE_BGP
 		    && (new_select->sub_type == BGP_ROUTE_NORMAL
 			|| new_select->sub_type == BGP_ROUTE_AGGREGATE
 			|| new_select->sub_type == BGP_ROUTE_IMPORTED)) {
+
+			if (BGP_SUPPRESS_FIB_ENABLED(bgp))
+				SET_FLAG(dest->flags,
+					 BGP_NODE_FIB_INSTALL_PENDING);
 
 			/* if this is an evpn imported type-5 prefix,
 			 * we need to withdraw the route first to clear
@@ -2849,37 +3177,44 @@ int bgp_best_path_select_defer(struct bgp *bgp, afi_t afi, safi_t safi)
 	struct bgp_dest *dest;
 	int cnt = 0;
 	struct afi_safi_info *thread_info;
-	struct listnode *node = NULL, *nnode = NULL;
 
-	if (bgp->gr_info[afi][safi].t_route_select)
+	if (bgp->gr_info[afi][safi].t_route_select) {
+		struct thread *t = bgp->gr_info[afi][safi].t_route_select;
+
+		thread_info = THREAD_ARG(t);
+		XFREE(MTYPE_TMP, thread_info);
 		BGP_TIMER_OFF(bgp->gr_info[afi][safi].t_route_select);
+	}
 
 	if (BGP_DEBUG(update, UPDATE_OUT)) {
 		zlog_debug("%s: processing route for %s : cnt %d", __func__,
 			   get_afi_safi_str(afi, safi, false),
-			   listcount(bgp->gr_info[afi][safi].route_list));
+			   bgp->gr_info[afi][safi].gr_deferred);
 	}
 
 	/* Process the route list */
-	node = listhead(bgp->gr_info[afi][safi].route_list);
-	while (node) {
-		dest = listgetdata(node);
-		nnode = node->next;
-		list_delete_node(bgp->gr_info[afi][safi].route_list, node);
-		dest->rt_node = NULL;
+	for (dest = bgp_table_top(bgp->rib[afi][safi]);
+	     dest && bgp->gr_info[afi][safi].gr_deferred != 0 &&
+	     cnt < BGP_MAX_BEST_ROUTE_SELECT;
+	     dest = bgp_route_next(dest)) {
+		if (!CHECK_FLAG(dest->flags, BGP_NODE_SELECT_DEFER))
+			continue;
 
-		if (CHECK_FLAG(dest->flags, BGP_NODE_SELECT_DEFER)) {
-			UNSET_FLAG(dest->flags, BGP_NODE_SELECT_DEFER);
-			bgp_process_main_one(bgp, dest, afi, safi);
-			cnt++;
-			if (cnt >= BGP_MAX_BEST_ROUTE_SELECT)
-				break;
-		}
-		node = nnode;
+		UNSET_FLAG(dest->flags, BGP_NODE_SELECT_DEFER);
+		bgp->gr_info[afi][safi].gr_deferred--;
+		bgp_process_main_one(bgp, dest, afi, safi);
+		cnt++;
+	}
+	/* If iteration stopped before the entire table was traversed then the
+	 * node needs to be unlocked.
+	 */
+	if (dest) {
+		bgp_dest_unlock_node(dest);
+		dest = NULL;
 	}
 
 	/* Send EOR message when all routes are processed */
-	if (list_isempty(bgp->gr_info[afi][safi].route_list)) {
+	if (!bgp->gr_info[afi][safi].gr_deferred) {
 		bgp_send_delayed_eor(bgp);
 		/* Send route processing complete message to RIB */
 		bgp_zebra_update(afi, safi, bgp->vrf_id,
@@ -2941,18 +3276,21 @@ static void bgp_processq_del(struct work_queue *wq, void *data)
 	XFREE(MTYPE_BGP_PROCESS_QUEUE, pqnode);
 }
 
-void bgp_process_queue_init(void)
+void bgp_process_queue_init(struct bgp *bgp)
 {
-	if (!bm->process_main_queue)
-		bm->process_main_queue =
-			work_queue_new(bm->master, "process_main_queue");
+	if (!bgp->process_queue) {
+		char name[BUFSIZ];
 
-	bm->process_main_queue->spec.workfunc = &bgp_process_wq;
-	bm->process_main_queue->spec.del_item_data = &bgp_processq_del;
-	bm->process_main_queue->spec.max_retries = 0;
-	bm->process_main_queue->spec.hold = 50;
+		snprintf(name, BUFSIZ, "process_queue %s", bgp->name_pretty);
+		bgp->process_queue = work_queue_new(bm->master, name);
+	}
+
+	bgp->process_queue->spec.workfunc = &bgp_process_wq;
+	bgp->process_queue->spec.del_item_data = &bgp_processq_del;
+	bgp->process_queue->spec.max_retries = 0;
+	bgp->process_queue->spec.hold = 50;
 	/* Use a higher yield value of 50ms for main queue processing */
-	bm->process_main_queue->spec.yield = 50 * 1000L;
+	bgp->process_queue->spec.yield = 50 * 1000L;
 }
 
 static struct bgp_process_queue *bgp_processq_alloc(struct bgp *bgp)
@@ -2972,7 +3310,7 @@ static struct bgp_process_queue *bgp_processq_alloc(struct bgp *bgp)
 void bgp_process(struct bgp *bgp, struct bgp_dest *dest, afi_t afi, safi_t safi)
 {
 #define ARBITRARY_PROCESS_QLEN		10000
-	struct work_queue *wq = bm->process_main_queue;
+	struct work_queue *wq = bgp->process_queue;
 	struct bgp_process_queue *pqnode;
 	int pqnode_reuse = 0;
 
@@ -2987,6 +3325,14 @@ void bgp_process(struct bgp *bgp, struct bgp_dest *dest, afi_t afi, safi_t safi)
 		if (BGP_DEBUG(update, UPDATE_OUT))
 			zlog_debug("BGP_NODE_SELECT_DEFER set for route %p",
 				   dest);
+		return;
+	}
+
+	if (CHECK_FLAG(dest->flags, BGP_NODE_SOFT_RECONFIG)) {
+		if (BGP_DEBUG(update, UPDATE_OUT))
+			zlog_debug(
+				"Soft reconfigure table in progress for route %p",
+				dest);
 		return;
 	}
 
@@ -3029,16 +3375,16 @@ void bgp_add_eoiu_mark(struct bgp *bgp)
 {
 	struct bgp_process_queue *pqnode;
 
-	if (bm->process_main_queue == NULL)
+	if (bgp->process_queue == NULL)
 		return;
 
 	pqnode = bgp_processq_alloc(bgp);
 
 	SET_FLAG(pqnode->flags, BGP_PROCESS_QUEUE_EOIU_MARKER);
-	work_queue_add(bm->process_main_queue, pqnode);
+	work_queue_add(bgp->process_queue, pqnode);
 }
 
-static int bgp_maximum_prefix_restart_timer(struct thread *thread)
+static void bgp_maximum_prefix_restart_timer(struct thread *thread)
 {
 	struct peer *peer;
 
@@ -3052,8 +3398,6 @@ static int bgp_maximum_prefix_restart_timer(struct thread *thread)
 
 	if ((peer_clear(peer, NULL) < 0) && bgp_debug_neighbor_events(peer))
 		zlog_debug("%s: %s peer_clear failed", __func__, peer->host);
-
-	return 0;
 }
 
 static uint32_t bgp_filtered_routes_count(struct peer *peer, afi_t afi,
@@ -3086,7 +3430,7 @@ static uint32_t bgp_filtered_routes_count(struct peer *peer, afi_t afi,
 			if (filtered)
 				count++;
 
-			bgp_attr_undup(&attr, ain->attr);
+			bgp_attr_flush(&attr);
 		}
 	}
 
@@ -3114,8 +3458,8 @@ bool bgp_maximum_prefix_overflow(struct peer *peer, afi_t afi, safi_t safi,
 			return false;
 
 		zlog_info(
-			"%%MAXPFXEXCEED: No. of %s prefix received from %s %u exceed, limit %u",
-			get_afi_safi_str(afi, safi, false), peer->host, pcount,
+			"%%MAXPFXEXCEED: No. of %s prefix received from %pBP %u exceed, limit %u",
+			get_afi_safi_str(afi, safi, false), peer, pcount,
 			peer->pmax[afi][safi]);
 		SET_FLAG(peer->af_sflags[afi][safi], PEER_STATUS_PREFIX_LIMIT);
 
@@ -3154,8 +3498,8 @@ bool bgp_maximum_prefix_overflow(struct peer *peer, afi_t afi, safi_t safi,
 
 			if (bgp_debug_neighbor_events(peer))
 				zlog_debug(
-					"%s Maximum-prefix restart timer started for %d secs",
-					peer->host, peer->v_pmax_restart);
+					"%pBP Maximum-prefix restart timer started for %d secs",
+					peer, peer->v_pmax_restart);
 
 			BGP_TIMER_ON(peer->t_pmax_restart,
 				     bgp_maximum_prefix_restart_timer,
@@ -3175,8 +3519,8 @@ bool bgp_maximum_prefix_overflow(struct peer *peer, afi_t afi, safi_t safi,
 			return false;
 
 		zlog_info(
-			"%%MAXPFX: No. of %s prefix received from %s reaches %u, max %u",
-			get_afi_safi_str(afi, safi, false), peer->host, pcount,
+			"%%MAXPFX: No. of %s prefix received from %pBP reaches %u, max %u",
+			get_afi_safi_str(afi, safi, false), peer, pcount,
 			peer->pmax[afi][safi]);
 		SET_FLAG(peer->af_sflags[afi][safi],
 			 PEER_STATUS_PREFIX_THRESHOLD);
@@ -3213,13 +3557,7 @@ void bgp_rib_remove(struct bgp_dest *dest, struct bgp_path_info *pi,
 			if (CHECK_FLAG(dest->flags, BGP_NODE_SELECT_DEFER)) {
 				UNSET_FLAG(dest->flags, BGP_NODE_SELECT_DEFER);
 				bgp = pi->peer->bgp;
-				if ((dest->rt_node)
-				    && (bgp->gr_info[afi][safi].route_list)) {
-					list_delete_node(bgp->gr_info[afi][safi]
-								 .route_list,
-							 dest->rt_node);
-					dest->rt_node = NULL;
-				}
+				bgp->gr_info[afi][safi].gr_deferred--;
 			}
 		}
 	}
@@ -3293,42 +3631,6 @@ struct bgp_path_info *info_make(int type, int sub_type, unsigned short instance,
 	new->uptime = bgp_clock();
 	new->net = dest;
 	return new;
-}
-
-static void overlay_index_update(struct attr *attr,
-				 union gw_addr *gw_ip)
-{
-	if (!attr)
-		return;
-	if (gw_ip == NULL) {
-		memset(&(attr->evpn_overlay.gw_ip), 0, sizeof(union gw_addr));
-	} else {
-		memcpy(&(attr->evpn_overlay.gw_ip), gw_ip,
-		       sizeof(union gw_addr));
-	}
-}
-
-static bool overlay_index_equal(afi_t afi, struct bgp_path_info *path,
-				union gw_addr *gw_ip)
-{
-	union gw_addr *path_gw_ip, *path_gw_ip_remote;
-	union {
-		esi_t esi;
-		union gw_addr ip;
-	} temp;
-
-	if (afi != AFI_L2VPN)
-		return true;
-
-	path_gw_ip = &(path->attr->evpn_overlay.gw_ip);
-
-	if (gw_ip == NULL) {
-		memset(&temp, 0, sizeof(temp));
-		path_gw_ip_remote = &temp.ip;
-	} else
-		path_gw_ip_remote = gw_ip;
-
-	return !!memcmp(path_gw_ip, path_gw_ip_remote, sizeof(union gw_addr));
 }
 
 /* Check if received nexthop is valid or not. */
@@ -3407,6 +3709,35 @@ bool bgp_update_martian_nexthop(struct bgp *bgp, afi_t afi, safi_t safi,
 	return ret;
 }
 
+static void bgp_attr_add_no_export_community(struct attr *attr)
+{
+	struct community *old;
+	struct community *new;
+	struct community *merge;
+	struct community *no_export;
+
+	old = bgp_attr_get_community(attr);
+	no_export = community_str2com("no-export");
+
+	assert(no_export);
+
+	if (old) {
+		merge = community_merge(community_dup(old), no_export);
+
+		if (!old->refcnt)
+			community_free(&old);
+
+		new = community_uniq_sort(merge);
+		community_free(&merge);
+	} else {
+		new = community_dup(no_export);
+	}
+
+	community_free(&no_export);
+
+	bgp_attr_set_community(attr, new);
+}
+
 int bgp_update(struct peer *peer, const struct prefix *p, uint32_t addpath_id,
 	       struct attr *attr, afi_t afi, safi_t safi, int type,
 	       int sub_type, struct prefix_rd *prd, mpls_label_t *label,
@@ -3430,13 +3761,27 @@ int bgp_update(struct peer *peer, const struct prefix *p, uint32_t addpath_id,
 	afi_t nh_afi;
 	uint8_t pi_type = 0;
 	uint8_t pi_sub_type = 0;
+	bool force_evpn_import = false;
+	safi_t orig_safi = safi;
+
+	if (frrtrace_enabled(frr_bgp, process_update)) {
+		char pfxprint[PREFIX2STR_BUFFER];
+
+		prefix2str(p, pfxprint, sizeof(pfxprint));
+		frrtrace(6, frr_bgp, process_update, peer, pfxprint, addpath_id,
+			 afi, safi, attr);
+	}
 
 #ifdef ENABLE_BGP_VNC
 	int vnc_implicit_withdraw = 0;
 #endif
 	int same_attr = 0;
 
-	memset(&new_attr, 0, sizeof(struct attr));
+	/* Special case for BGP-LU - map LU safi to ordinary unicast safi */
+	if (orig_safi == SAFI_LABELED_UNICAST)
+		safi = SAFI_UNICAST;
+
+	memset(&new_attr, 0, sizeof(new_attr));
 	new_attr.label_index = BGP_INVALID_LABEL_INDEX;
 	new_attr.label = MPLS_INVALID_LABEL;
 
@@ -3447,6 +3792,14 @@ int bgp_update(struct peer *peer, const struct prefix *p, uint32_t addpath_id,
 		has_valid_label = (num_labels > 0) ? 1 : 0;
 	else
 		has_valid_label = bgp_is_valid_label(label);
+
+	if (has_valid_label)
+		assert(label != NULL);
+
+	/* Update overlay index of the attribute */
+	if (afi == AFI_L2VPN && evpn)
+		memcpy(&attr->evpn_overlay, evpn,
+		       sizeof(struct bgp_route_evpn));
 
 	/* When peer's soft reconfiguration enabled.  Record input packet in
 	   Adj-RIBs-In.  */
@@ -3473,7 +3826,7 @@ int bgp_update(struct peer *peer, const struct prefix *p, uint32_t addpath_id,
 		if (aspath_loop_check(attr->aspath, peer->change_local_as)
 		    > aspath_loop_count) {
 			peer->stat_pfx_aspath_loop++;
-			reason = "as-path contains our own AS A;";
+			reason = "as-path contains our own AS;";
 			goto filtered;
 		}
 	}
@@ -3515,7 +3868,7 @@ int bgp_update(struct peer *peer, const struct prefix *p, uint32_t addpath_id,
 	}
 
 	/* Apply incoming filter.  */
-	if (bgp_input_filter(peer, p, attr, afi, safi) == FILTER_DENY) {
+	if (bgp_input_filter(peer, p, attr, afi, orig_safi) == FILTER_DENY) {
 		peer->stat_pfx_filter++;
 		reason = "filter;";
 		goto filtered;
@@ -3534,6 +3887,13 @@ int bgp_update(struct peer *peer, const struct prefix *p, uint32_t addpath_id,
 		if (!bgp_inbound_policy_exists(peer,
 					       &peer->filter[afi][safi])) {
 			reason = "inbound policy missing";
+			if (monotime_since(&bgp->ebgprequirespolicywarning,
+					   NULL) > FIFTEENMINUTE2USEC ||
+			    bgp->ebgprequirespolicywarning.tv_sec == 0) {
+				zlog_warn(
+					"EBGP inbound/outbound policy not properly setup, please configure in order for your peering to work correctly");
+				monotime(&bgp->ebgprequirespolicywarning);
+			}
 			goto filtered;
 		}
 
@@ -3558,7 +3918,7 @@ int bgp_update(struct peer *peer, const struct prefix *p, uint32_t addpath_id,
 	 * commands, so we need bgp_attr_flush in the error paths, until we
 	 * intern
 	 * the attr (which takes over the memory references) */
-	if (bgp_input_modifier(peer, p, &new_attr, afi, safi, NULL, label,
+	if (bgp_input_modifier(peer, p, &new_attr, afi, orig_safi, NULL, label,
 			       num_labels, dest)
 	    == RMAP_DENY) {
 		peer->stat_pfx_filter++;
@@ -3575,17 +3935,31 @@ int bgp_update(struct peer *peer, const struct prefix *p, uint32_t addpath_id,
 
 	if (peer->sort == BGP_PEER_EBGP) {
 
+		/* rfc7999:
+		 * A BGP speaker receiving an announcement tagged with the
+		 * BLACKHOLE community SHOULD add the NO_ADVERTISE or
+		 * NO_EXPORT community as defined in RFC1997, or a
+		 * similar community, to prevent propagation of the
+		 * prefix outside the local AS. The community to prevent
+		 * propagation SHOULD be chosen according to the operator's
+		 * routing policy.
+		 */
+		if (bgp_attr_get_community(&new_attr) &&
+		    community_include(bgp_attr_get_community(&new_attr),
+				      COMMUNITY_BLACKHOLE))
+			bgp_attr_add_no_export_community(&new_attr);
+
 		/* If we receive the graceful-shutdown community from an eBGP
 		 * peer we must lower local-preference */
-		if (new_attr.community
-		    && community_include(new_attr.community, COMMUNITY_GSHUT)) {
+		if (bgp_attr_get_community(&new_attr) &&
+		    community_include(bgp_attr_get_community(&new_attr),
+				      COMMUNITY_GSHUT)) {
 			new_attr.flag |= ATTR_FLAG_BIT(BGP_ATTR_LOCAL_PREF);
 			new_attr.local_pref = BGP_GSHUT_LOCAL_PREF;
 
 			/* If graceful-shutdown is configured then add the GSHUT
 			 * community to all paths received from eBGP peers */
-		} else if (CHECK_FLAG(peer->bgp->flags,
-				      BGP_FLAG_GRACEFUL_SHUTDOWN))
+		} else if (bgp_in_graceful_shutdown(peer->bgp))
 			bgp_attr_add_gshut_community(&new_attr);
 	}
 
@@ -3607,22 +3981,32 @@ int bgp_update(struct peer *peer, const struct prefix *p, uint32_t addpath_id,
 	if (bgp_mac_entry_exists(p) || bgp_mac_exist(&attr->rmac)) {
 		peer->stat_pfx_nh_invalid++;
 		reason = "self mac;";
+		bgp_attr_flush(&new_attr);
 		goto filtered;
 	}
 
-	/* Update Overlay Index */
-	if (afi == AFI_L2VPN) {
-		overlay_index_update(&new_attr,
-				     evpn == NULL ? NULL : &evpn->gw_ip);
-	}
-
-	attr_new = bgp_attr_intern(&new_attr);
+	/* The flag BGP_NODE_FIB_INSTALL_PENDING is for the following
+	 * condition :
+	 * Suppress fib is enabled
+	 * BGP_OPT_NO_FIB is not enabled
+	 * Route type is BGP_ROUTE_NORMAL (peer learnt routes)
+	 * Route is being installed first time (BGP_NODE_FIB_INSTALLED not set)
+	 */
+	if (bgp_fibupd_safi(safi) && BGP_SUPPRESS_FIB_ENABLED(bgp)
+	    && (sub_type == BGP_ROUTE_NORMAL)
+	    && (!bgp_option_check(BGP_OPT_NO_FIB))
+	    && (!CHECK_FLAG(dest->flags, BGP_NODE_FIB_INSTALLED)))
+		SET_FLAG(dest->flags, BGP_NODE_FIB_INSTALL_PENDING);
 
 	/* If maximum prefix count is configured and current prefix
 	 * count exeed it.
 	 */
-	if (bgp_maximum_prefix_overflow(peer, afi, safi, 0))
+	if (bgp_maximum_prefix_overflow(peer, afi, safi, 0)) {
+		bgp_attr_flush(&new_attr);
 		return -1;
+	}
+
+	attr_new = bgp_attr_intern(&new_attr);
 
 	/* If the update is implicit withdraw. */
 	if (pi) {
@@ -3633,14 +4017,11 @@ int bgp_update(struct peer *peer, const struct prefix *p, uint32_t addpath_id,
 
 		/* Same attribute comes in. */
 		if (!CHECK_FLAG(pi->flags, BGP_PATH_REMOVED)
-		    && attrhash_cmp(pi->attr, attr_new)
+		    && same_attr
 		    && (!has_valid_label
 			|| memcmp(&(bgp_path_info_extra_get(pi))->label, label,
 				  num_labels * sizeof(mpls_label_t))
-				   == 0)
-		    && (overlay_index_equal(
-			       afi, pi,
-			       evpn == NULL ? NULL : &evpn->gw_ip))) {
+				   == 0)) {
 			if (CHECK_FLAG(bgp->af_flags[afi][safi],
 				       BGP_CONFIG_DAMPENING)
 			    && peer->sort == BGP_PEER_EBGP
@@ -3649,9 +4030,9 @@ int bgp_update(struct peer *peer, const struct prefix *p, uint32_t addpath_id,
 					bgp_debug_rdpfxpath2str(
 						afi, safi, prd, p, label,
 						num_labels, addpath_id ? 1 : 0,
-						addpath_id, pfx_buf,
+						addpath_id, evpn, pfx_buf,
 						sizeof(pfx_buf));
-					zlog_debug("%s rcvd %s", peer->host,
+					zlog_debug("%pBP rcvd %s", peer,
 						   pfx_buf);
 				}
 
@@ -3666,8 +4047,8 @@ int bgp_update(struct peer *peer, const struct prefix *p, uint32_t addpath_id,
 				if (bgp_debug_update(peer, p, NULL, 1)) {
 					if (!peer->rcvd_attr_printed) {
 						zlog_debug(
-							"%s rcvd UPDATE w/ attr: %s",
-							peer->host,
+							"%pBP rcvd UPDATE w/ attr: %s",
+							peer,
 							peer->rcvd_attr_str);
 						peer->rcvd_attr_printed = 1;
 					}
@@ -3675,11 +4056,11 @@ int bgp_update(struct peer *peer, const struct prefix *p, uint32_t addpath_id,
 					bgp_debug_rdpfxpath2str(
 						afi, safi, prd, p, label,
 						num_labels, addpath_id ? 1 : 0,
-						addpath_id, pfx_buf,
+						addpath_id, evpn, pfx_buf,
 						sizeof(pfx_buf));
 					zlog_debug(
-						"%s rcvd %s...duplicate ignored",
-						peer->host, pfx_buf);
+						"%pBP rcvd %s...duplicate ignored",
+						peer, pfx_buf);
 				}
 
 				/* graceful restart STALE flag unset. */
@@ -3702,23 +4083,31 @@ int bgp_update(struct peer *peer, const struct prefix *p, uint32_t addpath_id,
 			if (bgp_debug_update(peer, p, NULL, 1)) {
 				bgp_debug_rdpfxpath2str(
 					afi, safi, prd, p, label, num_labels,
-					addpath_id ? 1 : 0, addpath_id, pfx_buf,
-					sizeof(pfx_buf));
+					addpath_id ? 1 : 0, addpath_id, evpn,
+					pfx_buf, sizeof(pfx_buf));
 				zlog_debug(
-					"%s rcvd %s, flapped quicker than processing",
-					peer->host, pfx_buf);
+					"%pBP rcvd %s, flapped quicker than processing",
+					peer, pfx_buf);
 			}
 
 			bgp_path_info_restore(dest, pi);
+
+			/*
+			 * If the BGP_PATH_REMOVED flag is set, then EVPN
+			 * routes would have been unimported already when a
+			 * prior BGP withdraw processing happened. Such routes
+			 * need to be imported again, so flag accordingly.
+			 */
+			force_evpn_import = true;
 		}
 
 		/* Received Logging. */
 		if (bgp_debug_update(peer, p, NULL, 1)) {
 			bgp_debug_rdpfxpath2str(afi, safi, prd, p, label,
 						num_labels, addpath_id ? 1 : 0,
-						addpath_id, pfx_buf,
+						addpath_id, evpn, pfx_buf,
 						sizeof(pfx_buf));
-			zlog_debug("%s rcvd %s", peer->host, pfx_buf);
+			zlog_debug("%pBP rcvd %s", peer, pfx_buf);
 		}
 
 		/* graceful restart STALE flag unset. */
@@ -3787,16 +4176,19 @@ int bgp_update(struct peer *peer, const struct prefix *p, uint32_t addpath_id,
 				& ATTR_FLAG_BIT(BGP_ATTR_EXT_COMMUNITIES))) {
 				int cmp;
 
-				cmp = ecommunity_cmp(pi->attr->ecommunity,
-						     attr_new->ecommunity);
+				cmp = ecommunity_cmp(
+					bgp_attr_get_ecommunity(pi->attr),
+					bgp_attr_get_ecommunity(attr_new));
 				if (!cmp) {
 					if (bgp_debug_update(peer, p, NULL, 1))
 						zlog_debug(
 							"Change in EXT-COMM, existing %s new %s",
 							ecommunity_str(
-								pi->attr->ecommunity),
+								bgp_attr_get_ecommunity(
+									pi->attr)),
 							ecommunity_str(
-								attr_new->ecommunity));
+								bgp_attr_get_ecommunity(
+									attr_new)));
 					if (safi == SAFI_EVPN)
 						bgp_evpn_unimport_route(
 							bgp, afi, safi, p, pi);
@@ -3826,15 +4218,42 @@ int bgp_update(struct peer *peer, const struct prefix *p, uint32_t addpath_id,
 		/* Update SRv6 SID */
 		if (attr->srv6_l3vpn) {
 			extra = bgp_path_info_extra_get(pi);
-			if (sid_diff(&extra->sid[0], &attr->srv6_l3vpn->sid)) {
-				sid_copy(&extra->sid[0],
+			if (sid_diff(&extra->sid[0].sid,
+				     &attr->srv6_l3vpn->sid)) {
+				sid_copy(&extra->sid[0].sid,
 					 &attr->srv6_l3vpn->sid);
 				extra->num_sids = 1;
+
+				extra->sid[0].loc_block_len = 0;
+				extra->sid[0].loc_node_len = 0;
+				extra->sid[0].func_len = 0;
+				extra->sid[0].arg_len = 0;
+				extra->sid[0].transposition_len = 0;
+				extra->sid[0].transposition_offset = 0;
+
+				if (attr->srv6_l3vpn->loc_block_len != 0) {
+					extra->sid[0].loc_block_len =
+						attr->srv6_l3vpn->loc_block_len;
+					extra->sid[0].loc_node_len =
+						attr->srv6_l3vpn->loc_node_len;
+					extra->sid[0].func_len =
+						attr->srv6_l3vpn->func_len;
+					extra->sid[0].arg_len =
+						attr->srv6_l3vpn->arg_len;
+					extra->sid[0].transposition_len =
+						attr->srv6_l3vpn
+							->transposition_len;
+					extra->sid[0].transposition_offset =
+						attr->srv6_l3vpn
+							->transposition_offset;
+				}
 			}
 		} else if (attr->srv6_vpn) {
 			extra = bgp_path_info_extra_get(pi);
-			if (sid_diff(&extra->sid[0], &attr->srv6_vpn->sid)) {
-				sid_copy(&extra->sid[0], &attr->srv6_vpn->sid);
+			if (sid_diff(&extra->sid[0].sid,
+				     &attr->srv6_vpn->sid)) {
+				sid_copy(&extra->sid[0].sid,
+					 &attr->srv6_vpn->sid);
 				extra->num_sids = 1;
 			}
 		}
@@ -3897,7 +4316,8 @@ int bgp_update(struct peer *peer, const struct prefix *p, uint32_t addpath_id,
 			nh_afi = BGP_ATTR_NH_AFI(afi, pi->attr);
 
 			if (bgp_find_or_add_nexthop(bgp, bgp_nexthop, nh_afi,
-						    pi, NULL, connected)
+						    safi, pi, NULL, connected,
+						    p)
 			    || CHECK_FLAG(peer->flags, PEER_FLAG_IS_RFAPI_HD))
 				bgp_path_info_set_flag(dest, pi,
 						       BGP_PATH_VALID);
@@ -3931,7 +4351,7 @@ int bgp_update(struct peer *peer, const struct prefix *p, uint32_t addpath_id,
 #endif
 
 		/* If this is an EVPN route and some attribute has changed,
-		 * process
+		 * or we are explicitly told to perform a route import, process
 		 * route for import. If the extended community has changed, we
 		 * would
 		 * have done the un-import earlier and the import would result
@@ -3942,7 +4362,8 @@ int bgp_update(struct peer *peer, const struct prefix *p, uint32_t addpath_id,
 		 * updating
 		 * the attributes for the route in the VNI(s).
 		 */
-		if (safi == SAFI_EVPN && !same_attr &&
+		if (safi == SAFI_EVPN &&
+		    (!same_attr || force_evpn_import) &&
 		    CHECK_FLAG(pi->flags, BGP_PATH_VALID))
 			bgp_evpn_import_route(bgp, afi, safi, p, pi);
 
@@ -3983,15 +4404,15 @@ int bgp_update(struct peer *peer, const struct prefix *p, uint32_t addpath_id,
 	/* Received Logging. */
 	if (bgp_debug_update(peer, p, NULL, 1)) {
 		if (!peer->rcvd_attr_printed) {
-			zlog_debug("%s rcvd UPDATE w/ attr: %s", peer->host,
+			zlog_debug("%pBP rcvd UPDATE w/ attr: %s", peer,
 				   peer->rcvd_attr_str);
 			peer->rcvd_attr_printed = 1;
 		}
 
 		bgp_debug_rdpfxpath2str(afi, safi, prd, p, label, num_labels,
-					addpath_id ? 1 : 0, addpath_id, pfx_buf,
-					sizeof(pfx_buf));
-		zlog_debug("%s rcvd %s", peer->host, pfx_buf);
+					addpath_id ? 1 : 0, addpath_id, evpn,
+					pfx_buf, sizeof(pfx_buf));
+		zlog_debug("%pBP rcvd %s", peer, pfx_buf);
 	}
 
 	/* Make new BGP info. */
@@ -4013,19 +4434,25 @@ int bgp_update(struct peer *peer, const struct prefix *p, uint32_t addpath_id,
 	if (safi == SAFI_MPLS_VPN) {
 		extra = bgp_path_info_extra_get(new);
 		if (attr->srv6_l3vpn) {
-			sid_copy(&extra->sid[0], &attr->srv6_l3vpn->sid);
+			sid_copy(&extra->sid[0].sid, &attr->srv6_l3vpn->sid);
 			extra->num_sids = 1;
+
+			extra->sid[0].loc_block_len =
+				attr->srv6_l3vpn->loc_block_len;
+			extra->sid[0].loc_node_len =
+				attr->srv6_l3vpn->loc_node_len;
+			extra->sid[0].func_len = attr->srv6_l3vpn->func_len;
+			extra->sid[0].arg_len = attr->srv6_l3vpn->arg_len;
+			extra->sid[0].transposition_len =
+				attr->srv6_l3vpn->transposition_len;
+			extra->sid[0].transposition_offset =
+				attr->srv6_l3vpn->transposition_offset;
 		} else if (attr->srv6_vpn) {
-			sid_copy(&extra->sid[0], &attr->srv6_vpn->sid);
+			sid_copy(&extra->sid[0].sid, &attr->srv6_vpn->sid);
 			extra->num_sids = 1;
 		}
 	}
 
-	/* Update Overlay Index */
-	if (afi == AFI_L2VPN) {
-		overlay_index_update(new->attr,
-				     evpn == NULL ? NULL : &evpn->gw_ip);
-	}
 	/* Nexthop reachability check. */
 	if (((afi == AFI_IP || afi == AFI_IP6)
 	    && (safi == SAFI_UNICAST || safi == SAFI_LABELED_UNICAST))
@@ -4042,8 +4469,8 @@ int bgp_update(struct peer *peer, const struct prefix *p, uint32_t addpath_id,
 
 		nh_afi = BGP_ATTR_NH_AFI(afi, new->attr);
 
-		if (bgp_find_or_add_nexthop(bgp, bgp, nh_afi, new, NULL,
-					    connected)
+		if (bgp_find_or_add_nexthop(bgp, bgp, nh_afi, safi, new, NULL,
+					    connected, p)
 		    || CHECK_FLAG(peer->flags, PEER_FLAG_IS_RFAPI_HD))
 			bgp_path_info_set_flag(dest, new, BGP_PATH_VALID);
 		else {
@@ -4129,16 +4556,16 @@ filtered:
 
 	if (bgp_debug_update(peer, p, NULL, 1)) {
 		if (!peer->rcvd_attr_printed) {
-			zlog_debug("%s rcvd UPDATE w/ attr: %s", peer->host,
+			zlog_debug("%pBP rcvd UPDATE w/ attr: %s", peer,
 				   peer->rcvd_attr_str);
 			peer->rcvd_attr_printed = 1;
 		}
 
 		bgp_debug_rdpfxpath2str(afi, safi, prd, p, label, num_labels,
-					addpath_id ? 1 : 0, addpath_id, pfx_buf,
-					sizeof(pfx_buf));
-		zlog_debug("%s rcvd UPDATE about %s -- DENIED due to: %s",
-			   peer->host, pfx_buf, reason);
+					addpath_id ? 1 : 0, addpath_id, evpn,
+					pfx_buf, sizeof(pfx_buf));
+		zlog_debug("%pBP rcvd UPDATE about %s -- DENIED due to: %s",
+			   peer, pfx_buf, reason);
 	}
 
 	if (pi) {
@@ -4220,8 +4647,8 @@ int bgp_withdraw(struct peer *peer, const struct prefix *p, uint32_t addpath_id,
 			if (bgp_debug_update(peer, p, NULL, 1)) {
 				bgp_debug_rdpfxpath2str(
 					afi, safi, prd, p, label, num_labels,
-					addpath_id ? 1 : 0, addpath_id, pfx_buf,
-					sizeof(pfx_buf));
+					addpath_id ? 1 : 0, addpath_id, NULL,
+					pfx_buf, sizeof(pfx_buf));
 				zlog_debug(
 					"%s withdrawing route %s not in adj-in",
 					peer->host, pfx_buf);
@@ -4240,9 +4667,9 @@ int bgp_withdraw(struct peer *peer, const struct prefix *p, uint32_t addpath_id,
 	/* Logging. */
 	if (bgp_debug_update(peer, p, NULL, 1)) {
 		bgp_debug_rdpfxpath2str(afi, safi, prd, p, label, num_labels,
-					addpath_id ? 1 : 0, addpath_id, pfx_buf,
-					sizeof(pfx_buf));
-		zlog_debug("%s rcvd UPDATE about %s -- withdrawn", peer->host,
+					addpath_id ? 1 : 0, addpath_id, NULL,
+					pfx_buf, sizeof(pfx_buf));
+		zlog_debug("%pBP rcvd UPDATE about %s -- withdrawn", peer,
 			   pfx_buf);
 	}
 
@@ -4261,8 +4688,8 @@ int bgp_withdraw(struct peer *peer, const struct prefix *p, uint32_t addpath_id,
 		}
 	} else if (bgp_debug_update(peer, p, NULL, 1)) {
 		bgp_debug_rdpfxpath2str(afi, safi, prd, p, label, num_labels,
-					addpath_id ? 1 : 0, addpath_id, pfx_buf,
-					sizeof(pfx_buf));
+					addpath_id ? 1 : 0, addpath_id, NULL,
+					pfx_buf, sizeof(pfx_buf));
 		zlog_debug("%s Can't find the route %s", peer->host, pfx_buf);
 	}
 
@@ -4289,7 +4716,7 @@ void bgp_stop_announce_route_timer(struct peer_af *paf)
 	if (!paf->t_announce_route)
 		return;
 
-	THREAD_TIMER_OFF(paf->t_announce_route);
+	thread_cancel(&paf->t_announce_route);
 }
 
 /*
@@ -4298,7 +4725,7 @@ void bgp_stop_announce_route_timer(struct peer_af *paf)
  * Callback that is invoked when the route announcement timer for a
  * peer_af expires.
  */
-static int bgp_announce_route_timer_expired(struct thread *t)
+static void bgp_announce_route_timer_expired(struct thread *t)
 {
 	struct peer_af *paf;
 	struct peer *peer;
@@ -4306,22 +4733,27 @@ static int bgp_announce_route_timer_expired(struct thread *t)
 	paf = THREAD_ARG(t);
 	peer = paf->peer;
 
-	if (peer->status != Established)
-		return 0;
+	if (!peer_established(peer))
+		return;
 
 	if (!peer->afc_nego[paf->afi][paf->safi])
-		return 0;
+		return;
 
 	peer_af_announce_route(paf, 1);
-	return 0;
+
+	/* Notify BGP conditional advertisement scanner percess */
+	peer->advmap_config_change[paf->afi][paf->safi] = true;
 }
 
 /*
  * bgp_announce_route
  *
  * *Triggers* announcement of routes of a given AFI/SAFI to a peer.
+ *
+ * if force is true we will force an update even if the update
+ * limiting code is attempted to kick in.
  */
-void bgp_announce_route(struct peer *peer, afi_t afi, safi_t safi)
+void bgp_announce_route(struct peer *peer, afi_t afi, safi_t safi, bool force)
 {
 	struct peer_af *paf;
 	struct update_subgroup *subgrp;
@@ -4337,6 +4769,9 @@ void bgp_announce_route(struct peer *peer, afi_t afi, safi_t safi)
 	 */
 	if (!subgrp || paf->t_announce_route)
 		return;
+
+	if (force)
+		SET_FLAG(subgrp->sflags, SUBGRP_STATUS_FORCE_UPDATES);
 
 	/*
 	 * Start a timer to stagger/delay the announce. This serves
@@ -4366,7 +4801,61 @@ void bgp_announce_route_all(struct peer *peer)
 	safi_t safi;
 
 	FOREACH_AFI_SAFI (afi, safi)
-		bgp_announce_route(peer, afi, safi);
+		bgp_announce_route(peer, afi, safi, false);
+}
+
+/* Flag or unflag bgp_dest to determine whether it should be treated by
+ * bgp_soft_reconfig_table_task.
+ * Flag if flag is true. Unflag if flag is false.
+ */
+static void bgp_soft_reconfig_table_flag(struct bgp_table *table, bool flag)
+{
+	struct bgp_dest *dest;
+	struct bgp_adj_in *ain;
+
+	if (!table)
+		return;
+
+	for (dest = bgp_table_top(table); dest; dest = bgp_route_next(dest)) {
+		for (ain = dest->adj_in; ain; ain = ain->next) {
+			if (ain->peer != NULL)
+				break;
+		}
+		if (flag && ain != NULL && ain->peer != NULL)
+			SET_FLAG(dest->flags, BGP_NODE_SOFT_RECONFIG);
+		else
+			UNSET_FLAG(dest->flags, BGP_NODE_SOFT_RECONFIG);
+	}
+}
+
+static int bgp_soft_reconfig_table_update(struct peer *peer,
+					  struct bgp_dest *dest,
+					  struct bgp_adj_in *ain, afi_t afi,
+					  safi_t safi, struct prefix_rd *prd)
+{
+	struct bgp_path_info *pi;
+	uint32_t num_labels = 0;
+	mpls_label_t *label_pnt = NULL;
+	struct bgp_route_evpn evpn;
+
+	for (pi = bgp_dest_get_bgp_path_info(dest); pi; pi = pi->next)
+		if (pi->peer == peer)
+			break;
+
+	if (pi && pi->extra)
+		num_labels = pi->extra->num_labels;
+	if (num_labels)
+		label_pnt = &pi->extra->label[0];
+	if (pi)
+		memcpy(&evpn, bgp_attr_get_evpn_overlay(pi->attr),
+		       sizeof(evpn));
+	else
+		memset(&evpn, 0, sizeof(evpn));
+
+	return bgp_update(peer, bgp_dest_get_prefix(dest), ain->addpath_rx_id,
+			  ain->attr, afi, safi, ZEBRA_ROUTE_BGP,
+			  BGP_ROUTE_NORMAL, prd, label_pnt, num_labels, 1,
+			  &evpn);
 }
 
 static void bgp_soft_reconfig_table(struct peer *peer, afi_t afi, safi_t safi,
@@ -4385,31 +4874,8 @@ static void bgp_soft_reconfig_table(struct peer *peer, afi_t afi, safi_t safi,
 			if (ain->peer != peer)
 				continue;
 
-			struct bgp_path_info *pi;
-			uint32_t num_labels = 0;
-			mpls_label_t *label_pnt = NULL;
-			struct bgp_route_evpn evpn;
-
-			for (pi = bgp_dest_get_bgp_path_info(dest); pi;
-			     pi = pi->next)
-				if (pi->peer == peer)
-					break;
-
-			if (pi && pi->extra)
-				num_labels = pi->extra->num_labels;
-			if (num_labels)
-				label_pnt = &pi->extra->label[0];
-			if (pi)
-				memcpy(&evpn, &pi->attr->evpn_overlay,
-				       sizeof(evpn));
-			else
-				memset(&evpn, 0, sizeof(evpn));
-
-			ret = bgp_update(peer, bgp_dest_get_prefix(dest),
-					 ain->addpath_rx_id, ain->attr, afi,
-					 safi, ZEBRA_ROUTE_BGP,
-					 BGP_ROUTE_NORMAL, prd, label_pnt,
-					 num_labels, 1, &evpn);
+			ret = bgp_soft_reconfig_table_update(peer, dest, ain,
+							     afi, safi, prd);
 
 			if (ret < 0) {
 				bgp_dest_unlock_node(dest);
@@ -4418,18 +4884,199 @@ static void bgp_soft_reconfig_table(struct peer *peer, afi_t afi, safi_t safi,
 		}
 }
 
+/* Do soft reconfig table per bgp table.
+ * Walk on SOFT_RECONFIG_TASK_MAX_PREFIX bgp_dest,
+ * when BGP_NODE_SOFT_RECONFIG is set,
+ * reconfig bgp_dest for list of table->soft_reconfig_peers peers.
+ * Schedule a new thread to continue the job.
+ * Without splitting the full job into several part,
+ * vtysh waits for the job to finish before responding to a BGP command
+ */
+static void bgp_soft_reconfig_table_task(struct thread *thread)
+{
+	uint32_t iter, max_iter;
+	int ret;
+	struct bgp_dest *dest;
+	struct bgp_adj_in *ain;
+	struct peer *peer;
+	struct bgp_table *table;
+	struct prefix_rd *prd;
+	struct listnode *node, *nnode;
+
+	table = THREAD_ARG(thread);
+	prd = NULL;
+
+	max_iter = SOFT_RECONFIG_TASK_MAX_PREFIX;
+	if (table->soft_reconfig_init) {
+		/* first call of the function with a new srta structure.
+		 * Don't do any treatment this time on nodes
+		 * in order vtysh to respond quickly
+		 */
+		max_iter = 0;
+	}
+
+	for (iter = 0, dest = bgp_table_top(table); (dest && iter < max_iter);
+	     dest = bgp_route_next(dest)) {
+		if (!CHECK_FLAG(dest->flags, BGP_NODE_SOFT_RECONFIG))
+			continue;
+
+		UNSET_FLAG(dest->flags, BGP_NODE_SOFT_RECONFIG);
+
+		for (ain = dest->adj_in; ain; ain = ain->next) {
+			for (ALL_LIST_ELEMENTS(table->soft_reconfig_peers, node,
+					       nnode, peer)) {
+				if (ain->peer != peer)
+					continue;
+
+				ret = bgp_soft_reconfig_table_update(
+					peer, dest, ain, table->afi,
+					table->safi, prd);
+				iter++;
+
+				if (ret < 0) {
+					bgp_dest_unlock_node(dest);
+					listnode_delete(
+						table->soft_reconfig_peers,
+						peer);
+					bgp_announce_route(peer, table->afi,
+							   table->safi, false);
+					if (list_isempty(
+						    table->soft_reconfig_peers)) {
+						list_delete(
+							&table->soft_reconfig_peers);
+						bgp_soft_reconfig_table_flag(
+							table, false);
+						return;
+					}
+				}
+			}
+		}
+	}
+
+	/* we're either starting the initial iteration,
+	 * or we're going to continue an ongoing iteration
+	 */
+	if (dest || table->soft_reconfig_init) {
+		table->soft_reconfig_init = false;
+		thread_add_event(bm->master, bgp_soft_reconfig_table_task,
+				 table, 0, &table->soft_reconfig_thread);
+		return;
+	}
+	/* we're done, clean up the background iteration context info and
+	schedule route annoucement
+	*/
+	for (ALL_LIST_ELEMENTS(table->soft_reconfig_peers, node, nnode, peer)) {
+		listnode_delete(table->soft_reconfig_peers, peer);
+		bgp_announce_route(peer, table->afi, table->safi, false);
+	}
+
+	list_delete(&table->soft_reconfig_peers);
+}
+
+
+/* Cancel soft_reconfig_table task matching bgp instance, bgp_table
+ * and peer.
+ * - bgp cannot be NULL
+ * - if table and peer are NULL, cancel all threads within the bgp instance
+ * - if table is NULL and peer is not,
+ * remove peer in all threads within the bgp instance
+ * - if peer is NULL, cancel all threads matching table within the bgp instance
+ */
+void bgp_soft_reconfig_table_task_cancel(const struct bgp *bgp,
+					 const struct bgp_table *table,
+					 const struct peer *peer)
+{
+	struct peer *npeer;
+	struct listnode *node, *nnode;
+	int afi, safi;
+	struct bgp_table *ntable;
+
+	if (!bgp)
+		return;
+
+	FOREACH_AFI_SAFI (afi, safi) {
+		ntable = bgp->rib[afi][safi];
+		if (!ntable)
+			continue;
+		if (table && table != ntable)
+			continue;
+
+		for (ALL_LIST_ELEMENTS(ntable->soft_reconfig_peers, node, nnode,
+				       npeer)) {
+			if (peer && peer != npeer)
+				continue;
+			listnode_delete(ntable->soft_reconfig_peers, npeer);
+		}
+
+		if (!ntable->soft_reconfig_peers
+		    || !list_isempty(ntable->soft_reconfig_peers))
+			continue;
+
+		list_delete(&ntable->soft_reconfig_peers);
+		bgp_soft_reconfig_table_flag(ntable, false);
+		BGP_TIMER_OFF(ntable->soft_reconfig_thread);
+	}
+}
+
 void bgp_soft_reconfig_in(struct peer *peer, afi_t afi, safi_t safi)
 {
 	struct bgp_dest *dest;
 	struct bgp_table *table;
+	struct listnode *node, *nnode;
+	struct peer *npeer;
+	struct peer_af *paf;
 
-	if (peer->status != Established)
+	if (!peer_established(peer))
 		return;
 
 	if ((safi != SAFI_MPLS_VPN) && (safi != SAFI_ENCAP)
-	    && (safi != SAFI_EVPN))
-		bgp_soft_reconfig_table(peer, afi, safi, NULL, NULL);
-	else
+	    && (safi != SAFI_EVPN)) {
+		table = peer->bgp->rib[afi][safi];
+		if (!table)
+			return;
+
+		table->soft_reconfig_init = true;
+
+		if (!table->soft_reconfig_peers)
+			table->soft_reconfig_peers = list_new();
+		npeer = NULL;
+		/* add peer to the table soft_reconfig_peers if not already
+		 * there
+		 */
+		for (ALL_LIST_ELEMENTS(table->soft_reconfig_peers, node, nnode,
+				       npeer)) {
+			if (peer == npeer)
+				break;
+		}
+		if (peer != npeer)
+			listnode_add(table->soft_reconfig_peers, peer);
+
+		/* (re)flag all bgp_dest in table. Existing soft_reconfig_in job
+		 * on table would start back at the beginning.
+		 */
+		bgp_soft_reconfig_table_flag(table, true);
+
+		if (!table->soft_reconfig_thread)
+			thread_add_event(bm->master,
+					 bgp_soft_reconfig_table_task, table, 0,
+					 &table->soft_reconfig_thread);
+		/* Cancel bgp_announce_route_timer_expired threads.
+		 * bgp_announce_route_timer_expired threads have been scheduled
+		 * to announce routes as soon as the soft_reconfigure process
+		 * finishes.
+		 * In this case, soft_reconfigure is also scheduled by using
+		 * a thread but is planned after the
+		 * bgp_announce_route_timer_expired threads. It means that,
+		 * without cancelling the threads, the route announcement task
+		 * would run before the soft reconfiguration one. That would
+		 * useless and would block vtysh during several seconds. Route
+		 * announcements are rescheduled as soon as the soft_reconfigure
+		 * process finishes.
+		 */
+		paf = peer_af_find(peer, afi, safi);
+		if (paf)
+			bgp_stop_announce_route_timer(paf);
+	} else
 		for (dest = bgp_table_top(peer->bgp->rib[afi][safi]); dest;
 		     dest = bgp_route_next(dest)) {
 			table = bgp_dest_get_bgp_table_info(dest);
@@ -4474,8 +5121,10 @@ static wq_item_status bgp_clear_route_node(struct work_queue *wq, void *data)
 			continue;
 
 		/* graceful restart STALE flag set. */
-		if (CHECK_FLAG(peer->sflags, PEER_STATUS_NSF_WAIT)
-		    && peer->nsf[afi][safi]
+		if (((CHECK_FLAG(peer->sflags, PEER_STATUS_NSF_WAIT)
+		      && peer->nsf[afi][safi])
+		     || CHECK_FLAG(peer->af_sflags[afi][safi],
+				   PEER_STATUS_ENHANCED_REFRESH))
 		    && !CHECK_FLAG(pi->flags, BGP_PATH_STALE)
 		    && !CHECK_FLAG(pi->flags, BGP_PATH_UNUSEABLE))
 			bgp_path_info_set_flag(dest, pi, BGP_PATH_STALE);
@@ -4548,7 +5197,7 @@ static void bgp_clear_route_table(struct peer *peer, afi_t afi, safi_t safi,
 				  struct bgp_table *table)
 {
 	struct bgp_dest *dest;
-	int force = bm->process_main_queue ? 0 : 1;
+	int force = peer->bgp->process_queue ? 0 : 1;
 
 	if (!table)
 		table = peer->bgp->rib[afi][safi];
@@ -4601,10 +5250,8 @@ static void bgp_clear_route_table(struct peer *peer, afi_t afi, safi_t safi,
 		while (ain) {
 			ain_next = ain->next;
 
-			if (ain->peer == peer) {
+			if (ain->peer == peer)
 				bgp_adj_in_remove(dest, ain);
-				bgp_dest_unlock_node(dest);
-			}
 
 			ain = ain_next;
 		}
@@ -4710,23 +5357,26 @@ void bgp_clear_adj_in(struct peer *peer, afi_t afi, safi_t safi)
 		while (ain) {
 			ain_next = ain->next;
 
-			if (ain->peer == peer) {
+			if (ain->peer == peer)
 				bgp_adj_in_remove(dest, ain);
-				bgp_dest_unlock_node(dest);
-			}
 
 			ain = ain_next;
 		}
 	}
 }
 
+/* If any of the routes from the peer have been marked with the NO_LLGR
+ * community, either as sent by the peer, or as the result of a configured
+ * policy, they MUST NOT be retained, but MUST be removed as per the normal
+ * operation of [RFC4271].
+ */
 void bgp_clear_stale_route(struct peer *peer, afi_t afi, safi_t safi)
 {
 	struct bgp_dest *dest;
 	struct bgp_path_info *pi;
 	struct bgp_table *table;
 
-	if (safi == SAFI_MPLS_VPN) {
+	if (safi == SAFI_MPLS_VPN || safi == SAFI_ENCAP || safi == SAFI_EVPN) {
 		for (dest = bgp_table_top(peer->bgp->rib[afi][safi]); dest;
 		     dest = bgp_route_next(dest)) {
 			struct bgp_dest *rm;
@@ -4742,9 +5392,29 @@ void bgp_clear_stale_route(struct peer *peer, afi_t afi, safi_t safi)
 				     pi = pi->next) {
 					if (pi->peer != peer)
 						continue;
+					if (CHECK_FLAG(
+						    peer->af_sflags[afi][safi],
+						    PEER_STATUS_LLGR_WAIT) &&
+					    bgp_attr_get_community(pi->attr) &&
+					    !community_include(
+						    bgp_attr_get_community(
+							    pi->attr),
+						    COMMUNITY_NO_LLGR))
+						continue;
 					if (!CHECK_FLAG(pi->flags,
 							BGP_PATH_STALE))
-						break;
+						continue;
+
+					/*
+					 * If this is VRF leaked route
+					 * process for withdraw.
+					 */
+					if (pi->sub_type ==
+						    BGP_ROUTE_IMPORTED &&
+					    peer->bgp->inst_type ==
+						    BGP_INSTANCE_TYPE_DEFAULT)
+						vpn_leak_to_vrf_withdraw(
+							peer->bgp, pi);
 
 					bgp_rib_remove(rm, pi, peer, afi, safi);
 					break;
@@ -4757,11 +5427,102 @@ void bgp_clear_stale_route(struct peer *peer, afi_t afi, safi_t safi)
 			     pi = pi->next) {
 				if (pi->peer != peer)
 					continue;
+				if (CHECK_FLAG(peer->af_sflags[afi][safi],
+					       PEER_STATUS_LLGR_WAIT) &&
+				    bgp_attr_get_community(pi->attr) &&
+				    !community_include(
+					    bgp_attr_get_community(pi->attr),
+					    COMMUNITY_NO_LLGR))
+					continue;
 				if (!CHECK_FLAG(pi->flags, BGP_PATH_STALE))
-					break;
+					continue;
+				if (safi == SAFI_UNICAST &&
+				    (peer->bgp->inst_type ==
+					     BGP_INSTANCE_TYPE_VRF ||
+				     peer->bgp->inst_type ==
+					     BGP_INSTANCE_TYPE_DEFAULT))
+					vpn_leak_from_vrf_withdraw(
+						bgp_get_default(), peer->bgp,
+						pi);
+
 				bgp_rib_remove(dest, pi, peer, afi, safi);
 				break;
 			}
+	}
+}
+
+void bgp_set_stale_route(struct peer *peer, afi_t afi, safi_t safi)
+{
+	struct bgp_dest *dest, *ndest;
+	struct bgp_path_info *pi;
+	struct bgp_table *table;
+
+	if (safi == SAFI_MPLS_VPN || safi == SAFI_ENCAP || safi == SAFI_EVPN) {
+		for (dest = bgp_table_top(peer->bgp->rib[afi][safi]); dest;
+		     dest = bgp_route_next(dest)) {
+			table = bgp_dest_get_bgp_table_info(dest);
+			if (!table)
+				continue;
+
+			for (ndest = bgp_table_top(table); ndest;
+			     ndest = bgp_route_next(ndest)) {
+				for (pi = bgp_dest_get_bgp_path_info(ndest); pi;
+				     pi = pi->next) {
+					if (pi->peer != peer)
+						continue;
+
+					if ((CHECK_FLAG(
+						    peer->af_sflags[afi][safi],
+						    PEER_STATUS_ENHANCED_REFRESH))
+					    && !CHECK_FLAG(pi->flags,
+							   BGP_PATH_STALE)
+					    && !CHECK_FLAG(
+						       pi->flags,
+						       BGP_PATH_UNUSEABLE)) {
+						if (bgp_debug_neighbor_events(
+							    peer))
+							zlog_debug(
+								"%s: route-refresh for %s/%s, marking prefix %pFX as stale",
+								peer->host,
+								afi2str(afi),
+								safi2str(safi),
+								bgp_dest_get_prefix(
+									ndest));
+
+						bgp_path_info_set_flag(
+							ndest, pi,
+							BGP_PATH_STALE);
+					}
+				}
+			}
+		}
+	} else {
+		for (dest = bgp_table_top(peer->bgp->rib[afi][safi]); dest;
+		     dest = bgp_route_next(dest)) {
+			for (pi = bgp_dest_get_bgp_path_info(dest); pi;
+			     pi = pi->next) {
+				if (pi->peer != peer)
+					continue;
+
+				if ((CHECK_FLAG(peer->af_sflags[afi][safi],
+						PEER_STATUS_ENHANCED_REFRESH))
+				    && !CHECK_FLAG(pi->flags, BGP_PATH_STALE)
+				    && !CHECK_FLAG(pi->flags,
+						   BGP_PATH_UNUSEABLE)) {
+					if (bgp_debug_neighbor_events(peer))
+						zlog_debug(
+							"%s: route-refresh for %s/%s, marking prefix %pFX as stale",
+							peer->host,
+							afi2str(afi),
+							safi2str(safi),
+							bgp_dest_get_prefix(
+								dest));
+
+					bgp_path_info_set_flag(dest, pi,
+							       BGP_PATH_STALE);
+				}
+			}
+		}
 	}
 }
 
@@ -4884,7 +5645,7 @@ void bgp_reset(void)
 	prefix_list_reset();
 }
 
-static int bgp_addpath_encode_rx(struct peer *peer, afi_t afi, safi_t safi)
+bool bgp_addpath_encode_rx(struct peer *peer, afi_t afi, safi_t safi)
 {
 	return (CHECK_FLAG(peer->af_cap[afi][safi], PEER_CAP_ADDPATH_AF_RX_ADV)
 		&& CHECK_FLAG(peer->af_cap[afi][safi],
@@ -4903,7 +5664,7 @@ int bgp_nlri_parse_ip(struct peer *peer, struct attr *attr,
 	int ret;
 	afi_t afi;
 	safi_t safi;
-	int addpath_encoded;
+	bool addpath_capable;
 	uint32_t addpath_id;
 
 	pnt = packet->nlri;
@@ -4911,16 +5672,16 @@ int bgp_nlri_parse_ip(struct peer *peer, struct attr *attr,
 	afi = packet->afi;
 	safi = packet->safi;
 	addpath_id = 0;
-	addpath_encoded = bgp_addpath_encode_rx(peer, afi, safi);
+	addpath_capable = bgp_addpath_encode_rx(peer, afi, safi);
 
 	/* RFC4771 6.3 The NLRI field in the UPDATE message is checked for
 	   syntactic validity.  If the field is syntactically incorrect,
 	   then the Error Subcode is set to Invalid Network Field. */
 	for (; pnt < lim; pnt += psize) {
 		/* Clear prefix structure. */
-		memset(&p, 0, sizeof(struct prefix));
+		memset(&p, 0, sizeof(p));
 
-		if (addpath_encoded) {
+		if (addpath_capable) {
 
 			/* When packet overflow occurs return immediately. */
 			if (pnt + BGP_ADDPATH_ID_LEN >= lim)
@@ -4959,12 +5720,12 @@ int bgp_nlri_parse_ip(struct peer *peer, struct attr *attr,
 		}
 
 		/* Defensive coding, double-check the psize fits in a struct
-		 * prefix */
-		if (psize > (ssize_t)sizeof(p.u)) {
+		 * prefix for the v4 and v6 afi's and unicast/multicast */
+		if (psize > (ssize_t)sizeof(p.u.val)) {
 			flog_err(
 				EC_BGP_UPDATE_RCV,
 				"%s [Error] Update packet error (prefix length %d too large for prefix storage %zu)",
-				peer->host, p.prefixlen, sizeof(p.u));
+				peer->host, p.prefixlen, sizeof(p.u.val));
 			return BGP_NLRI_PARSE_ERROR_PACKET_LENGTH;
 		}
 
@@ -4985,8 +5746,8 @@ int bgp_nlri_parse_ip(struct peer *peer, struct attr *attr,
 				 */
 				flog_err(
 					EC_BGP_UPDATE_RCV,
-					"%s: IPv4 unicast NLRI is multicast address %s, ignoring",
-					peer->host, inet_ntoa(p.u.prefix4));
+					"%s: IPv4 unicast NLRI is multicast address %pI4, ignoring",
+					peer->host, &p.u.prefix4);
 				continue;
 			}
 		}
@@ -4994,26 +5755,18 @@ int bgp_nlri_parse_ip(struct peer *peer, struct attr *attr,
 		/* Check address. */
 		if (afi == AFI_IP6 && safi == SAFI_UNICAST) {
 			if (IN6_IS_ADDR_LINKLOCAL(&p.u.prefix6)) {
-				char buf[BUFSIZ];
-
 				flog_err(
 					EC_BGP_UPDATE_RCV,
-					"%s: IPv6 unicast NLRI is link-local address %s, ignoring",
-					peer->host,
-					inet_ntop(AF_INET6, &p.u.prefix6, buf,
-						  BUFSIZ));
+					"%s: IPv6 unicast NLRI is link-local address %pI6, ignoring",
+					peer->host, &p.u.prefix6);
 
 				continue;
 			}
 			if (IN6_IS_ADDR_MULTICAST(&p.u.prefix6)) {
-				char buf[BUFSIZ];
-
 				flog_err(
 					EC_BGP_UPDATE_RCV,
-					"%s: IPv6 unicast NLRI is multicast address %s, ignoring",
-					peer->host,
-					inet_ntop(AF_INET6, &p.u.prefix6, buf,
-						  BUFSIZ));
+					"%s: IPv6 unicast NLRI is multicast address %pI6, ignoring",
+					peer->host, &p.u.prefix6);
 
 				continue;
 			}
@@ -5084,7 +5837,7 @@ void bgp_static_update(struct bgp *bgp, const struct prefix *p,
 
 	dest = bgp_afi_node_get(bgp->rib[afi][safi], afi, safi, p, NULL);
 
-	bgp_attr_default_set(&attr, BGP_ORIGIN_IGP);
+	bgp_attr_default_set(&attr, bgp, BGP_ORIGIN_IGP);
 
 	attr.nexthop = bgp_static->igpnexthop;
 	attr.med = bgp_static->igpmetric;
@@ -5103,14 +5856,13 @@ void bgp_static_update(struct bgp *bgp, const struct prefix *p,
 	if (bgp_static->rmap.name) {
 		struct attr attr_tmp = attr;
 
-		memset(&rmap_path, 0, sizeof(struct bgp_path_info));
+		memset(&rmap_path, 0, sizeof(rmap_path));
 		rmap_path.peer = bgp->peer_self;
 		rmap_path.attr = &attr_tmp;
 
 		SET_FLAG(bgp->peer_self->rmap_type, PEER_RMAP_TYPE_NETWORK);
 
-		ret = route_map_apply(bgp_static->rmap.map, p, RMAP_BGP,
-				      &rmap_path);
+		ret = route_map_apply(bgp_static->rmap.map, p, &rmap_path);
 
 		bgp->peer_self->rmap_type = 0;
 
@@ -5124,13 +5876,13 @@ void bgp_static_update(struct bgp *bgp, const struct prefix *p,
 			return;
 		}
 
-		if (CHECK_FLAG(bgp->flags, BGP_FLAG_GRACEFUL_SHUTDOWN))
+		if (bgp_in_graceful_shutdown(bgp))
 			bgp_attr_add_gshut_community(&attr_tmp);
 
 		attr_new = bgp_attr_intern(&attr_tmp);
 	} else {
 
-		if (CHECK_FLAG(bgp->flags, BGP_FLAG_GRACEFUL_SHUTDOWN))
+		if (bgp_in_graceful_shutdown(bgp))
 			bgp_attr_add_gshut_community(&attr);
 
 		attr_new = bgp_attr_intern(&attr);
@@ -5199,7 +5951,8 @@ void bgp_static_update(struct bgp *bgp, const struct prefix *p,
 					bgp_nexthop = pi->extra->bgp_orig;
 
 				if (bgp_find_or_add_nexthop(bgp, bgp_nexthop,
-							    afi, pi, NULL, 0))
+							    afi, safi, pi, NULL,
+							    0, p))
 					bgp_path_info_set_flag(dest, pi,
 							       BGP_PATH_VALID);
 				else {
@@ -5251,7 +6004,8 @@ void bgp_static_update(struct bgp *bgp, const struct prefix *p,
 	/* Nexthop reachability check. */
 	if (CHECK_FLAG(bgp->flags, BGP_FLAG_IMPORT_CHECK)
 	    && (safi == SAFI_UNICAST || safi == SAFI_LABELED_UNICAST)) {
-		if (bgp_find_or_add_nexthop(bgp, bgp, afi, new, NULL, 0))
+		if (bgp_find_or_add_nexthop(bgp, bgp, afi, safi, new, NULL, 0,
+					    p))
 			bgp_path_info_set_flag(dest, new, BGP_PATH_VALID);
 		else {
 			if (BGP_DEBUG(nht, NHT)) {
@@ -5378,7 +6132,6 @@ static void bgp_static_update_safi(struct bgp *bgp, const struct prefix *p,
 	mpls_label_t label = 0;
 #endif
 	uint32_t num_labels = 0;
-	union gw_addr add;
 
 	assert(bgp_static);
 
@@ -5387,7 +6140,7 @@ static void bgp_static_update_safi(struct bgp *bgp, const struct prefix *p,
 	dest = bgp_afi_node_get(bgp->rib[afi][safi], afi, safi, p,
 				&bgp_static->prd);
 
-	bgp_attr_default_set(&attr, BGP_ORIGIN_IGP);
+	bgp_attr_default_set(&attr, bgp, BGP_ORIGIN_IGP);
 
 	attr.nexthop = bgp_static->igpnexthop;
 	attr.med = bgp_static->igpmetric;
@@ -5401,16 +6154,21 @@ static void bgp_static_update_safi(struct bgp *bgp, const struct prefix *p,
 		}
 	}
 	if (afi == AFI_L2VPN) {
-		if (bgp_static->gatewayIp.family == AF_INET)
-			add.ipv4.s_addr =
-				bgp_static->gatewayIp.u.prefix4.s_addr;
-		else if (bgp_static->gatewayIp.family == AF_INET6)
-			memcpy(&(add.ipv6), &(bgp_static->gatewayIp.u.prefix6),
-			       sizeof(struct in6_addr));
+		if (bgp_static->gatewayIp.family == AF_INET) {
+			SET_IPADDR_V4(&attr.evpn_overlay.gw_ip);
+			memcpy(&attr.evpn_overlay.gw_ip.ipaddr_v4,
+			       &bgp_static->gatewayIp.u.prefix4,
+			       IPV4_MAX_BYTELEN);
+		} else if (bgp_static->gatewayIp.family == AF_INET6) {
+			SET_IPADDR_V6(&attr.evpn_overlay.gw_ip);
+			memcpy(&attr.evpn_overlay.gw_ip.ipaddr_v6,
+			       &bgp_static->gatewayIp.u.prefix6,
+			       IPV6_MAX_BYTELEN);
+		}
 		memcpy(&attr.esi, bgp_static->eth_s_id, sizeof(esi_t));
 		if (bgp_static->encap_tunneltype == BGP_ENCAP_TYPE_VXLAN) {
 			struct bgp_encap_type_vxlan bet;
-			memset(&bet, 0, sizeof(struct bgp_encap_type_vxlan));
+			memset(&bet, 0, sizeof(bet));
 			bet.vnid = p->u.prefix_evpn.prefix_addr.eth_tag;
 			bgp_encap_type_vxlan_to_tlv(&bet, &attr);
 		}
@@ -5429,8 +6187,7 @@ static void bgp_static_update_safi(struct bgp *bgp, const struct prefix *p,
 
 		SET_FLAG(bgp->peer_self->rmap_type, PEER_RMAP_TYPE_NETWORK);
 
-		ret = route_map_apply(bgp_static->rmap.map, p, RMAP_BGP,
-				      &rmap_path);
+		ret = route_map_apply(bgp_static->rmap.map, p, &rmap_path);
 
 		bgp->peer_self->rmap_type = 0;
 
@@ -5456,9 +6213,7 @@ static void bgp_static_update_safi(struct bgp *bgp, const struct prefix *p,
 			break;
 
 	if (pi) {
-		memset(&add, 0, sizeof(union gw_addr));
 		if (attrhash_cmp(pi->attr, attr_new)
-		    && overlay_index_equal(afi, pi, &add)
 		    && !CHECK_FLAG(pi->flags, BGP_PATH_REMOVED)) {
 			bgp_dest_unlock_node(dest);
 			bgp_attr_unintern(&attr_new);
@@ -5505,7 +6260,7 @@ static void bgp_static_update_safi(struct bgp *bgp, const struct prefix *p,
 	new = info_make(ZEBRA_ROUTE_BGP, BGP_ROUTE_STATIC, 0, bgp->peer_self,
 			attr_new, dest);
 	SET_FLAG(new->flags, BGP_PATH_VALID);
-	new->extra = bgp_path_info_extra_new();
+	bgp_path_info_extra_get(new);
 	if (num_labels) {
 		new->extra->label[0] = bgp_static->label;
 		new->extra->num_labels = num_labels;
@@ -5580,6 +6335,7 @@ static int bgp_static_set(struct vty *vty, const char *negate,
 		    && (label_index != bgp_static->label_index)) {
 			vty_out(vty,
 				"%% label-index doesn't match static route\n");
+			bgp_dest_unlock_node(dest);
 			return CMD_WARNING_CONFIG_FAILED;
 		}
 
@@ -5587,6 +6343,7 @@ static int bgp_static_set(struct vty *vty, const char *negate,
 		    && strcmp(rmap, bgp_static->rmap.name)) {
 			vty_out(vty,
 				"%% route-map name doesn't match static route\n");
+			bgp_dest_unlock_node(dest);
 			return CMD_WARNING_CONFIG_FAILED;
 		}
 
@@ -5683,6 +6440,7 @@ void bgp_static_add(struct bgp *bgp)
 	struct bgp_table *table;
 	struct bgp_static *bgp_static;
 
+	SET_FLAG(bgp->flags, BGP_FLAG_FORCE_STATIC_PROCESS);
 	FOREACH_AFI_SAFI (afi, safi)
 		for (dest = bgp_table_top(bgp->route[afi][safi]); dest;
 		     dest = bgp_route_next(dest)) {
@@ -5709,6 +6467,7 @@ void bgp_static_add(struct bgp *bgp)
 					safi);
 			}
 		}
+	UNSET_FLAG(bgp->flags, BGP_FLAG_FORCE_STATIC_PROCESS);
 }
 
 /* Called from bgp_delete().  Delete all static routes from the BGP
@@ -5909,7 +6668,7 @@ int bgp_static_set_safi(afi_t afi, safi_t safi, struct vty *vty,
 			return CMD_WARNING_CONFIG_FAILED;
 		}
 		if (gwip) {
-			memset(&gw_ip, 0, sizeof(struct prefix));
+			memset(&gw_ip, 0, sizeof(gw_ip));
 			ret = str2prefix(gwip, &gw_ip);
 			if (!ret) {
 				vty_out(vty, "%% Malformed GatewayIp\n");
@@ -6145,7 +6904,8 @@ DEFPY(bgp_network,
 		int ret;
 
 		ret = netmask_str2prefix_str(address_str, netmask_str,
-					     addr_prefix_str);
+					     addr_prefix_str,
+					     sizeof(addr_prefix_str));
 		if (!ret) {
 			vty_out(vty, "%% Inconsistent address and mask\n");
 			return CMD_WARNING_CONFIG_FAILED;
@@ -6182,9 +6942,118 @@ static struct bgp_aggregate *bgp_aggregate_new(void)
 
 static void bgp_aggregate_free(struct bgp_aggregate *aggregate)
 {
+	XFREE(MTYPE_ROUTE_MAP_NAME, aggregate->suppress_map_name);
+	route_map_counter_decrement(aggregate->suppress_map);
 	XFREE(MTYPE_ROUTE_MAP_NAME, aggregate->rmap.name);
 	route_map_counter_decrement(aggregate->rmap.map);
 	XFREE(MTYPE_BGP_AGGREGATE, aggregate);
+}
+
+/**
+ * Helper function to avoid repeated code: prepare variables for a
+ * `route_map_apply` call.
+ *
+ * \returns `true` on route map match, otherwise `false`.
+ */
+static bool aggr_suppress_map_test(struct bgp *bgp,
+				   struct bgp_aggregate *aggregate,
+				   struct bgp_path_info *pi)
+{
+	const struct prefix *p = bgp_dest_get_prefix(pi->net);
+	route_map_result_t rmr = RMAP_DENYMATCH;
+	struct bgp_path_info rmap_path = {};
+	struct attr attr = {};
+
+	/* No route map entries created, just don't match. */
+	if (aggregate->suppress_map == NULL)
+		return false;
+
+	/* Call route map matching and return result. */
+	attr.aspath = aspath_empty();
+	rmap_path.peer = bgp->peer_self;
+	rmap_path.attr = &attr;
+
+	SET_FLAG(bgp->peer_self->rmap_type, PEER_RMAP_TYPE_AGGREGATE);
+	rmr = route_map_apply(aggregate->suppress_map, p, &rmap_path);
+	bgp->peer_self->rmap_type = 0;
+
+	bgp_attr_flush(&attr);
+	aspath_unintern(&attr.aspath);
+
+	return rmr == RMAP_PERMITMATCH;
+}
+
+/** Test whether the aggregation has suppressed this path or not. */
+static bool aggr_suppress_exists(struct bgp_aggregate *aggregate,
+				 struct bgp_path_info *pi)
+{
+	if (pi->extra == NULL || pi->extra->aggr_suppressors == NULL)
+		return false;
+
+	return listnode_lookup(pi->extra->aggr_suppressors, aggregate) != NULL;
+}
+
+/**
+ * Suppress this path and keep the reference.
+ *
+ * \returns `true` if needs processing otherwise `false`.
+ */
+static bool aggr_suppress_path(struct bgp_aggregate *aggregate,
+			       struct bgp_path_info *pi)
+{
+	struct bgp_path_info_extra *pie;
+
+	/* Path is already suppressed by this aggregation. */
+	if (aggr_suppress_exists(aggregate, pi))
+		return false;
+
+	pie = bgp_path_info_extra_get(pi);
+
+	/* This is the first suppression, allocate memory and list it. */
+	if (pie->aggr_suppressors == NULL)
+		pie->aggr_suppressors = list_new();
+
+	listnode_add(pie->aggr_suppressors, aggregate);
+
+	/* Only mark for processing if suppressed. */
+	if (listcount(pie->aggr_suppressors) == 1) {
+		if (BGP_DEBUG(update, UPDATE_OUT))
+			zlog_debug("aggregate-address suppressing: %pFX",
+				   bgp_dest_get_prefix(pi->net));
+
+		bgp_path_info_set_flag(pi->net, pi, BGP_PATH_ATTR_CHANGED);
+		return true;
+	}
+
+	return false;
+}
+
+/**
+ * Unsuppress this path and remove the reference.
+ *
+ * \returns `true` if needs processing otherwise `false`.
+ */
+static bool aggr_unsuppress_path(struct bgp_aggregate *aggregate,
+				 struct bgp_path_info *pi)
+{
+	/* Path wasn't suppressed. */
+	if (!aggr_suppress_exists(aggregate, pi))
+		return false;
+
+	listnode_delete(pi->extra->aggr_suppressors, aggregate);
+
+	/* Unsuppress and free extra memory if last item. */
+	if (listcount(pi->extra->aggr_suppressors) == 0) {
+		if (BGP_DEBUG(update, UPDATE_OUT))
+			zlog_debug("aggregate-address unsuppressing: %pFX",
+				   bgp_dest_get_prefix(pi->net));
+
+		list_delete(&pi->extra->aggr_suppressors);
+		bgp_path_info_set_flag(pi->net, pi, BGP_PATH_ATTR_CHANGED);
+		return true;
+	}
+
+	return false;
 }
 
 static bool bgp_aggregate_info_same(struct bgp_path_info *pi, uint8_t origin,
@@ -6207,13 +7076,13 @@ static bool bgp_aggregate_info_same(struct bgp_path_info *pi, uint8_t origin,
 	if (!aspath_cmp(pi->attr->aspath, (aspath) ? aspath : ae))
 		return false;
 
-	if (!community_cmp(pi->attr->community, comm))
+	if (!community_cmp(bgp_attr_get_community(pi->attr), comm))
 		return false;
 
-	if (!ecommunity_cmp(pi->attr->ecommunity, ecomm))
+	if (!ecommunity_cmp(bgp_attr_get_ecommunity(pi->attr), ecomm))
 		return false;
 
-	if (!lcommunity_cmp(pi->attr->lcommunity, lcomm))
+	if (!lcommunity_cmp(bgp_attr_get_lcommunity(pi->attr), lcomm))
 		return false;
 
 	if (!CHECK_FLAG(pi->flags, BGP_PATH_VALID))
@@ -6241,6 +7110,13 @@ static void bgp_aggregate_install(
 		if (pi->peer == bgp->peer_self && pi->type == ZEBRA_ROUTE_BGP
 		    && pi->sub_type == BGP_ROUTE_AGGREGATE)
 			break;
+
+	/*
+	 * If we have paths with different MEDs, then don't install
+	 * (or uninstall) the aggregate route.
+	 */
+	if (aggregate->match_med && aggregate->med_mismatched)
+		goto uninstall_aggregate_route;
 
 	if (aggregate->count > 0) {
 		/*
@@ -6275,6 +7151,9 @@ static void bgp_aggregate_install(
 
 		if (!attr) {
 			bgp_aggregate_delete(bgp, p, afi, safi, aggregate);
+			if (BGP_DEBUG(update_groups, UPDATE_GROUPS))
+				zlog_debug("%s: %pFX null attribute", __func__,
+					   p);
 			return;
 		}
 
@@ -6286,6 +7165,7 @@ static void bgp_aggregate_install(
 		bgp_path_info_add(dest, new);
 		bgp_process(bgp, dest, afi, safi);
 	} else {
+	uninstall_aggregate_route:
 		for (pi = orig; pi; pi = pi->next)
 			if (pi->peer == bgp->peer_self
 			    && pi->type == ZEBRA_ROUTE_BGP
@@ -6300,6 +7180,172 @@ static void bgp_aggregate_install(
 	}
 
 	bgp_dest_unlock_node(dest);
+}
+
+/**
+ * Check if the current path has different MED than other known paths.
+ *
+ * \returns `true` if the MED matched the others else `false`.
+ */
+static bool bgp_aggregate_med_match(struct bgp_aggregate *aggregate,
+				    struct bgp *bgp, struct bgp_path_info *pi)
+{
+	uint32_t cur_med = bgp_med_value(pi->attr, bgp);
+
+	/* This is the first route being analyzed. */
+	if (!aggregate->med_initialized) {
+		aggregate->med_initialized = true;
+		aggregate->med_mismatched = false;
+		aggregate->med_matched_value = cur_med;
+	} else {
+		/* Check if routes with different MED showed up. */
+		if (cur_med != aggregate->med_matched_value)
+			aggregate->med_mismatched = true;
+	}
+
+	return !aggregate->med_mismatched;
+}
+
+/**
+ * Initializes and tests all routes in the aggregate address path for MED
+ * values.
+ *
+ * \returns `true` if all MEDs are the same otherwise `false`.
+ */
+static bool bgp_aggregate_test_all_med(struct bgp_aggregate *aggregate,
+				       struct bgp *bgp, const struct prefix *p,
+				       afi_t afi, safi_t safi)
+{
+	struct bgp_table *table = bgp->rib[afi][safi];
+	const struct prefix *dest_p;
+	struct bgp_dest *dest, *top;
+	struct bgp_path_info *pi;
+	bool med_matched = true;
+
+	aggregate->med_initialized = false;
+
+	top = bgp_node_get(table, p);
+	for (dest = bgp_node_get(table, p); dest;
+	     dest = bgp_route_next_until(dest, top)) {
+		dest_p = bgp_dest_get_prefix(dest);
+		if (dest_p->prefixlen <= p->prefixlen)
+			continue;
+
+		for (pi = bgp_dest_get_bgp_path_info(dest); pi; pi = pi->next) {
+			if (BGP_PATH_HOLDDOWN(pi))
+				continue;
+			if (pi->sub_type == BGP_ROUTE_AGGREGATE)
+				continue;
+			if (!bgp_aggregate_med_match(aggregate, bgp, pi)) {
+				med_matched = false;
+				break;
+			}
+		}
+		if (!med_matched)
+			break;
+	}
+	bgp_dest_unlock_node(top);
+
+	return med_matched;
+}
+
+/**
+ * Toggles the route suppression status for this aggregate address
+ * configuration.
+ */
+void bgp_aggregate_toggle_suppressed(struct bgp_aggregate *aggregate,
+				     struct bgp *bgp, const struct prefix *p,
+				     afi_t afi, safi_t safi, bool suppress)
+{
+	struct bgp_table *table = bgp->rib[afi][safi];
+	const struct prefix *dest_p;
+	struct bgp_dest *dest, *top;
+	struct bgp_path_info *pi;
+	bool toggle_suppression;
+
+	/* We've found a different MED we must revert any suppressed routes. */
+	top = bgp_node_get(table, p);
+	for (dest = bgp_node_get(table, p); dest;
+	     dest = bgp_route_next_until(dest, top)) {
+		dest_p = bgp_dest_get_prefix(dest);
+		if (dest_p->prefixlen <= p->prefixlen)
+			continue;
+
+		toggle_suppression = false;
+		for (pi = bgp_dest_get_bgp_path_info(dest); pi; pi = pi->next) {
+			if (BGP_PATH_HOLDDOWN(pi))
+				continue;
+			if (pi->sub_type == BGP_ROUTE_AGGREGATE)
+				continue;
+
+			/* We are toggling suppression back. */
+			if (suppress) {
+				/* Suppress route if not suppressed already. */
+				if (aggr_suppress_path(aggregate, pi))
+					toggle_suppression = true;
+				continue;
+			}
+
+			/* Install route if there is no more suppression. */
+			if (aggr_unsuppress_path(aggregate, pi))
+				toggle_suppression = true;
+		}
+
+		if (toggle_suppression)
+			bgp_process(bgp, dest, afi, safi);
+	}
+	bgp_dest_unlock_node(top);
+}
+
+/**
+ * Aggregate address MED matching incremental test: this function is called
+ * when the initial aggregation occurred and we are only testing a single
+ * new path.
+ *
+ * In addition to testing and setting the MED validity it also installs back
+ * suppressed routes (if summary is configured).
+ *
+ * Must not be called in `bgp_aggregate_route`.
+ */
+static void bgp_aggregate_med_update(struct bgp_aggregate *aggregate,
+				     struct bgp *bgp, const struct prefix *p,
+				     afi_t afi, safi_t safi,
+				     struct bgp_path_info *pi, bool is_adding)
+{
+	/* MED matching disabled. */
+	if (!aggregate->match_med)
+		return;
+
+	/* Aggregation with different MED, nothing to do. */
+	if (aggregate->med_mismatched)
+		return;
+
+	/*
+	 * Test the current entry:
+	 *
+	 * is_adding == true: if the new entry doesn't match then we must
+	 * install all suppressed routes.
+	 *
+	 * is_adding == false: if the entry being removed was the last
+	 * unmatching entry then we can suppress all routes.
+	 */
+	if (!is_adding) {
+		if (bgp_aggregate_test_all_med(aggregate, bgp, p, afi, safi)
+		    && aggregate->summary_only)
+			bgp_aggregate_toggle_suppressed(aggregate, bgp, p, afi,
+							safi, true);
+	} else
+		bgp_aggregate_med_match(aggregate, bgp, pi);
+
+	/* No mismatches, just quit. */
+	if (!aggregate->med_mismatched)
+		return;
+
+	/* Route summarization is disabled. */
+	if (!aggregate->summary_only)
+		return;
+
+	bgp_aggregate_toggle_suppressed(aggregate, bgp, p, afi, safi, false);
 }
 
 /* Update an aggregate as routes are added/removed from the BGP table */
@@ -6325,6 +7371,21 @@ void bgp_aggregate_route(struct bgp *bgp, const struct prefix *p, afi_t afi,
 	    || (bgp->peer_self == NULL))
 		return;
 
+	/* Initialize and test routes for MED difference. */
+	if (aggregate->match_med)
+		bgp_aggregate_test_all_med(aggregate, bgp, p, afi, safi);
+
+	/*
+	 * Reset aggregate count: we might've been called from route map
+	 * update so in that case we must retest all more specific routes.
+	 *
+	 * \see `bgp_route_map_process_update`.
+	 */
+	aggregate->count = 0;
+	aggregate->incomplete_origin_count = 0;
+	aggregate->incomplete_origin_count = 0;
+	aggregate->egp_origin_count = 0;
+
 	/* ORIGIN attribute: If at least one route among routes that are
 	   aggregated has ORIGIN with the value INCOMPLETE, then the
 	   aggregated route must have the ORIGIN attribute with the value
@@ -6345,6 +7406,12 @@ void bgp_aggregate_route(struct bgp *bgp, const struct prefix *p, afi_t afi,
 		if (dest_p->prefixlen <= p->prefixlen)
 			continue;
 
+		/* If suppress fib is enabled and route not installed
+		 * in FIB, skip the route
+		 */
+		if (!bgp_check_advertise(bgp, dest))
+			continue;
+
 		match = 0;
 
 		for (pi = bgp_dest_get_bgp_path_info(dest); pi; pi = pi->next) {
@@ -6361,12 +7428,32 @@ void bgp_aggregate_route(struct bgp *bgp, const struct prefix *p, afi_t afi,
 			/*
 			 * summary-only aggregate route suppress
 			 * aggregated route announcements.
+			 *
+			 * MED matching:
+			 * Don't create summaries if MED didn't match
+			 * otherwise neither the specific routes and the
+			 * aggregation will be announced.
 			 */
-			if (aggregate->summary_only) {
-				(bgp_path_info_extra_get(pi))->suppress++;
-				bgp_path_info_set_flag(dest, pi,
-						       BGP_PATH_ATTR_CHANGED);
-				match++;
+			if (aggregate->summary_only
+			    && AGGREGATE_MED_VALID(aggregate)) {
+				if (aggr_suppress_path(aggregate, pi))
+					match++;
+			}
+
+			/*
+			 * Suppress more specific routes that match the route
+			 * map results.
+			 *
+			 * MED matching:
+			 * Don't suppress routes if MED matching is enabled and
+			 * it mismatched otherwise we might end up with no
+			 * routes for this path.
+			 */
+			if (aggregate->suppress_map_name
+			    && AGGREGATE_MED_VALID(aggregate)
+			    && aggr_suppress_map_test(bgp, aggregate, pi)) {
+				if (aggr_suppress_path(aggregate, pi))
+					match++;
 			}
 
 			aggregate->count++;
@@ -6408,24 +7495,24 @@ void bgp_aggregate_route(struct bgp *bgp, const struct prefix *p, afi_t afi,
 
 			/* Compute aggregate route's community.
 			 */
-			if (pi->attr->community)
+			if (bgp_attr_get_community(pi->attr))
 				bgp_compute_aggregate_community_hash(
-							aggregate,
-							pi->attr->community);
+					aggregate,
+					bgp_attr_get_community(pi->attr));
 
 			/* Compute aggregate route's extended community.
 			 */
-			if (pi->attr->ecommunity)
+			if (bgp_attr_get_ecommunity(pi->attr))
 				bgp_compute_aggregate_ecommunity_hash(
-							aggregate,
-							pi->attr->ecommunity);
+					aggregate,
+					bgp_attr_get_ecommunity(pi->attr));
 
 			/* Compute aggregate route's large community.
 			 */
-			if (pi->attr->lcommunity)
+			if (bgp_attr_get_lcommunity(pi->attr))
 				bgp_compute_aggregate_lcommunity_hash(
-							aggregate,
-							pi->attr->lcommunity);
+					aggregate,
+					bgp_attr_get_lcommunity(pi->attr));
 		}
 		if (match)
 			bgp_process(bgp, dest, afi, safi);
@@ -6504,16 +7591,18 @@ void bgp_aggregate_delete(struct bgp *bgp, const struct prefix *p, afi_t afi,
 			if (pi->sub_type == BGP_ROUTE_AGGREGATE)
 				continue;
 
-			if (aggregate->summary_only && pi->extra) {
-				pi->extra->suppress--;
-
-				if (pi->extra->suppress == 0) {
-					bgp_path_info_set_flag(
-						dest, pi,
-						BGP_PATH_ATTR_CHANGED);
+			/*
+			 * This route is suppressed: attempt to unsuppress it.
+			 *
+			 * `aggr_unsuppress_path` will fail if this particular
+			 * aggregate route was not the suppressor.
+			 */
+			if (pi->extra && pi->extra->aggr_suppressors &&
+			    listcount(pi->extra->aggr_suppressors)) {
+				if (aggr_unsuppress_path(aggregate, pi))
 					match++;
-				}
 			}
+
 			aggregate->count--;
 
 			if (pi->attr->origin == BGP_ORIGIN_INCOMPLETE)
@@ -6528,26 +7617,29 @@ void bgp_aggregate_delete(struct bgp *bgp, const struct prefix *p, afi_t afi,
 							aggregate,
 							pi->attr->aspath);
 
-				if (pi->attr->community)
+				if (bgp_attr_get_community(pi->attr))
 					/* Remove community from aggregate.
 					 */
 					bgp_remove_comm_from_aggregate_hash(
-							aggregate,
-							pi->attr->community);
+						aggregate,
+						bgp_attr_get_community(
+							pi->attr));
 
-				if (pi->attr->ecommunity)
+				if (bgp_attr_get_ecommunity(pi->attr))
 					/* Remove ecommunity from aggregate.
 					 */
 					bgp_remove_ecomm_from_aggregate_hash(
-							aggregate,
-							pi->attr->ecommunity);
+						aggregate,
+						bgp_attr_get_ecommunity(
+							pi->attr));
 
-				if (pi->attr->lcommunity)
+				if (bgp_attr_get_lcommunity(pi->attr))
 					/* Remove lcommunity from aggregate.
 					 */
 					bgp_remove_lcomm_from_aggregate_hash(
-							aggregate,
-							pi->attr->lcommunity);
+						aggregate,
+						bgp_attr_get_lcommunity(
+							pi->attr));
 			}
 		}
 
@@ -6582,6 +7674,13 @@ static void bgp_add_route_to_aggregate(struct bgp *bgp,
 	struct ecommunity *ecommunity = NULL;
 	struct lcommunity *lcommunity = NULL;
 
+	/* If the bgp instance is being deleted or self peer is deleted
+	 * then do not create aggregate route
+	 */
+	if (CHECK_FLAG(bgp->flags, BGP_FLAG_DELETE_IN_PROGRESS)
+	    || (bgp->peer_self == NULL))
+		return;
+
 	/* ORIGIN attribute: If at least one route among routes that are
 	 * aggregated has ORIGIN with the value INCOMPLETE, then the
 	 * aggregated route must have the ORIGIN attribute with the value
@@ -6595,8 +7694,20 @@ static void bgp_add_route_to_aggregate(struct bgp *bgp,
 
 	aggregate->count++;
 
-	if (aggregate->summary_only)
-		(bgp_path_info_extra_get(pinew))->suppress++;
+	/*
+	 * This must be called before `summary` check to avoid
+	 * "suppressing" twice.
+	 */
+	if (aggregate->match_med)
+		bgp_aggregate_med_update(aggregate, bgp, aggr_p, afi, safi,
+					 pinew, true);
+
+	if (aggregate->summary_only && AGGREGATE_MED_VALID(aggregate))
+		aggr_suppress_path(aggregate, pinew);
+
+	if (aggregate->suppress_map_name && AGGREGATE_MED_VALID(aggregate)
+	    && aggr_suppress_map_test(bgp, aggregate, pinew))
+		aggr_suppress_path(aggregate, pinew);
 
 	switch (pinew->attr->origin) {
 	case BGP_ORIGIN_INCOMPLETE:
@@ -6627,24 +7738,23 @@ static void bgp_add_route_to_aggregate(struct bgp *bgp,
 
 		/* Compute aggregate route's community.
 		 */
-		if (pinew->attr->community)
+		if (bgp_attr_get_community(pinew->attr))
 			bgp_compute_aggregate_community(
-						aggregate,
-						pinew->attr->community);
+				aggregate, bgp_attr_get_community(pinew->attr));
 
 		/* Compute aggregate route's extended community.
 		 */
-		if (pinew->attr->ecommunity)
+		if (bgp_attr_get_ecommunity(pinew->attr))
 			bgp_compute_aggregate_ecommunity(
-					aggregate,
-					pinew->attr->ecommunity);
+				aggregate,
+				bgp_attr_get_ecommunity(pinew->attr));
 
 		/* Compute aggregate route's large community.
 		 */
-		if (pinew->attr->lcommunity)
+		if (bgp_attr_get_lcommunity(pinew->attr))
 			bgp_compute_aggregate_lcommunity(
-					aggregate,
-					pinew->attr->lcommunity);
+				aggregate,
+				bgp_attr_get_lcommunity(pinew->attr));
 
 		/* Retrieve aggregate route's as-path.
 		 */
@@ -6686,23 +7796,35 @@ static void bgp_remove_route_from_aggregate(struct bgp *bgp, afi_t afi,
 	struct lcommunity *lcommunity = NULL;
 	unsigned long match = 0;
 
+	/* If the bgp instance is being deleted or self peer is deleted
+	 * then do not create aggregate route
+	 */
+	if (CHECK_FLAG(bgp->flags, BGP_FLAG_DELETE_IN_PROGRESS)
+	    || (bgp->peer_self == NULL))
+		return;
+
 	if (BGP_PATH_HOLDDOWN(pi))
 		return;
 
 	if (pi->sub_type == BGP_ROUTE_AGGREGATE)
 		return;
 
-	if (aggregate->summary_only
-		&& pi->extra
-		&& pi->extra->suppress > 0) {
-		pi->extra->suppress--;
-
-		if (pi->extra->suppress == 0) {
-			bgp_path_info_set_flag(pi->net, pi,
-					       BGP_PATH_ATTR_CHANGED);
+	if (aggregate->summary_only && AGGREGATE_MED_VALID(aggregate))
+		if (aggr_unsuppress_path(aggregate, pi))
 			match++;
-		}
-	}
+
+	if (aggregate->suppress_map_name && AGGREGATE_MED_VALID(aggregate)
+	    && aggr_suppress_map_test(bgp, aggregate, pi))
+		if (aggr_unsuppress_path(aggregate, pi))
+			match++;
+
+	/*
+	 * This must be called after `summary`, `suppress-map` check to avoid
+	 * "unsuppressing" twice.
+	 */
+	if (aggregate->match_med)
+		bgp_aggregate_med_update(aggregate, bgp, aggr_p, afi, safi, pi,
+					 true);
 
 	if (aggregate->count > 0)
 		aggregate->count--;
@@ -6718,26 +7840,23 @@ static void bgp_remove_route_from_aggregate(struct bgp *bgp, afi_t afi,
 		bgp_remove_aspath_from_aggregate(aggregate,
 						 pi->attr->aspath);
 
-		if (pi->attr->community)
+		if (bgp_attr_get_community(pi->attr))
 			/* Remove community from aggregate.
 			 */
 			bgp_remove_community_from_aggregate(
-							aggregate,
-							pi->attr->community);
+				aggregate, bgp_attr_get_community(pi->attr));
 
-		if (pi->attr->ecommunity)
+		if (bgp_attr_get_ecommunity(pi->attr))
 			/* Remove ecommunity from aggregate.
 			 */
 			bgp_remove_ecommunity_from_aggregate(
-							aggregate,
-							pi->attr->ecommunity);
+				aggregate, bgp_attr_get_ecommunity(pi->attr));
 
-		if (pi->attr->lcommunity)
+		if (bgp_attr_get_lcommunity(pi->attr))
 			/* Remove lcommunity from aggregate.
 			 */
 			bgp_remove_lcommunity_from_aggregate(
-							aggregate,
-							pi->attr->lcommunity);
+				aggregate, bgp_attr_get_lcommunity(pi->attr));
 	}
 
 	/* If this node was suppressed, process the change. */
@@ -6798,6 +7917,12 @@ void bgp_aggregate_increment(struct bgp *bgp, const struct prefix *p,
 		return;
 
 	if (BGP_PATH_HOLDDOWN(pi))
+		return;
+
+	/* If suppress fib is enabled and route not installed
+	 * in FIB, do not update the aggregate route
+	 */
+	if (!bgp_check_advertise(bgp, pi->net))
 		return;
 
 	child = bgp_node_get(table, p);
@@ -6863,6 +7988,23 @@ static const char *bgp_origin2str(uint8_t origin)
 		return "incomplete";
 	}
 	return "n/a";
+}
+
+static const char *bgp_rpki_validation2str(enum rpki_states v_state)
+{
+	switch (v_state) {
+	case RPKI_NOT_BEING_USED:
+		return "not used";
+	case RPKI_VALID:
+		return "valid";
+	case RPKI_NOTFOUND:
+		return "not found";
+	case RPKI_INVALID:
+		return "invalid";
+	}
+
+	assert(!"We should never get here this is a dev escape");
+	return "ERROR";
 }
 
 static int bgp_aggregate_unset(struct vty *vty, const char *prefix_str,
@@ -6960,7 +8102,8 @@ static int bgp_aggregate_unset(struct vty *vty, const char *prefix_str,
 static int bgp_aggregate_set(struct vty *vty, const char *prefix_str, afi_t afi,
 			     safi_t safi, const char *rmap,
 			     uint8_t summary_only, uint8_t as_set,
-			     uint8_t origin)
+			     uint8_t origin, bool match_med,
+			     const char *suppress_map)
 {
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
 	int ret;
@@ -6968,6 +8111,12 @@ static int bgp_aggregate_set(struct vty *vty, const char *prefix_str, afi_t afi,
 	struct bgp_dest *dest;
 	struct bgp_aggregate *aggregate;
 	uint8_t as_set_new = as_set;
+
+	if (suppress_map && summary_only) {
+		vty_out(vty,
+			"'summary-only' and 'suppress-map' can't be used at the same time\n");
+		return CMD_WARNING_CONFIG_FAILED;
+	}
 
 	/* Convert string to prefix structure. */
 	ret = str2prefix(prefix_str, &p);
@@ -7002,6 +8151,7 @@ static int bgp_aggregate_set(struct vty *vty, const char *prefix_str, afi_t afi,
 	/* Make aggregate address structure. */
 	aggregate = bgp_aggregate_new();
 	aggregate->summary_only = summary_only;
+	aggregate->match_med = match_med;
 
 	/* Network operators MUST NOT locally generate any new
 	 * announcements containing AS_SET or AS_CONFED_SET. If they have
@@ -7039,6 +8189,18 @@ static int bgp_aggregate_set(struct vty *vty, const char *prefix_str, afi_t afi,
 		aggregate->rmap.map = route_map_lookup_by_name(rmap);
 		route_map_counter_increment(aggregate->rmap.map);
 	}
+
+	if (suppress_map) {
+		XFREE(MTYPE_ROUTE_MAP_NAME, aggregate->suppress_map_name);
+		route_map_counter_decrement(aggregate->suppress_map);
+
+		aggregate->suppress_map_name =
+			XSTRDUP(MTYPE_ROUTE_MAP_NAME, suppress_map);
+		aggregate->suppress_map =
+			route_map_lookup_by_name(aggregate->suppress_map_name);
+		route_map_counter_increment(aggregate->suppress_map);
+	}
+
 	bgp_dest_set_bgp_aggregate_info(dest, aggregate);
 
 	/* Aggregate address insert into BGP routing table. */
@@ -7047,242 +8209,124 @@ static int bgp_aggregate_set(struct vty *vty, const char *prefix_str, afi_t afi,
 	return CMD_SUCCESS;
 }
 
-DEFUN (aggregate_address,
-       aggregate_address_cmd,
-       "aggregate-address A.B.C.D/M [<as-set [summary-only]|summary-only [as-set]>] [route-map WORD] [origin <egp|igp|incomplete>]",
-       "Configure BGP aggregate entries\n"
-       "Aggregate prefix\n"
-       "Generate AS set path information\n"
-       "Filter more specific routes from updates\n"
-       "Filter more specific routes from updates\n"
-       "Generate AS set path information\n"
-       "Apply route map to aggregate network\n"
-       "Name of route map\n"
-       "BGP origin code\n"
-       "Remote EGP\n"
-       "Local IGP\n"
-       "Unknown heritage\n")
+DEFPY(aggregate_addressv4, aggregate_addressv4_cmd,
+      "[no] aggregate-address <A.B.C.D/M$prefix|A.B.C.D$addr A.B.C.D$mask> [{"
+      "as-set$as_set_s"
+      "|summary-only$summary_only"
+      "|route-map RMAP_NAME$rmap_name"
+      "|origin <egp|igp|incomplete>$origin_s"
+      "|matching-MED-only$match_med"
+      "|suppress-map RMAP_NAME$suppress_map"
+      "}]",
+      NO_STR
+      "Configure BGP aggregate entries\n"
+      "Aggregate prefix\n"
+      "Aggregate address\n"
+      "Aggregate mask\n"
+      "Generate AS set path information\n"
+      "Filter more specific routes from updates\n"
+      "Apply route map to aggregate network\n"
+      "Route map name\n"
+      "BGP origin code\n"
+      "Remote EGP\n"
+      "Local IGP\n"
+      "Unknown heritage\n"
+      "Only aggregate routes with matching MED\n"
+      "Suppress the selected more specific routes\n"
+      "Route map with the route selectors\n")
 {
-	int idx = 0;
-	argv_find(argv, argc, "A.B.C.D/M", &idx);
-	char *prefix = argv[idx]->arg;
-	char *rmap = NULL;
+	const char *prefix_s = NULL;
+	safi_t safi = bgp_node_safi(vty);
 	uint8_t origin = BGP_ORIGIN_UNSPECIFIED;
-	int as_set = argv_find(argv, argc, "as-set", &idx) ? AGGREGATE_AS_SET
-							   : AGGREGATE_AS_UNSET;
-	idx = 0;
-	int summary_only = argv_find(argv, argc, "summary-only", &idx)
-				   ? AGGREGATE_SUMMARY_ONLY
-				   : 0;
+	int as_set = AGGREGATE_AS_UNSET;
+	char prefix_buf[PREFIX2STR_BUFFER];
 
-	idx = 0;
-	argv_find(argv, argc, "WORD", &idx);
-	if (idx)
-		rmap = argv[idx]->arg;
+	if (addr_str) {
+		if (netmask_str2prefix_str(addr_str, mask_str, prefix_buf,
+					   sizeof(prefix_buf))
+		    == 0) {
+			vty_out(vty, "%% Inconsistent address and mask\n");
+			return CMD_WARNING_CONFIG_FAILED;
+		}
+		prefix_s = prefix_buf;
+	} else
+		prefix_s = prefix_str;
 
-	idx = 0;
-	if (argv_find(argv, argc, "origin", &idx)) {
-		if (strncmp(argv[idx + 1]->arg, "igp", 2) == 0)
-			origin = BGP_ORIGIN_IGP;
-		if (strncmp(argv[idx + 1]->arg, "egp", 1) == 0)
+	if (origin_s) {
+		if (strcmp(origin_s, "egp") == 0)
 			origin = BGP_ORIGIN_EGP;
-		if (strncmp(argv[idx + 1]->arg, "incomplete", 2) == 0)
+		else if (strcmp(origin_s, "igp") == 0)
+			origin = BGP_ORIGIN_IGP;
+		else if (strcmp(origin_s, "incomplete") == 0)
 			origin = BGP_ORIGIN_INCOMPLETE;
 	}
 
-	return bgp_aggregate_set(vty, prefix, AFI_IP, bgp_node_safi(vty), rmap,
-				 summary_only, as_set, origin);
+	if (as_set_s)
+		as_set = AGGREGATE_AS_SET;
+
+	/* Handle configuration removal, otherwise installation. */
+	if (no)
+		return bgp_aggregate_unset(vty, prefix_s, AFI_IP, safi);
+
+	return bgp_aggregate_set(vty, prefix_s, AFI_IP, safi, rmap_name,
+				 summary_only != NULL, as_set, origin,
+				 match_med != NULL, suppress_map);
 }
 
-DEFUN (aggregate_address_mask,
-       aggregate_address_mask_cmd,
-       "aggregate-address A.B.C.D A.B.C.D [<as-set [summary-only]|summary-only [as-set]>] [route-map WORD] [origin <egp|igp|incomplete>]",
-       "Configure BGP aggregate entries\n"
-       "Aggregate address\n"
-       "Aggregate mask\n"
-       "Generate AS set path information\n"
-       "Filter more specific routes from updates\n"
-       "Filter more specific routes from updates\n"
-       "Generate AS set path information\n"
-       "Apply route map to aggregate network\n"
-       "Name of route map\n"
-       "BGP origin code\n"
-       "Remote EGP\n"
-       "Local IGP\n"
-       "Unknown heritage\n")
+DEFPY(aggregate_addressv6, aggregate_addressv6_cmd,
+      "[no] aggregate-address X:X::X:X/M$prefix [{"
+      "as-set$as_set_s"
+      "|summary-only$summary_only"
+      "|route-map RMAP_NAME$rmap_name"
+      "|origin <egp|igp|incomplete>$origin_s"
+      "|matching-MED-only$match_med"
+      "|suppress-map RMAP_NAME$suppress_map"
+      "}]",
+      NO_STR
+      "Configure BGP aggregate entries\n"
+      "Aggregate prefix\n"
+      "Generate AS set path information\n"
+      "Filter more specific routes from updates\n"
+      "Apply route map to aggregate network\n"
+      "Route map name\n"
+      "BGP origin code\n"
+      "Remote EGP\n"
+      "Local IGP\n"
+      "Unknown heritage\n"
+      "Only aggregate routes with matching MED\n"
+      "Suppress the selected more specific routes\n"
+      "Route map with the route selectors\n")
 {
-	int idx = 0;
-	argv_find(argv, argc, "A.B.C.D", &idx);
-	char *prefix = argv[idx]->arg;
-	char *mask = argv[idx + 1]->arg;
-	bool rmap_found;
-	char *rmap = NULL;
 	uint8_t origin = BGP_ORIGIN_UNSPECIFIED;
-	int as_set = argv_find(argv, argc, "as-set", &idx) ? AGGREGATE_AS_SET
-							   : AGGREGATE_AS_UNSET;
-	idx = 0;
-	int summary_only = argv_find(argv, argc, "summary-only", &idx)
-				   ? AGGREGATE_SUMMARY_ONLY
-				   : 0;
+	int as_set = AGGREGATE_AS_UNSET;
 
-	rmap_found = argv_find(argv, argc, "WORD", &idx);
-	if (rmap_found)
-		rmap = argv[idx]->arg;
-
-	char prefix_str[BUFSIZ];
-	int ret = netmask_str2prefix_str(prefix, mask, prefix_str);
-
-	if (!ret) {
-		vty_out(vty, "%% Inconsistent address and mask\n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
-
-	idx = 0;
-	if (argv_find(argv, argc, "origin", &idx)) {
-		if (strncmp(argv[idx + 1]->arg, "igp", 2) == 0)
-			origin = BGP_ORIGIN_IGP;
-		if (strncmp(argv[idx + 1]->arg, "egp", 1) == 0)
+	if (origin_s) {
+		if (strcmp(origin_s, "egp") == 0)
 			origin = BGP_ORIGIN_EGP;
-		if (strncmp(argv[idx + 1]->arg, "incomplete", 2) == 0)
+		else if (strcmp(origin_s, "igp") == 0)
+			origin = BGP_ORIGIN_IGP;
+		else if (strcmp(origin_s, "incomplete") == 0)
 			origin = BGP_ORIGIN_INCOMPLETE;
 	}
 
-	return bgp_aggregate_set(vty, prefix_str, AFI_IP, bgp_node_safi(vty),
-				 rmap, summary_only, as_set, origin);
-}
+	if (as_set_s)
+		as_set = AGGREGATE_AS_SET;
 
-DEFUN (no_aggregate_address,
-       no_aggregate_address_cmd,
-       "no aggregate-address A.B.C.D/M [<as-set [summary-only]|summary-only [as-set]>] [route-map WORD] [origin <egp|igp|incomplete>]",
-       NO_STR
-       "Configure BGP aggregate entries\n"
-       "Aggregate prefix\n"
-       "Generate AS set path information\n"
-       "Filter more specific routes from updates\n"
-       "Filter more specific routes from updates\n"
-       "Generate AS set path information\n"
-       "Apply route map to aggregate network\n"
-       "Name of route map\n"
-       "BGP origin code\n"
-       "Remote EGP\n"
-       "Local IGP\n"
-       "Unknown heritage\n")
-{
-	int idx = 0;
-	argv_find(argv, argc, "A.B.C.D/M", &idx);
-	char *prefix = argv[idx]->arg;
-	return bgp_aggregate_unset(vty, prefix, AFI_IP, bgp_node_safi(vty));
-}
+	/* Handle configuration removal, otherwise installation. */
+	if (no)
+		return bgp_aggregate_unset(vty, prefix_str, AFI_IP6,
+					   SAFI_UNICAST);
 
-DEFUN (no_aggregate_address_mask,
-       no_aggregate_address_mask_cmd,
-       "no aggregate-address A.B.C.D A.B.C.D [<as-set [summary-only]|summary-only [as-set]>] [route-map WORD] [origin <egp|igp|incomplete>]",
-       NO_STR
-       "Configure BGP aggregate entries\n"
-       "Aggregate address\n"
-       "Aggregate mask\n"
-       "Generate AS set path information\n"
-       "Filter more specific routes from updates\n"
-       "Filter more specific routes from updates\n"
-       "Generate AS set path information\n"
-       "Apply route map to aggregate network\n"
-       "Name of route map\n"
-       "BGP origin code\n"
-       "Remote EGP\n"
-       "Local IGP\n"
-       "Unknown heritage\n")
-{
-	int idx = 0;
-	argv_find(argv, argc, "A.B.C.D", &idx);
-	char *prefix = argv[idx]->arg;
-	char *mask = argv[idx + 1]->arg;
-
-	char prefix_str[BUFSIZ];
-	int ret = netmask_str2prefix_str(prefix, mask, prefix_str);
-
-	if (!ret) {
-		vty_out(vty, "%% Inconsistent address and mask\n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
-
-	return bgp_aggregate_unset(vty, prefix_str, AFI_IP, bgp_node_safi(vty));
-}
-
-DEFUN (ipv6_aggregate_address,
-       ipv6_aggregate_address_cmd,
-       "aggregate-address X:X::X:X/M [<as-set [summary-only]|summary-only [as-set]>] [route-map WORD] [origin <egp|igp|incomplete>]",
-       "Configure BGP aggregate entries\n"
-       "Aggregate prefix\n"
-       "Generate AS set path information\n"
-       "Filter more specific routes from updates\n"
-       "Filter more specific routes from updates\n"
-       "Generate AS set path information\n"
-       "Apply route map to aggregate network\n"
-       "Name of route map\n"
-       "BGP origin code\n"
-       "Remote EGP\n"
-       "Local IGP\n"
-       "Unknown heritage\n")
-{
-	int idx = 0;
-	argv_find(argv, argc, "X:X::X:X/M", &idx);
-	char *prefix = argv[idx]->arg;
-	char *rmap = NULL;
-	bool rmap_found;
-	uint8_t origin = BGP_ORIGIN_UNSPECIFIED;
-	int as_set = argv_find(argv, argc, "as-set", &idx) ? AGGREGATE_AS_SET
-							   : AGGREGATE_AS_UNSET;
-
-	idx = 0;
-	int sum_only = argv_find(argv, argc, "summary-only", &idx)
-			       ? AGGREGATE_SUMMARY_ONLY
-			       : 0;
-
-	rmap_found = argv_find(argv, argc, "WORD", &idx);
-	if (rmap_found)
-		rmap = argv[idx]->arg;
-
-	idx = 0;
-	if (argv_find(argv, argc, "origin", &idx)) {
-		if (strncmp(argv[idx + 1]->arg, "igp", 2) == 0)
-			origin = BGP_ORIGIN_IGP;
-		if (strncmp(argv[idx + 1]->arg, "egp", 1) == 0)
-			origin = BGP_ORIGIN_EGP;
-		if (strncmp(argv[idx + 1]->arg, "incomplete", 2) == 0)
-			origin = BGP_ORIGIN_INCOMPLETE;
-	}
-
-	return bgp_aggregate_set(vty, prefix, AFI_IP6, SAFI_UNICAST, rmap,
-				 sum_only, as_set, origin);
-}
-
-DEFUN (no_ipv6_aggregate_address,
-       no_ipv6_aggregate_address_cmd,
-       "no aggregate-address X:X::X:X/M [<as-set [summary-only]|summary-only [as-set]>] [route-map WORD] [origin <egp|igp|incomplete>]",
-       NO_STR
-       "Configure BGP aggregate entries\n"
-       "Aggregate prefix\n"
-       "Generate AS set path information\n"
-       "Filter more specific routes from updates\n"
-       "Filter more specific routes from updates\n"
-       "Generate AS set path information\n"
-       "Apply route map to aggregate network\n"
-       "Name of route map\n"
-       "BGP origin code\n"
-       "Remote EGP\n"
-       "Local IGP\n"
-       "Unknown heritage\n")
-{
-	int idx = 0;
-	argv_find(argv, argc, "X:X::X:X/M", &idx);
-	char *prefix = argv[idx]->arg;
-	return bgp_aggregate_unset(vty, prefix, AFI_IP6, SAFI_UNICAST);
+	return bgp_aggregate_set(vty, prefix_str, AFI_IP6, SAFI_UNICAST,
+				 rmap_name, summary_only != NULL, as_set,
+				 origin, match_med != NULL, suppress_map);
 }
 
 /* Redistribute route treatment. */
 void bgp_redistribute_add(struct bgp *bgp, struct prefix *p,
 			  const union g_addr *nexthop, ifindex_t ifindex,
-			  enum nexthop_types_t nhtype, uint32_t metric,
+			  enum nexthop_types_t nhtype, uint8_t distance,
+			  enum blackhole_type bhtype, uint32_t metric,
 			  uint8_t type, unsigned short instance,
 			  route_tag_t tag)
 {
@@ -7297,7 +8341,7 @@ void bgp_redistribute_add(struct bgp *bgp, struct prefix *p,
 	struct bgp_redist *red;
 
 	/* Make default attribute. */
-	bgp_attr_default_set(&attr, BGP_ORIGIN_INCOMPLETE);
+	bgp_attr_default_set(&attr, bgp, BGP_ORIGIN_INCOMPLETE);
 	/*
 	 * This must not be NULL to satisfy Coverity SA
 	 */
@@ -7326,11 +8370,14 @@ void bgp_redistribute_add(struct bgp *bgp, struct prefix *p,
 			attr.mp_nexthop_len = BGP_ATTR_NHLEN_IPV6_GLOBAL;
 			break;
 		}
+		attr.bh_type = bhtype;
 		break;
 	}
+	attr.nh_type = nhtype;
 	attr.nh_ifindex = ifindex;
 
 	attr.med = metric;
+	attr.distance = distance;
 	attr.flag |= ATTR_FLAG_BIT(BGP_ATTR_MULTI_EXIT_DISC);
 	attr.tag = tag;
 
@@ -7348,15 +8395,14 @@ void bgp_redistribute_add(struct bgp *bgp, struct prefix *p,
 
 		/* Apply route-map. */
 		if (red->rmap.name) {
-			memset(&rmap_path, 0, sizeof(struct bgp_path_info));
+			memset(&rmap_path, 0, sizeof(rmap_path));
 			rmap_path.peer = bgp->peer_self;
 			rmap_path.attr = &attr_new;
 
 			SET_FLAG(bgp->peer_self->rmap_type,
 				 PEER_RMAP_TYPE_REDISTRIBUTE);
 
-			ret = route_map_apply(red->rmap.map, p, RMAP_BGP,
-					      &rmap_path);
+			ret = route_map_apply(red->rmap.map, p, &rmap_path);
 
 			bgp->peer_self->rmap_type = 0;
 
@@ -7371,7 +8417,7 @@ void bgp_redistribute_add(struct bgp *bgp, struct prefix *p,
 			}
 		}
 
-		if (CHECK_FLAG(bgp->flags, BGP_FLAG_GRACEFUL_SHUTDOWN))
+		if (bgp_in_graceful_shutdown(bgp))
 			bgp_attr_add_gshut_community(&attr_new);
 
 		bn = bgp_afi_node_get(bgp->rib[afi][SAFI_UNICAST], afi,
@@ -7433,6 +8479,7 @@ void bgp_redistribute_add(struct bgp *bgp, struct prefix *p,
 		bgp_aggregate_increment(bgp, p, new, afi, SAFI_UNICAST);
 		bgp_path_info_add(bn, new);
 		bgp_dest_unlock_node(bn);
+		SET_FLAG(bn->flags, BGP_NODE_FIB_INSTALLED);
 		bgp_process(bgp, bn, afi, SAFI_UNICAST);
 
 		if ((bgp->inst_type == BGP_INSTANCE_TYPE_VRF)
@@ -7512,37 +8559,29 @@ void bgp_redistribute_withdraw(struct bgp *bgp, afi_t afi, int type,
 }
 
 /* Static function to display route. */
-static void route_vty_out_route(const struct prefix *p, struct vty *vty,
-				json_object *json, bool wide)
+static void route_vty_out_route(struct bgp_dest *dest, const struct prefix *p,
+				struct vty *vty, json_object *json, bool wide)
 {
 	int len = 0;
 	char buf[BUFSIZ];
-	char buf2[BUFSIZ];
 
 	if (p->family == AF_INET) {
 		if (!json) {
-			len = vty_out(
-				vty, "%s/%d",
-				inet_ntop(p->family, &p->u.prefix, buf, BUFSIZ),
-				p->prefixlen);
+			len = vty_out(vty, "%pFX", p);
 		} else {
 			json_object_string_add(json, "prefix",
 					       inet_ntop(p->family,
 							 &p->u.prefix, buf,
 							 BUFSIZ));
 			json_object_int_add(json, "prefixLen", p->prefixlen);
-			prefix2str(p, buf2, PREFIX_STRLEN);
-			json_object_string_add(json, "network", buf2);
+			json_object_string_addf(json, "network", "%pFX", p);
+			json_object_int_add(json, "version", dest->version);
 		}
 	} else if (p->family == AF_ETHERNET) {
-		prefix2str(p, buf, PREFIX_STRLEN);
-		len = vty_out(vty, "%s", buf);
+		len = vty_out(vty, "%pFX", p);
 	} else if (p->family == AF_EVPN) {
 		if (!json)
-			len = vty_out(
-				vty, "%s",
-				bgp_evpn_route2str((struct prefix_evpn *)p, buf,
-						   BUFSIZ));
+			len = vty_out(vty, "%pFX", (struct prefix_evpn *)p);
 		else
 			bgp_evpn_route2json((struct prefix_evpn *)p, json);
 	} else if (p->family == AF_FLOWSPEC) {
@@ -7552,18 +8591,15 @@ static void route_vty_out_route(const struct prefix *p, struct vty *vty,
 			       NLRI_STRING_FORMAT_MIN, json);
 	} else {
 		if (!json)
-			len = vty_out(
-				vty, "%s/%d",
-				inet_ntop(p->family, &p->u.prefix, buf, BUFSIZ),
-				p->prefixlen);
+			len = vty_out(vty, "%pFX", p);
 		else {
 			json_object_string_add(json, "prefix",
 						inet_ntop(p->family,
 							&p->u.prefix, buf,
 							BUFSIZ));
 			json_object_int_add(json, "prefixLen", p->prefixlen);
-			prefix2str(p, buf2, PREFIX_STRLEN);
-			json_object_string_add(json, "network", buf2);
+			json_object_string_addf(json, "network", "%pFX", p);
+			json_object_int_add(json, "version", dest->version);
 		}
 	}
 
@@ -7580,11 +8616,69 @@ enum bgp_display_type {
 	normal_list,
 };
 
+const char *bgp_path_selection_reason2str(enum bgp_path_selection_reason reason)
+{
+	switch (reason) {
+	case bgp_path_selection_none:
+		return "Nothing to Select";
+	case bgp_path_selection_first:
+		return "First path received";
+	case bgp_path_selection_evpn_sticky_mac:
+		return "EVPN Sticky Mac";
+	case bgp_path_selection_evpn_seq:
+		return "EVPN sequence number";
+	case bgp_path_selection_evpn_lower_ip:
+		return "EVPN lower IP";
+	case bgp_path_selection_evpn_local_path:
+		return "EVPN local ES path";
+	case bgp_path_selection_evpn_non_proxy:
+		return "EVPN non proxy";
+	case bgp_path_selection_weight:
+		return "Weight";
+	case bgp_path_selection_local_pref:
+		return "Local Pref";
+	case bgp_path_selection_local_route:
+		return "Local Route";
+	case bgp_path_selection_confed_as_path:
+		return "Confederation based AS Path";
+	case bgp_path_selection_as_path:
+		return "AS Path";
+	case bgp_path_selection_origin:
+		return "Origin";
+	case bgp_path_selection_med:
+		return "MED";
+	case bgp_path_selection_peer:
+		return "Peer Type";
+	case bgp_path_selection_confed:
+		return "Confed Peer Type";
+	case bgp_path_selection_igp_metric:
+		return "IGP Metric";
+	case bgp_path_selection_older:
+		return "Older Path";
+	case bgp_path_selection_router_id:
+		return "Router ID";
+	case bgp_path_selection_cluster_length:
+		return "Cluster length";
+	case bgp_path_selection_stale:
+		return "Path Staleness";
+	case bgp_path_selection_local_configured:
+		return "Locally configured route";
+	case bgp_path_selection_neighbor_ip:
+		return "Neighbor IP";
+	case bgp_path_selection_default:
+		return "Nothing left to compare";
+	}
+	return "Invalid (internal error)";
+}
+
 /* Print the short form route status for a bgp_path_info */
 static void route_vty_short_status_out(struct vty *vty,
 				       struct bgp_path_info *path,
+				       const struct prefix *p,
 				       json_object *json_path)
 {
+	enum rpki_states rpki_state = RPKI_NOT_BEING_USED;
+
 	if (json_path) {
 
 		/* Route status display. */
@@ -7594,7 +8688,7 @@ static void route_vty_short_status_out(struct vty *vty,
 		if (CHECK_FLAG(path->flags, BGP_PATH_STALE))
 			json_object_boolean_true_add(json_path, "stale");
 
-		if (path->extra && path->extra->suppress)
+		if (path->extra && bgp_path_suppressed(path))
 			json_object_boolean_true_add(json_path, "suppressed");
 
 		if (CHECK_FLAG(path->flags, BGP_PATH_VALID)
@@ -7608,8 +8702,12 @@ static void route_vty_short_status_out(struct vty *vty,
 		if (CHECK_FLAG(path->flags, BGP_PATH_DAMPED))
 			json_object_boolean_true_add(json_path, "damped");
 
-		if (CHECK_FLAG(path->flags, BGP_PATH_SELECTED))
+		if (CHECK_FLAG(path->flags, BGP_PATH_SELECTED)) {
 			json_object_boolean_true_add(json_path, "bestpath");
+			json_object_string_add(json_path, "selectionReason",
+					       bgp_path_selection_reason2str(
+						       path->net->reason));
+		}
 
 		if (CHECK_FLAG(path->flags, BGP_PATH_MULTIPATH))
 			json_object_boolean_true_add(json_path, "multipath");
@@ -7626,12 +8724,23 @@ static void route_vty_short_status_out(struct vty *vty,
 		return;
 	}
 
+	/* RPKI validation state */
+	rpki_state =
+		hook_call(bgp_rpki_prefix_status, path->peer, path->attr, p);
+
+	if (rpki_state == RPKI_VALID)
+		vty_out(vty, "V");
+	else if (rpki_state == RPKI_INVALID)
+		vty_out(vty, "I");
+	else if (rpki_state == RPKI_NOTFOUND)
+		vty_out(vty, "N");
+
 	/* Route status display. */
 	if (CHECK_FLAG(path->flags, BGP_PATH_REMOVED))
 		vty_out(vty, "R");
 	else if (CHECK_FLAG(path->flags, BGP_PATH_STALE))
 		vty_out(vty, "S");
-	else if (path->extra && path->extra->suppress)
+	else if (bgp_path_suppressed(path))
 		vty_out(vty, "s");
 	else if (CHECK_FLAG(path->flags, BGP_PATH_VALID)
 		 && !CHECK_FLAG(path->flags, BGP_PATH_HISTORY))
@@ -7694,16 +8803,16 @@ void route_vty_out(struct vty *vty, const struct prefix *p,
 		json_path = json_object_new_object();
 
 	/* short status lead text */
-	route_vty_short_status_out(vty, path, json_path);
+	route_vty_short_status_out(vty, path, p, json_path);
 
 	if (!json_paths) {
 		/* print prefix and mask */
 		if (!display)
-			route_vty_out_route(p, vty, json_path, wide);
+			route_vty_out_route(path->net, p, vty, json_path, wide);
 		else
 			vty_out(vty, "%*s", (wide ? 45 : 17), " ");
 	} else {
-		route_vty_out_route(p, vty, json_path, wide);
+		route_vty_out_route(path->net, p, vty, json_path, wide);
 	}
 
 	/*
@@ -7803,8 +8912,8 @@ void route_vty_out(struct vty *vty, const struct prefix *p,
 		if (json_paths) {
 			json_nexthop_global = json_object_new_object();
 
-			json_object_string_add(json_nexthop_global, "ip",
-					       inet_ntoa(attr->nexthop));
+			json_object_string_addf(json_nexthop_global, "ip",
+						"%pI4", &attr->nexthop);
 
 			if (path->peer->hostname)
 				json_object_string_add(json_nexthop_global,
@@ -7836,9 +8945,9 @@ void route_vty_out(struct vty *vty, const struct prefix *p,
 
 				json_object_string_add(json_nexthop_global,
 						       "afi", "ipv4");
-				json_object_string_add(
-					json_nexthop_global, "ip",
-					inet_ntoa(attr->nexthop));
+				json_object_string_addf(json_nexthop_global,
+							"ip", "%pI4",
+							&attr->nexthop);
 
 				if (path->peer->hostname)
 					json_object_string_add(
@@ -7870,8 +8979,8 @@ void route_vty_out(struct vty *vty, const struct prefix *p,
 		if (json_paths) {
 			json_nexthop_global = json_object_new_object();
 
-			json_object_string_add(json_nexthop_global, "ip",
-					       inet_ntoa(attr->nexthop));
+			json_object_string_addf(json_nexthop_global, "ip",
+						"%pI4", &attr->nexthop);
 
 			if (path->peer->hostname)
 				json_object_string_add(json_nexthop_global,
@@ -7900,14 +9009,11 @@ void route_vty_out(struct vty *vty, const struct prefix *p,
 
 	/* IPv6 Next Hop */
 	else if (p->family == AF_INET6 || BGP_ATTR_NEXTHOP_AFI_IP6(attr)) {
-		char buf[BUFSIZ];
-
 		if (json_paths) {
 			json_nexthop_global = json_object_new_object();
-			json_object_string_add(
-				json_nexthop_global, "ip",
-				inet_ntop(AF_INET6, &attr->mp_nexthop_global,
-					  buf, BUFSIZ));
+			json_object_string_addf(json_nexthop_global, "ip",
+						"%pI6",
+						&attr->mp_nexthop_global);
 
 			if (path->peer->hostname)
 				json_object_string_add(json_nexthop_global,
@@ -7925,11 +9031,9 @@ void route_vty_out(struct vty *vty, const struct prefix *p,
 			     == BGP_ATTR_NHLEN_IPV6_GLOBAL_AND_LL)
 			    || (path->peer->conf_if)) {
 				json_nexthop_ll = json_object_new_object();
-				json_object_string_add(
-					json_nexthop_ll, "ip",
-					inet_ntop(AF_INET6,
-						  &attr->mp_nexthop_local, buf,
-						  BUFSIZ));
+				json_object_string_addf(
+					json_nexthop_ll, "ip", "%pI6",
+					&attr->mp_nexthop_local);
 
 				if (path->peer->hostname)
 					json_object_string_add(
@@ -8074,9 +9178,9 @@ void route_vty_out(struct vty *vty, const struct prefix *p,
 		if (safi == SAFI_EVPN &&
 		    attr->flag & ATTR_FLAG_BIT(BGP_ATTR_EXT_COMMUNITIES)) {
 			json_ext_community = json_object_new_object();
-			json_object_string_add(json_ext_community,
-					       "string",
-					       attr->ecommunity->str);
+			json_object_string_add(
+				json_ext_community, "string",
+				bgp_attr_get_ecommunity(attr)->str);
 			json_object_object_add(json_path,
 					       "extendedCommunity",
 					       json_ext_community);
@@ -8118,15 +9222,19 @@ void route_vty_out(struct vty *vty, const struct prefix *p,
 
 		if (safi == SAFI_EVPN) {
 			if (bgp_evpn_is_esi_valid(&attr->esi)) {
+				/* XXX - add these params to the json out */
 				vty_out(vty, "%*s", 20, " ");
-				vty_out(vty, "ESI:%s\n",
-						esi_to_str(&attr->esi,
-						esi_buf, sizeof(esi_buf)));
+				vty_out(vty, "ESI:%s",
+					esi_to_str(&attr->esi, esi_buf,
+						   sizeof(esi_buf)));
+
+				vty_out(vty, "\n");
 			}
 			if (attr->flag &
 				ATTR_FLAG_BIT(BGP_ATTR_EXT_COMMUNITIES)) {
 				vty_out(vty, "%*s", 20, " ");
-				vty_out(vty, "%s\n", attr->ecommunity->str);
+				vty_out(vty, "%s\n",
+					bgp_attr_get_ecommunity(attr)->str);
 			}
 		}
 
@@ -8140,9 +9248,9 @@ void route_vty_out(struct vty *vty, const struct prefix *p,
 }
 
 /* called from terminal list command */
-void route_vty_out_tmp(struct vty *vty, const struct prefix *p,
-		       struct attr *attr, safi_t safi, bool use_json,
-		       json_object *json_ar, bool wide)
+void route_vty_out_tmp(struct vty *vty, struct bgp_dest *dest,
+		       const struct prefix *p, struct attr *attr, safi_t safi,
+		       bool use_json, json_object *json_ar, bool wide)
 {
 	json_object *json_status = NULL;
 	json_object *json_net = NULL;
@@ -8170,11 +9278,10 @@ void route_vty_out_tmp(struct vty *vty, const struct prefix *p,
 				BUFSIZ));
 			json_object_int_add(json_net, "prefixLen",
 				p->prefixlen);
-			prefix2str(p, buff, PREFIX_STRLEN);
-			json_object_string_add(json_net, "network", buff);
+			json_object_string_addf(json_net, "network", "%pFX", p);
 		}
 	} else
-		route_vty_out_route(p, vty, NULL, wide);
+		route_vty_out_route(dest, p, vty, NULL, wide);
 
 	/* Print attribute */
 	if (attr) {
@@ -8183,28 +9290,24 @@ void route_vty_out_tmp(struct vty *vty, const struct prefix *p,
 			    && (safi == SAFI_MPLS_VPN || safi == SAFI_ENCAP
 				|| !BGP_ATTR_NEXTHOP_AFI_IP6(attr))) {
 				if (safi == SAFI_MPLS_VPN || safi == SAFI_ENCAP)
-					json_object_string_add(
-						json_net, "nextHop",
-						inet_ntoa(
-							attr->mp_nexthop_global_in));
+					json_object_string_addf(
+						json_net, "nextHop", "%pI4",
+						&attr->mp_nexthop_global_in);
 				else
-					json_object_string_add(
-						json_net, "nextHop",
-						inet_ntoa(attr->nexthop));
+					json_object_string_addf(
+						json_net, "nextHop", "%pI4",
+						&attr->nexthop);
 			} else if (p->family == AF_INET6
 				   || BGP_ATTR_NEXTHOP_AFI_IP6(attr)) {
-				char buf[BUFSIZ];
-
-				json_object_string_add(
-					json_net, "nextHopGlobal",
-					inet_ntop(AF_INET6,
-						  &attr->mp_nexthop_global, buf,
-						  BUFSIZ));
-			} else if (p->family == AF_EVPN &&
-				   !BGP_ATTR_NEXTHOP_AFI_IP6(attr))
-				json_object_string_add(json_net,
-					"nextHop", inet_ntoa(
-					attr->mp_nexthop_global_in));
+				json_object_string_addf(
+					json_net, "nextHopGlobal", "%pI6",
+					&attr->mp_nexthop_global);
+			} else if (p->family == AF_EVPN
+				   && !BGP_ATTR_NEXTHOP_AFI_IP6(attr)) {
+				json_object_string_addf(
+					json_net, "nextHop", "%pI4",
+					&attr->mp_nexthop_global_in);
+			}
 
 			if (attr->flag
 			    & ATTR_FLAG_BIT(BGP_ATTR_MULTI_EXIT_DISC))
@@ -8232,15 +9335,12 @@ void route_vty_out_tmp(struct vty *vty, const struct prefix *p,
 				|| !BGP_ATTR_NEXTHOP_AFI_IP6(attr))) {
 				if (safi == SAFI_MPLS_VPN || safi == SAFI_ENCAP
 				    || safi == SAFI_EVPN)
-					vty_out(vty, "%-16s",
-						inet_ntoa(
-							attr->mp_nexthop_global_in));
+					vty_out(vty, "%-16pI4",
+						&attr->mp_nexthop_global_in);
 				else if (wide)
-					vty_out(vty, "%-41s",
-						inet_ntoa(attr->nexthop));
+					vty_out(vty, "%-41pI4", &attr->nexthop);
 				else
-					vty_out(vty, "%-16s",
-						inet_ntoa(attr->nexthop));
+					vty_out(vty, "%-16pI4", &attr->nexthop);
 			} else if (p->family == AF_INET6
 				   || BGP_ATTR_NEXTHOP_AFI_IP6(attr)) {
 				char buf[BUFSIZ];
@@ -8309,12 +9409,12 @@ void route_vty_out_tag(struct vty *vty, const struct prefix *p,
 		json_out = json_object_new_object();
 
 	/* short status lead text */
-	route_vty_short_status_out(vty, path, json_out);
+	route_vty_short_status_out(vty, path, p, json_out);
 
 	/* print prefix and mask */
 	if (json == NULL) {
 		if (!display)
-			route_vty_out_route(p, vty, NULL, false);
+			route_vty_out_route(path->net, p, vty, NULL, false);
 		else
 			vty_out(vty, "%*s", 17, " ");
 	}
@@ -8328,19 +9428,18 @@ void route_vty_out_tag(struct vty *vty, const struct prefix *p,
 		if (safi == SAFI_MPLS_VPN || safi == SAFI_ENCAP
 		    || safi == SAFI_EVPN) {
 			if (json)
-				json_object_string_add(
-					json_out, "mpNexthopGlobalIn",
-					inet_ntoa(attr->mp_nexthop_global_in));
+				json_object_string_addf(
+					json_out, "mpNexthopGlobalIn", "%pI4",
+					&attr->mp_nexthop_global_in);
 			else
-				vty_out(vty, "%-16s",
-					inet_ntoa(attr->mp_nexthop_global_in));
+				vty_out(vty, "%-16pI4",
+					&attr->mp_nexthop_global_in);
 		} else {
 			if (json)
-				json_object_string_add(
-					json_out, "nexthop",
-					inet_ntoa(attr->nexthop));
+				json_object_string_addf(json_out, "nexthop",
+							"%pI4", &attr->nexthop);
 			else
-				vty_out(vty, "%-16s", inet_ntoa(attr->nexthop));
+				vty_out(vty, "%-16pI4", &attr->nexthop);
 		}
 	} else if (((p->family == AF_INET6)
 		    && ((safi == SAFI_MPLS_VPN || safi == SAFI_ENCAP)))
@@ -8350,11 +9449,9 @@ void route_vty_out_tag(struct vty *vty, const struct prefix *p,
 
 		if (attr->mp_nexthop_len == BGP_ATTR_NHLEN_IPV6_GLOBAL) {
 			if (json)
-				json_object_string_add(
-					json_out, "mpNexthopGlobalIn",
-					inet_ntop(AF_INET6,
-						  &attr->mp_nexthop_global,
-						  buf_a, sizeof(buf_a)));
+				json_object_string_addf(
+					json_out, "mpNexthopGlobalIn", "%pI6",
+					&attr->mp_nexthop_global);
 			else
 				vty_out(vty, "%s",
 					inet_ntop(AF_INET6,
@@ -8384,7 +9481,8 @@ void route_vty_out_tag(struct vty *vty, const struct prefix *p,
 			vty_out(vty, "notag/%d", label);
 			vty_out(vty, "\n");
 		}
-	}
+	} else if (!json)
+		vty_out(vty, "\n");
 }
 
 void route_vty_out_overlay(struct vty *vty, const struct prefix *p,
@@ -8392,7 +9490,6 @@ void route_vty_out_overlay(struct vty *vty, const struct prefix *p,
 			   json_object *json_paths)
 {
 	struct attr *attr;
-	char buf[BUFSIZ] = {0};
 	json_object *json_path = NULL;
 	json_object *json_nexthop = NULL;
 	json_object *json_overlay = NULL;
@@ -8407,26 +9504,25 @@ void route_vty_out_overlay(struct vty *vty, const struct prefix *p,
 	}
 
 	/* short status lead text */
-	route_vty_short_status_out(vty, path, json_path);
+	route_vty_short_status_out(vty, path, p, json_path);
 
 	/* print prefix and mask */
 	if (!display)
-		route_vty_out_route(p, vty, json_path, false);
+		route_vty_out_route(path->net, p, vty, json_path, false);
 	else
 		vty_out(vty, "%*s", 17, " ");
 
 	/* Print attribute */
 	attr = path->attr;
-	char buf1[BUFSIZ];
 	int af = NEXTHOP_FAMILY(attr->mp_nexthop_len);
 
 	switch (af) {
 	case AF_INET:
-		inet_ntop(af, &attr->mp_nexthop_global_in, buf, BUFSIZ);
 		if (!json_path) {
-			vty_out(vty, "%-16s", buf);
+			vty_out(vty, "%-16pI4", &attr->mp_nexthop_global_in);
 		} else {
-			json_object_string_add(json_nexthop, "ip", buf);
+			json_object_string_addf(json_nexthop, "ip", "%pI4",
+						&attr->mp_nexthop_global_in);
 
 			json_object_string_add(json_nexthop, "afi", "ipv4");
 
@@ -8435,15 +9531,17 @@ void route_vty_out_overlay(struct vty *vty, const struct prefix *p,
 		}
 		break;
 	case AF_INET6:
-		inet_ntop(af, &attr->mp_nexthop_global, buf, BUFSIZ);
-		inet_ntop(af, &attr->mp_nexthop_local, buf1, BUFSIZ);
 		if (!json_path) {
-			vty_out(vty, "%s(%s)", buf, buf1);
+			vty_out(vty, "%pI6(%pI6)", &attr->mp_nexthop_global,
+				&attr->mp_nexthop_local);
 		} else {
-			json_object_string_add(json_nexthop, "ipv6Global", buf);
+			json_object_string_addf(json_nexthop, "ipv6Global",
+						"%pI6",
+						&attr->mp_nexthop_global);
 
-			json_object_string_add(json_nexthop, "ipv6LinkLocal",
-					       buf1);
+			json_object_string_addf(json_nexthop, "ipv6LinkLocal",
+						"%pI6",
+						&attr->mp_nexthop_local);
 
 			json_object_string_add(json_nexthop, "afi", "ipv6");
 
@@ -8457,26 +9555,22 @@ void route_vty_out_overlay(struct vty *vty, const struct prefix *p,
 		} else {
 			json_object_string_add(json_nexthop, "Error",
 					       "Unsupported address-family");
+			json_object_string_add(json_nexthop, "error",
+					       "Unsupported address-family");
 		}
 	}
 
-	if (is_evpn_prefix_ipaddr_v4((struct prefix_evpn *)p)) {
-		inet_ntop(AF_INET, &(attr->evpn_overlay.gw_ip.ipv4), buf,
-			  BUFSIZ);
-	} else if (is_evpn_prefix_ipaddr_v6((struct prefix_evpn *)p)) {
-		inet_ntop(AF_INET6, &(attr->evpn_overlay.gw_ip.ipv6), buf,
-			  BUFSIZ);
-	}
+	const struct bgp_route_evpn *eo = bgp_attr_get_evpn_overlay(attr);
 
 	if (!json_path)
-		vty_out(vty, "/%s", buf);
+		vty_out(vty, "/%pIA", &eo->gw_ip);
 	else
-		json_object_string_add(json_overlay, "gw", buf);
+		json_object_string_addf(json_overlay, "gw", "%pIA", &eo->gw_ip);
 
-	if (attr->ecommunity) {
+	if (bgp_attr_get_ecommunity(attr)) {
 		char *mac = NULL;
 		struct ecommunity_val *routermac = ecommunity_lookup(
-			attr->ecommunity, ECOMMUNITY_ENCODE_EVPN,
+			bgp_attr_get_ecommunity(attr), ECOMMUNITY_ENCODE_EVPN,
 			ECOMMUNITY_EVPN_SUBTYPE_ROUTERMAC);
 
 		if (routermac)
@@ -8505,162 +9599,144 @@ void route_vty_out_overlay(struct vty *vty, const struct prefix *p,
 static void damp_route_vty_out(struct vty *vty, const struct prefix *p,
 			       struct bgp_path_info *path, int display,
 			       afi_t afi, safi_t safi, bool use_json,
-			       json_object *json)
+			       json_object *json_paths)
 {
-	struct attr *attr;
+	struct attr *attr = path->attr;
 	int len;
 	char timebuf[BGP_UPTIME_LEN];
+	json_object *json_path = NULL;
+
+	if (use_json)
+		json_path = json_object_new_object();
 
 	/* short status lead text */
-	route_vty_short_status_out(vty, path, json);
+	route_vty_short_status_out(vty, path, p, json_path);
 
 	/* print prefix and mask */
 	if (!use_json) {
 		if (!display)
-			route_vty_out_route(p, vty, NULL, false);
+			route_vty_out_route(path->net, p, vty, NULL, false);
 		else
 			vty_out(vty, "%*s", 17, " ");
-	}
 
-	len = vty_out(vty, "%s", path->peer->host);
-	len = 17 - len;
-	if (len < 1) {
-		if (!use_json)
+		len = vty_out(vty, "%s", path->peer->host);
+		len = 17 - len;
+
+		if (len < 1)
 			vty_out(vty, "\n%*s", 34, " ");
-	} else {
-		if (use_json)
-			json_object_int_add(json, "peerHost", len);
 		else
 			vty_out(vty, "%*s", len, " ");
-	}
 
-	if (use_json)
-		bgp_damp_reuse_time_vty(vty, path, timebuf, BGP_UPTIME_LEN, afi,
-					safi, use_json, json);
-	else
 		vty_out(vty, "%s ",
 			bgp_damp_reuse_time_vty(vty, path, timebuf,
 						BGP_UPTIME_LEN, afi, safi,
-						use_json, json));
+						use_json, NULL));
 
-	/* Print attribute */
-	attr = path->attr;
-
-	/* Print aspath */
-	if (attr->aspath) {
-		if (use_json)
-			json_object_string_add(json, "asPath",
-					       attr->aspath->str);
-		else
+		if (attr->aspath)
 			aspath_print_vty(vty, "%s", attr->aspath, " ");
-	}
 
-	/* Print origin */
-	if (use_json)
-		json_object_string_add(json, "origin",
-				       bgp_origin_str[attr->origin]);
-	else
 		vty_out(vty, "%s", bgp_origin_str[attr->origin]);
 
-	if (!use_json)
 		vty_out(vty, "\n");
+	} else {
+		bgp_damp_reuse_time_vty(vty, path, timebuf, BGP_UPTIME_LEN, afi,
+					safi, use_json, json_path);
+
+		if (attr->aspath)
+			json_object_string_add(json_path, "asPath",
+					       attr->aspath->str);
+
+		json_object_string_add(json_path, "origin",
+				       bgp_origin_str[attr->origin]);
+		json_object_string_add(json_path, "peerHost", path->peer->host);
+
+		json_object_array_add(json_paths, json_path);
+	}
 }
 
 /* flap route */
 static void flap_route_vty_out(struct vty *vty, const struct prefix *p,
 			       struct bgp_path_info *path, int display,
 			       afi_t afi, safi_t safi, bool use_json,
-			       json_object *json)
+			       json_object *json_paths)
 {
-	struct attr *attr;
+	struct attr *attr = path->attr;
 	struct bgp_damp_info *bdi;
 	char timebuf[BGP_UPTIME_LEN];
 	int len;
+	json_object *json_path = NULL;
 
 	if (!path->extra)
 		return;
 
+	if (use_json)
+		json_path = json_object_new_object();
+
 	bdi = path->extra->damp_info;
 
 	/* short status lead text */
-	route_vty_short_status_out(vty, path, json);
+	route_vty_short_status_out(vty, path, p, json_path);
 
-	/* print prefix and mask */
 	if (!use_json) {
 		if (!display)
-			route_vty_out_route(p, vty, NULL, false);
+			route_vty_out_route(path->net, p, vty, NULL, false);
 		else
 			vty_out(vty, "%*s", 17, " ");
-	}
 
-	len = vty_out(vty, "%s", path->peer->host);
-	len = 16 - len;
-	if (len < 1) {
-		if (!use_json)
+		len = vty_out(vty, "%s", path->peer->host);
+		len = 16 - len;
+		if (len < 1)
 			vty_out(vty, "\n%*s", 33, " ");
-	} else {
-		if (use_json)
-			json_object_int_add(json, "peerHost", len);
 		else
 			vty_out(vty, "%*s", len, " ");
-	}
 
-	len = vty_out(vty, "%d", bdi->flap);
-	len = 5 - len;
-	if (len < 1) {
-		if (!use_json)
+		len = vty_out(vty, "%d", bdi->flap);
+		len = 5 - len;
+		if (len < 1)
 			vty_out(vty, " ");
-	} else {
-		if (use_json)
-			json_object_int_add(json, "bdiFlap", len);
 		else
 			vty_out(vty, "%*s", len, " ");
-	}
 
-	if (use_json)
-		peer_uptime(bdi->start_time, timebuf, BGP_UPTIME_LEN, use_json,
-			    json);
-	else
 		vty_out(vty, "%s ", peer_uptime(bdi->start_time, timebuf,
 						BGP_UPTIME_LEN, 0, NULL));
 
-	if (CHECK_FLAG(path->flags, BGP_PATH_DAMPED)
-	    && !CHECK_FLAG(path->flags, BGP_PATH_HISTORY)) {
-		if (use_json)
-			bgp_damp_reuse_time_vty(vty, path, timebuf,
-						BGP_UPTIME_LEN, afi, safi,
-						use_json, json);
-		else
+		if (CHECK_FLAG(path->flags, BGP_PATH_DAMPED)
+		    && !CHECK_FLAG(path->flags, BGP_PATH_HISTORY))
 			vty_out(vty, "%s ",
 				bgp_damp_reuse_time_vty(vty, path, timebuf,
 							BGP_UPTIME_LEN, afi,
-							safi, use_json, json));
-	} else {
-		if (!use_json)
-			vty_out(vty, "%*s ", 8, " ");
-	}
-
-	/* Print attribute */
-	attr = path->attr;
-
-	/* Print aspath */
-	if (attr->aspath) {
-		if (use_json)
-			json_object_string_add(json, "asPath",
-					       attr->aspath->str);
+							safi, use_json, NULL));
 		else
-			aspath_print_vty(vty, "%s", attr->aspath, " ");
-	}
+			vty_out(vty, "%*s ", 8, " ");
 
-	/* Print origin */
-	if (use_json)
-		json_object_string_add(json, "origin",
-				       bgp_origin_str[attr->origin]);
-	else
+		if (attr->aspath)
+			aspath_print_vty(vty, "%s", attr->aspath, " ");
+
 		vty_out(vty, "%s", bgp_origin_str[attr->origin]);
 
-	if (!use_json)
 		vty_out(vty, "\n");
+	} else {
+		json_object_string_add(json_path, "peerHost", path->peer->host);
+		json_object_int_add(json_path, "bdiFlap", bdi->flap);
+
+		peer_uptime(bdi->start_time, timebuf, BGP_UPTIME_LEN, use_json,
+			    json_path);
+
+		if (CHECK_FLAG(path->flags, BGP_PATH_DAMPED)
+		    && !CHECK_FLAG(path->flags, BGP_PATH_HISTORY))
+			bgp_damp_reuse_time_vty(vty, path, timebuf,
+						BGP_UPTIME_LEN, afi, safi,
+						use_json, json_path);
+
+		if (attr->aspath)
+			json_object_string_add(json_path, "asPath",
+					       attr->aspath->str);
+
+		json_object_string_add(json_path, "origin",
+				       bgp_origin_str[attr->origin]);
+
+		json_object_array_add(json_paths, json_path);
+	}
 }
 
 static void route_vty_out_advertised_to(struct vty *vty, struct peer *peer,
@@ -8729,64 +9805,10 @@ static void route_vty_out_tx_ids(struct vty *vty,
 	}
 }
 
-static const char *bgp_path_selection_reason2str(
-	enum bgp_path_selection_reason reason)
-{
-	switch (reason) {
-	case bgp_path_selection_none:
-		return "Nothing to Select";
-	case bgp_path_selection_first:
-		return "First path received";
-	case bgp_path_selection_evpn_sticky_mac:
-		return "EVPN Sticky Mac";
-	case bgp_path_selection_evpn_seq:
-		return "EVPN sequence number";
-	case bgp_path_selection_evpn_lower_ip:
-		return "EVPN lower IP";
-	case bgp_path_selection_evpn_local_path:
-		return "EVPN local ES path";
-	case bgp_path_selection_evpn_non_proxy:
-		return "EVPN non proxy";
-	case bgp_path_selection_weight:
-		return "Weight";
-	case bgp_path_selection_local_pref:
-		return "Local Pref";
-	case bgp_path_selection_local_route:
-		return "Local Route";
-	case bgp_path_selection_confed_as_path:
-		return "Confederation based AS Path";
-	case bgp_path_selection_as_path:
-		return "AS Path";
-	case bgp_path_selection_origin:
-		return "Origin";
-	case bgp_path_selection_med:
-		return "MED";
-	case bgp_path_selection_peer:
-		return "Peer Type";
-	case bgp_path_selection_confed:
-		return "Confed Peer Type";
-	case bgp_path_selection_igp_metric:
-		return "IGP Metric";
-	case bgp_path_selection_older:
-		return "Older Path";
-	case bgp_path_selection_router_id:
-		return "Router ID";
-	case bgp_path_selection_cluster_length:
-		return "Cluser length";
-	case bgp_path_selection_stale:
-		return "Path Staleness";
-	case bgp_path_selection_local_configured:
-		return "Locally configured route";
-	case bgp_path_selection_neighbor_ip:
-		return "Neighbor IP";
-	case bgp_path_selection_default:
-		return "Nothing left to compare";
-	}
-	return "Invalid (internal error)";
-}
-
 static void route_vty_out_detail_es_info(struct vty *vty,
-			  struct attr *attr, json_object *json_path)
+					 struct bgp_path_info *pi,
+					 struct attr *attr,
+					 json_object *json_path)
 {
 	char esi_buf[ESI_STR_LEN];
 	bool es_local = !!CHECK_FLAG(attr->es_flags, ATTR_ES_IS_LOCAL);
@@ -8796,7 +9818,6 @@ static void route_vty_out_detail_es_info(struct vty *vty,
 			ATTR_ES_PEER_ACTIVE);
 	bool peer_proxy = !!CHECK_FLAG(attr->es_flags,
 			ATTR_ES_PEER_PROXY);
-
 	esi_to_str(&attr->esi, esi_buf, sizeof(esi_buf));
 	if (json_path) {
 		json_object *json_es_info = NULL;
@@ -8843,13 +9864,13 @@ static void route_vty_out_detail_es_info(struct vty *vty,
 	}
 }
 
-void route_vty_out_detail(struct vty *vty, struct bgp *bgp,
-		struct bgp_dest *bn, struct bgp_path_info *path,
-		afi_t afi, safi_t safi, json_object *json_paths)
+void route_vty_out_detail(struct vty *vty, struct bgp *bgp, struct bgp_dest *bn,
+			  struct bgp_path_info *path, afi_t afi, safi_t safi,
+			  enum rpki_states rpki_curr_state,
+			  json_object *json_paths)
 {
 	char buf[INET6_ADDRSTRLEN];
 	char buf1[BUFSIZ];
-	char buf2[EVPN_ROUTE_STRLEN];
 	struct attr *attr = path->attr;
 	int sockunion_vty_out(struct vty *, union sockunion *);
 	time_t tbuf;
@@ -8869,7 +9890,7 @@ void route_vty_out_detail(struct vty *vty, struct bgp *bgp,
 	int first = 0;
 	struct listnode *node, *nnode;
 	struct peer *peer;
-	int addpath_capable;
+	bool addpath_capable;
 	int has_adj;
 	unsigned int first_as;
 	bool nexthop_self =
@@ -8884,10 +9905,14 @@ void route_vty_out_detail(struct vty *vty, struct bgp *bgp,
 		json_nexthop_global = json_object_new_object();
 	}
 
+	if (safi == SAFI_EVPN) {
+		if (!json_paths)
+			vty_out(vty, "  Route %pRN", bn);
+	}
+
 	if (path->extra) {
 		char tag_buf[30];
 
-		buf2[0] = '\0';
 		tag_buf[0] = '\0';
 		if (path->extra && path->extra->num_labels) {
 			bgp_evpn_label2str(path->extra->label,
@@ -8896,18 +9921,15 @@ void route_vty_out_detail(struct vty *vty, struct bgp *bgp,
 		}
 		if (safi == SAFI_EVPN) {
 			if (!json_paths) {
-				bgp_evpn_route2str(
-					(struct prefix_evpn *)
-						bgp_dest_get_prefix(bn),
-					buf2, sizeof(buf2));
-				vty_out(vty, "  Route %s", buf2);
 				if (tag_buf[0] != '\0')
 					vty_out(vty, " VNI %s", tag_buf);
-				vty_out(vty, "\n");
 			} else {
-				if (tag_buf[0])
+				if (tag_buf[0]) {
 					json_object_string_add(json_path, "VNI",
 							       tag_buf);
+					json_object_string_add(json_path, "vni",
+							       tag_buf);
+				}
 			}
 		}
 
@@ -8924,17 +9946,48 @@ void route_vty_out_detail(struct vty *vty, struct bgp *bgp,
 						pdest),
 					buf1, sizeof(buf1));
 				if (is_pi_family_evpn(parent_ri)) {
-					bgp_evpn_route2str(
+					vty_out(vty,
+						"  Imported from %s:%pFX, VNI %s",
+						buf1,
 						(struct prefix_evpn *)
 							bgp_dest_get_prefix(
 								dest),
-						buf2, sizeof(buf2));
-					vty_out(vty, "  Imported from %s:%s, VNI %s\n", buf1, buf2, tag_buf);
+						tag_buf);
+					if (attr->es_flags & ATTR_ES_L3_NHG)
+						vty_out(vty, ", L3NHG %s",
+							(attr->es_flags
+							 & ATTR_ES_L3_NHG_ACTIVE)
+								? "active"
+								: "inactive");
+					vty_out(vty, "\n");
+
 				} else
-					vty_out(vty, "  Imported from %s:%s\n", buf1, buf2);
+					vty_out(vty,
+						"  Imported from %s:%pFX\n",
+						buf1,
+						(struct prefix_evpn *)
+							bgp_dest_get_prefix(
+								dest));
 			}
 		}
 	}
+
+	if (safi == SAFI_EVPN
+	    && attr->evpn_overlay.type == OVERLAY_INDEX_GATEWAY_IP) {
+		char gwip_buf[INET6_ADDRSTRLEN];
+
+		ipaddr2str(&attr->evpn_overlay.gw_ip, gwip_buf,
+			   sizeof(gwip_buf));
+
+		if (json_paths)
+			json_object_string_add(json_path, "gatewayIP",
+					       gwip_buf);
+		else
+			vty_out(vty, " Gateway IP %s", gwip_buf);
+	}
+
+	if (safi == SAFI_EVPN && !json_path)
+		vty_out(vty, "\n");
 
 	/* Line1 display AS-path, Aggregator */
 	if (attr->aspath) {
@@ -8970,25 +10023,11 @@ void route_vty_out_detail(struct vty *vty, struct bgp *bgp,
 		if (json_paths) {
 			json_object_int_add(json_path, "aggregatorAs",
 					    attr->aggregator_as);
-			json_object_string_add(
-				json_path, "aggregatorId",
-				inet_ntoa(attr->aggregator_addr));
-			if (attr->aggregator_as == BGP_AS_ZERO)
-				json_object_boolean_true_add(
-					json_path, "aggregatorAsMalformed");
-			else
-				json_object_boolean_false_add(
-					json_path, "aggregatorAsMalformed");
+			json_object_string_addf(json_path, "aggregatorId",
+						"%pI4", &attr->aggregator_addr);
 		} else {
-			if (attr->aggregator_as == BGP_AS_ZERO)
-				vty_out(vty,
-					", (aggregated by %u(malformed) %s)",
-					attr->aggregator_as,
-					inet_ntoa(attr->aggregator_addr));
-			else
-				vty_out(vty, ", (aggregated by %u %s)",
-					attr->aggregator_as,
-					inet_ntoa(attr->aggregator_addr));
+			vty_out(vty, ", (aggregated by %u %pI4)",
+				attr->aggregator_as, &attr->aggregator_addr);
 		}
 	}
 
@@ -9038,9 +10077,9 @@ void route_vty_out_detail(struct vty *vty, struct bgp *bgp,
 		if (safi == SAFI_MPLS_VPN || safi == SAFI_ENCAP
 		    || safi == SAFI_EVPN) {
 			if (json_paths) {
-				json_object_string_add(
-					json_nexthop_global, "ip",
-					inet_ntoa(attr->mp_nexthop_global_in));
+				json_object_string_addf(
+					json_nexthop_global, "ip", "%pI4",
+					&attr->mp_nexthop_global_in);
 
 				if (path->peer->hostname)
 					json_object_string_add(
@@ -9057,9 +10096,9 @@ void route_vty_out_detail(struct vty *vty, struct bgp *bgp,
 			}
 		} else {
 			if (json_paths) {
-				json_object_string_add(
-					json_nexthop_global, "ip",
-					inet_ntoa(attr->nexthop));
+				json_object_string_addf(json_nexthop_global,
+							"ip", "%pI4",
+							&attr->nexthop);
 
 				if (path->peer->hostname)
 					json_object_string_add(
@@ -9081,10 +10120,9 @@ void route_vty_out_detail(struct vty *vty, struct bgp *bgp,
 					       "ipv4");
 	} else {
 		if (json_paths) {
-			json_object_string_add(
-				json_nexthop_global, "ip",
-				inet_ntop(AF_INET6, &attr->mp_nexthop_global,
-					  buf, INET6_ADDRSTRLEN));
+			json_object_string_addf(json_nexthop_global, "ip",
+						"%pI6",
+						&attr->mp_nexthop_global);
 
 			if (path->peer->hostname)
 				json_object_string_add(json_nexthop_global,
@@ -9157,10 +10195,10 @@ void route_vty_out_detail(struct vty *vty, struct bgp *bgp,
 		}
 
 		if (json_paths)
-			json_object_string_add(json_peer, "routerId",
-					       inet_ntoa(bgp->router_id));
+			json_object_string_addf(json_peer, "routerId", "%pI4",
+						&bgp->router_id);
 		else
-			vty_out(vty, "(%s)", inet_ntoa(bgp->router_id));
+			vty_out(vty, "(%pI4)", &bgp->router_id);
 	}
 
 	/* We RXed this path from one of our peers */
@@ -9171,10 +10209,8 @@ void route_vty_out_detail(struct vty *vty, struct bgp *bgp,
 					       sockunion2str(&path->peer->su,
 							     buf,
 							     SU_ADDRSTRLEN));
-			json_object_string_add(json_peer, "routerId",
-					       inet_ntop(AF_INET,
-							 &path->peer->remote_id,
-							 buf1, sizeof(buf1)));
+			json_object_string_addf(json_peer, "routerId", "%pI4",
+						&path->peer->remote_id);
 
 			if (path->peer->hostname)
 				json_object_string_add(json_peer, "hostname",
@@ -9213,8 +10249,7 @@ void route_vty_out_detail(struct vty *vty, struct bgp *bgp,
 			}
 
 			if (attr->flag & ATTR_FLAG_BIT(BGP_ATTR_ORIGINATOR_ID))
-				vty_out(vty, " (%s)",
-					inet_ntoa(attr->originator_id));
+				vty_out(vty, " (%pI4)", &attr->originator_id);
 			else
 				vty_out(vty, " (%s)",
 					inet_ntop(AF_INET,
@@ -9275,10 +10310,8 @@ void route_vty_out_detail(struct vty *vty, struct bgp *bgp,
 	if (attr->mp_nexthop_len == BGP_ATTR_NHLEN_IPV6_GLOBAL_AND_LL) {
 		if (json_paths) {
 			json_nexthop_ll = json_object_new_object();
-			json_object_string_add(
-				json_nexthop_ll, "ip",
-				inet_ntop(AF_INET6, &attr->mp_nexthop_local,
-					  buf, INET6_ADDRSTRLEN));
+			json_object_string_addf(json_nexthop_ll, "ip", "%pI6",
+						&attr->mp_nexthop_local);
 
 			if (path->peer->hostname)
 				json_object_string_add(json_nexthop_ll,
@@ -9317,7 +10350,7 @@ void route_vty_out_detail(struct vty *vty, struct bgp *bgp,
 
 	if (safi == SAFI_EVPN &&
 			bgp_evpn_is_esi_valid(&attr->esi)) {
-		route_vty_out_detail_es_info(vty, attr, json_path);
+		route_vty_out_detail_es_info(vty, path, attr, json_path);
 	}
 
 	/* Line 3 display Origin, Med, Locpref, Weight, Tag, valid,
@@ -9369,6 +10402,9 @@ void route_vty_out_detail(struct vty *vty, struct bgp *bgp,
 		else
 			vty_out(vty, ", valid");
 	}
+
+	if (json_paths)
+		json_object_int_add(json_path, "version", bn->version);
 
 	if (path->peer != bgp->peer_self) {
 		if (path->peer->as == path->peer->local_as) {
@@ -9473,6 +10509,16 @@ void route_vty_out_detail(struct vty *vty, struct bgp *bgp,
 		}
 	}
 
+	if (rpki_curr_state != RPKI_NOT_BEING_USED) {
+		if (json_paths)
+			json_object_string_add(
+				json_path, "rpkiValidationState",
+				bgp_rpki_validation2str(rpki_curr_state));
+		else
+			vty_out(vty, ", rpki validation-state: %s",
+				bgp_rpki_validation2str(rpki_curr_state));
+	}
+
 	if (json_bestpath)
 		json_object_object_add(json_path, "bestpath", json_bestpath);
 
@@ -9480,16 +10526,18 @@ void route_vty_out_detail(struct vty *vty, struct bgp *bgp,
 		vty_out(vty, "\n");
 
 	/* Line 4 display Community */
-	if (attr->community) {
+	if (attr->flag & ATTR_FLAG_BIT(BGP_ATTR_COMMUNITIES)) {
 		if (json_paths) {
-			if (!attr->community->json)
-				community_str(attr->community, true);
-			json_object_lock(attr->community->json);
-			json_object_object_add(json_path, "community",
-					       attr->community->json);
+			if (!bgp_attr_get_community(attr)->json)
+				community_str(bgp_attr_get_community(attr),
+					      true, true);
+			json_object_lock(bgp_attr_get_community(attr)->json);
+			json_object_object_add(
+				json_path, "community",
+				bgp_attr_get_community(attr)->json);
 		} else {
 			vty_out(vty, "      Community: %s\n",
-				attr->community->str);
+				bgp_attr_get_community(attr)->str);
 		}
 	}
 
@@ -9497,44 +10545,51 @@ void route_vty_out_detail(struct vty *vty, struct bgp *bgp,
 	if (attr->flag & ATTR_FLAG_BIT(BGP_ATTR_EXT_COMMUNITIES)) {
 		if (json_paths) {
 			json_ext_community = json_object_new_object();
-			json_object_string_add(json_ext_community, "string",
-					       attr->ecommunity->str);
+			json_object_string_add(
+				json_ext_community, "string",
+				bgp_attr_get_ecommunity(attr)->str);
 			json_object_object_add(json_path, "extendedCommunity",
 					       json_ext_community);
 		} else {
 			vty_out(vty, "      Extended Community: %s\n",
-				attr->ecommunity->str);
+				bgp_attr_get_ecommunity(attr)->str);
 		}
 	}
 
 	/* Line 6 display Large community */
 	if (attr->flag & ATTR_FLAG_BIT(BGP_ATTR_LARGE_COMMUNITIES)) {
 		if (json_paths) {
-			if (!attr->lcommunity->json)
-				lcommunity_str(attr->lcommunity, true);
-			json_object_lock(attr->lcommunity->json);
-			json_object_object_add(json_path, "largeCommunity",
-					       attr->lcommunity->json);
+			if (!bgp_attr_get_lcommunity(attr)->json)
+				lcommunity_str(bgp_attr_get_lcommunity(attr),
+					       true, true);
+			json_object_lock(bgp_attr_get_lcommunity(attr)->json);
+			json_object_object_add(
+				json_path, "largeCommunity",
+				bgp_attr_get_lcommunity(attr)->json);
 		} else {
 			vty_out(vty, "      Large Community: %s\n",
-				attr->lcommunity->str);
+				bgp_attr_get_lcommunity(attr)->str);
 		}
 	}
 
 	/* Line 7 display Originator, Cluster-id */
 	if ((attr->flag & ATTR_FLAG_BIT(BGP_ATTR_ORIGINATOR_ID))
 	    || (attr->flag & ATTR_FLAG_BIT(BGP_ATTR_CLUSTER_LIST))) {
+		char buf[BUFSIZ] = {0};
+
 		if (attr->flag & ATTR_FLAG_BIT(BGP_ATTR_ORIGINATOR_ID)) {
 			if (json_paths)
-				json_object_string_add(
-					json_path, "originatorId",
-					inet_ntoa(attr->originator_id));
+				json_object_string_addf(json_path,
+							"originatorId", "%pI4",
+							&attr->originator_id);
 			else
-				vty_out(vty, "      Originator: %s",
-					inet_ntoa(attr->originator_id));
+				vty_out(vty, "      Originator: %pI4",
+					&attr->originator_id);
 		}
 
 		if (attr->flag & ATTR_FLAG_BIT(BGP_ATTR_CLUSTER_LIST)) {
+			struct cluster_list *cluster =
+				bgp_attr_get_cluster(attr);
 			int i;
 
 			if (json_paths) {
@@ -9542,11 +10597,11 @@ void route_vty_out_detail(struct vty *vty, struct bgp *bgp,
 				json_cluster_list_list =
 					json_object_new_array();
 
-				for (i = 0; i < attr->cluster->length / 4;
-				     i++) {
+				for (i = 0; i < cluster->length / 4; i++) {
 					json_string = json_object_new_string(
-						inet_ntoa(attr->cluster
-								  ->list[i]));
+						inet_ntop(AF_INET,
+							  &cluster->list[i],
+							  buf, sizeof(buf)));
 					json_object_array_add(
 						json_cluster_list_list,
 						json_string);
@@ -9558,7 +10613,7 @@ void route_vty_out_detail(struct vty *vty, struct bgp *bgp,
 				 * do.  Add this someday if someone asks
 				 * for it.
 				 * json_object_string_add(json_cluster_list,
-				 * "string", attr->cluster->str);
+				 * "string", cluster->str);
 				 */
 				json_object_object_add(json_cluster_list,
 						       "list",
@@ -9568,11 +10623,9 @@ void route_vty_out_detail(struct vty *vty, struct bgp *bgp,
 			} else {
 				vty_out(vty, ", Cluster list: ");
 
-				for (i = 0; i < attr->cluster->length / 4;
-				     i++) {
-					vty_out(vty, "%s ",
-						inet_ntoa(attr->cluster
-								  ->list[i]));
+				for (i = 0; i < cluster->length / 4; i++) {
+					vty_out(vty, "%pI4 ",
+						&cluster->list[i]);
 				}
 			}
 		}
@@ -9597,7 +10650,7 @@ void route_vty_out_detail(struct vty *vty, struct bgp *bgp,
 
 	/* Remote SID */
 	if (path->extra && path->extra->num_sids > 0 && safi != SAFI_EVPN) {
-		inet_ntop(AF_INET6, &path->extra->sid, buf, sizeof(buf));
+		inet_ntop(AF_INET6, &path->extra->sid[0].sid, buf, sizeof(buf));
 		if (json_paths)
 			json_object_string_add(json_path, "remoteSid", buf);
 		else
@@ -9699,9 +10752,9 @@ void route_vty_out_detail(struct vty *vty, struct bgp *bgp,
 
 	/* Line 10 display PMSI tunnel attribute, if present */
 	if (attr->flag & ATTR_FLAG_BIT(BGP_ATTR_PMSI_TUNNEL)) {
-		const char *str =
-			lookup_msg(bgp_pmsi_tnltype_str, attr->pmsi_tnl_type,
-				   PMSI_TNLTYPE_STR_DEFAULT);
+		const char *str = lookup_msg(bgp_pmsi_tnltype_str,
+					     bgp_attr_get_pmsi_tnl_type(attr),
+					     PMSI_TNLTYPE_STR_DEFAULT);
 
 		if (json_paths) {
 			json_pmsi = json_object_new_object();
@@ -9714,10 +10767,54 @@ void route_vty_out_detail(struct vty *vty, struct bgp *bgp,
 				str, label2vni(&attr->label));
 	}
 
-	/* We've constructed the json object for this path, add it to the json
-	 * array of paths
-	 */
+	if (path->peer->t_gr_restart &&
+	    CHECK_FLAG(path->flags, BGP_PATH_STALE)) {
+		unsigned long gr_remaining =
+			thread_timer_remain_second(path->peer->t_gr_restart);
+
+		if (json_paths) {
+			json_object_int_add(json_path,
+					    "gracefulRestartSecondsRemaining",
+					    gr_remaining);
+		} else
+			vty_out(vty,
+				"      Time until Graceful Restart stale route deleted: %lu\n",
+				gr_remaining);
+	}
+
+	if (path->peer->t_llgr_stale[afi][safi] &&
+	    bgp_attr_get_community(attr) &&
+	    community_include(bgp_attr_get_community(attr),
+			      COMMUNITY_LLGR_STALE)) {
+		unsigned long llgr_remaining = thread_timer_remain_second(
+			path->peer->t_llgr_stale[afi][safi]);
+
+		if (json_paths) {
+			json_object_int_add(json_path, "llgrSecondsRemaining",
+					    llgr_remaining);
+		} else
+			vty_out(vty,
+				"      Time until Long-lived stale route deleted: %lu\n",
+				llgr_remaining);
+	}
+
+	/* Output some debug about internal state of the dest flags */
 	if (json_paths) {
+		if (CHECK_FLAG(bn->flags, BGP_NODE_PROCESS_SCHEDULED))
+			json_object_boolean_true_add(json_path, "processScheduled");
+		if (CHECK_FLAG(bn->flags, BGP_NODE_USER_CLEAR))
+			json_object_boolean_true_add(json_path, "userCleared");
+		if (CHECK_FLAG(bn->flags, BGP_NODE_LABEL_CHANGED))
+			json_object_boolean_true_add(json_path, "labelChanged");
+		if (CHECK_FLAG(bn->flags, BGP_NODE_REGISTERED_FOR_LABEL))
+			json_object_boolean_true_add(json_path, "registeredForLabel");
+		if (CHECK_FLAG(bn->flags, BGP_NODE_SELECT_DEFER))
+			json_object_boolean_true_add(json_path, "selectDefered");
+		if (CHECK_FLAG(bn->flags, BGP_NODE_FIB_INSTALLED))
+			json_object_boolean_true_add(json_path, "fibInstalled");
+		if (CHECK_FLAG(bn->flags, BGP_NODE_FIB_INSTALL_PENDING))
+			json_object_boolean_true_add(json_path, "fibPending");
+
 		if (json_nexthop_global || json_nexthop_ll) {
 			json_nexthops = json_object_new_array();
 
@@ -9742,60 +10839,55 @@ void route_vty_out_detail(struct vty *vty, struct bgp *bgp,
 #define BGP_SHOW_DAMP_HEADER "   Network          From             Reuse    Path\n"
 #define BGP_SHOW_FLAP_HEADER "   Network          From            Flaps Duration Reuse    Path\n"
 
-static int bgp_show_prefix_list(struct vty *vty, struct bgp *bgp,
-				const char *prefix_list_str, afi_t afi,
-				safi_t safi, enum bgp_show_type type);
-static int bgp_show_filter_list(struct vty *vty, struct bgp *bgp,
-				const char *filter, afi_t afi, safi_t safi,
-				enum bgp_show_type type);
-static int bgp_show_route_map(struct vty *vty, struct bgp *bgp,
-			      const char *rmap_str, afi_t afi, safi_t safi,
-			      enum bgp_show_type type);
-static int bgp_show_community_list(struct vty *vty, struct bgp *bgp,
-				   const char *com, int exact, afi_t afi,
-				   safi_t safi);
-static int bgp_show_prefix_longer(struct vty *vty, struct bgp *bgp,
-				  const char *prefix, afi_t afi, safi_t safi,
-				  enum bgp_show_type type);
 static int bgp_show_regexp(struct vty *vty, struct bgp *bgp, const char *regstr,
 			   afi_t afi, safi_t safi, enum bgp_show_type type,
 			   bool use_json);
 static int bgp_show_community(struct vty *vty, struct bgp *bgp,
 			      const char *comstr, int exact, afi_t afi,
-			      safi_t safi, bool use_json);
-
+			      safi_t safi, uint16_t show_flags);
 
 static int bgp_show_table(struct vty *vty, struct bgp *bgp, safi_t safi,
 			  struct bgp_table *table, enum bgp_show_type type,
-			  void *output_arg, bool use_json, char *rd,
-			  int is_last, unsigned long *output_cum,
-			  unsigned long *total_cum,
-			  unsigned long *json_header_depth, bool wide)
+			  void *output_arg, const char *rd, int is_last,
+			  unsigned long *output_cum, unsigned long *total_cum,
+			  unsigned long *json_header_depth, uint16_t show_flags,
+			  enum rpki_states rpki_target_state)
 {
 	struct bgp_path_info *pi;
 	struct bgp_dest *dest;
-	int header = 1;
+	bool header = true;
+	bool json_detail_header = false;
 	int display;
 	unsigned long output_count = 0;
 	unsigned long total_count = 0;
 	struct prefix *p;
 	json_object *json_paths = NULL;
 	int first = 1;
+	bool use_json = CHECK_FLAG(show_flags, BGP_SHOW_OPT_JSON);
+	bool wide = CHECK_FLAG(show_flags, BGP_SHOW_OPT_WIDE);
+	bool all = CHECK_FLAG(show_flags, BGP_SHOW_OPT_AFI_ALL);
 
 	if (output_cum && *output_cum != 0)
-		header = 0;
+		header = false;
 
 	if (use_json && !*json_header_depth) {
+		if (all)
+			*json_header_depth = 1;
+		else {
+			vty_out(vty, "{\n");
+			*json_header_depth = 2;
+		}
+
 		vty_out(vty,
-			"{\n \"vrfId\": %d,\n \"vrfName\": \"%s\",\n \"tableVersion\": %" PRId64",\n \"routerId\": \"%s\",\n \"defaultLocPrf\": %u,\n"
+			" \"vrfId\": %d,\n \"vrfName\": \"%s\",\n \"tableVersion\": %" PRId64
+			",\n \"routerId\": \"%pI4\",\n \"defaultLocPrf\": %u,\n"
 			" \"localAS\": %u,\n \"routes\": { ",
 			bgp->vrf_id == VRF_UNKNOWN ? -1 : (int)bgp->vrf_id,
 			bgp->inst_type == BGP_INSTANCE_TYPE_DEFAULT
-						? VRF_DEFAULT_NAME
-						: bgp->name,
-			table->version, inet_ntoa(bgp->router_id),
+				? VRF_DEFAULT_NAME
+				: bgp->name,
+			table->version, &bgp->router_id,
 			bgp->default_local_pref, bgp->as);
-		*json_header_depth = 2;
 		if (rd) {
 			vty_out(vty, " \"routeDistinguishers\" : {");
 			++*json_header_depth;
@@ -9806,9 +10898,19 @@ static int bgp_show_table(struct vty *vty, struct bgp *bgp, safi_t safi,
 		vty_out(vty, " \"%s\" : { ", rd);
 	}
 
+	/* Check for 'json detail', where we need header output once per dest */
+	if (use_json && CHECK_FLAG(show_flags, BGP_SHOW_OPT_DETAIL) &&
+	    type != bgp_show_type_dampend_paths &&
+	    type != bgp_show_type_damp_neighbor &&
+	    type != bgp_show_type_flap_statistics &&
+	    type != bgp_show_type_flap_neighbor)
+		json_detail_header = true;
+
 	/* Start processing of routes. */
 	for (dest = bgp_table_top(table); dest; dest = bgp_route_next(dest)) {
 		const struct prefix *dest_p = bgp_dest_get_prefix(dest);
+		enum rpki_states rpki_curr_state = RPKI_NOT_BEING_USED;
+		bool json_detail = json_detail_header;
 
 		pi = bgp_dest_get_bgp_path_info(dest);
 		if (pi == NULL)
@@ -9821,7 +10923,77 @@ static int bgp_show_table(struct vty *vty, struct bgp *bgp, safi_t safi,
 			json_paths = NULL;
 
 		for (; pi; pi = pi->next) {
+			struct community *picomm = NULL;
+
+			picomm = bgp_attr_get_community(pi->attr);
+
 			total_count++;
+
+			if (type == bgp_show_type_prefix_version) {
+				uint32_t version =
+					strtoul(output_arg, NULL, 10);
+				if (dest->version < version)
+					continue;
+			}
+
+			if (type == bgp_show_type_community_alias) {
+				char *alias = output_arg;
+				char **communities;
+				int num;
+				bool found = false;
+
+				if (picomm) {
+					frrstr_split(picomm->str, " ",
+						     &communities, &num);
+					for (int i = 0; i < num; i++) {
+						const char *com2alias =
+							bgp_community2alias(
+								communities[i]);
+						if (!found
+						    && strcmp(alias, com2alias)
+							       == 0)
+							found = true;
+						XFREE(MTYPE_TMP,
+						      communities[i]);
+					}
+					XFREE(MTYPE_TMP, communities);
+				}
+
+				if (!found &&
+				    bgp_attr_get_lcommunity(pi->attr)) {
+					frrstr_split(bgp_attr_get_lcommunity(
+							     pi->attr)
+							     ->str,
+						     " ", &communities, &num);
+					for (int i = 0; i < num; i++) {
+						const char *com2alias =
+							bgp_community2alias(
+								communities[i]);
+						if (!found
+						    && strcmp(alias, com2alias)
+							       == 0)
+							found = true;
+						XFREE(MTYPE_TMP,
+						      communities[i]);
+					}
+					XFREE(MTYPE_TMP, communities);
+				}
+
+				if (!found)
+					continue;
+			}
+
+			if (type == bgp_show_type_rpki) {
+				if (dest_p->family == AF_INET
+				    || dest_p->family == AF_INET6)
+					rpki_curr_state = hook_call(
+						bgp_rpki_prefix_status,
+						pi->peer, pi->attr, dest_p);
+				if (rpki_target_state != RPKI_NOT_BEING_USED
+				    && rpki_curr_state != rpki_target_state)
+					continue;
+			}
+
 			if (type == bgp_show_type_flap_statistics
 			    || type == bgp_show_type_flap_neighbor
 			    || type == bgp_show_type_dampend_paths
@@ -9861,8 +11033,8 @@ static int bgp_show_table(struct vty *vty, struct bgp *bgp, safi_t safi,
 				path.peer = pi->peer;
 				path.attr = &dummy_attr;
 
-				ret = route_map_apply(rmap, dest_p, RMAP_BGP,
-						      &path);
+				ret = route_map_apply(rmap, dest_p, &path);
+				bgp_attr_flush(&dummy_attr);
 				if (ret == RMAP_DENYMATCH)
 					continue;
 			}
@@ -9896,60 +11068,58 @@ static int bgp_show_table(struct vty *vty, struct bgp *bgp, safi_t safi,
 					continue;
 			}
 			if (type == bgp_show_type_community_all) {
-				if (!pi->attr->community)
+				if (!picomm)
 					continue;
 			}
 			if (type == bgp_show_type_community) {
 				struct community *com = output_arg;
 
-				if (!pi->attr->community
-				    || !community_match(pi->attr->community,
-							com))
+				if (!picomm || !community_match(picomm, com))
 					continue;
 			}
 			if (type == bgp_show_type_community_exact) {
 				struct community *com = output_arg;
 
-				if (!pi->attr->community
-				    || !community_cmp(pi->attr->community, com))
+				if (!picomm || !community_cmp(picomm, com))
 					continue;
 			}
 			if (type == bgp_show_type_community_list) {
 				struct community_list *list = output_arg;
 
-				if (!community_list_match(pi->attr->community,
-							  list))
+				if (!community_list_match(picomm, list))
 					continue;
 			}
 			if (type == bgp_show_type_community_list_exact) {
 				struct community_list *list = output_arg;
 
-				if (!community_list_exact_match(
-					    pi->attr->community, list))
+				if (!community_list_exact_match(picomm, list))
 					continue;
 			}
 			if (type == bgp_show_type_lcommunity) {
 				struct lcommunity *lcom = output_arg;
 
-				if (!pi->attr->lcommunity
-				    || !lcommunity_match(pi->attr->lcommunity,
-							 lcom))
+				if (!bgp_attr_get_lcommunity(pi->attr) ||
+				    !lcommunity_match(
+					    bgp_attr_get_lcommunity(pi->attr),
+					    lcom))
 					continue;
 			}
 
 			if (type == bgp_show_type_lcommunity_exact) {
 				struct lcommunity *lcom = output_arg;
 
-				if (!pi->attr->lcommunity
-				    || !lcommunity_cmp(pi->attr->lcommunity,
-						      lcom))
+				if (!bgp_attr_get_lcommunity(pi->attr) ||
+				    !lcommunity_cmp(
+					    bgp_attr_get_lcommunity(pi->attr),
+					    lcom))
 					continue;
 			}
 			if (type == bgp_show_type_lcommunity_list) {
 				struct community_list *list = output_arg;
 
-				if (!lcommunity_list_match(pi->attr->lcommunity,
-							   list))
+				if (!lcommunity_list_match(
+					    bgp_attr_get_lcommunity(pi->attr),
+					    list))
 					continue;
 			}
 			if (type
@@ -9957,11 +11127,12 @@ static int bgp_show_table(struct vty *vty, struct bgp *bgp, safi_t safi,
 				struct community_list *list = output_arg;
 
 				if (!lcommunity_list_exact_match(
-					    pi->attr->lcommunity, list))
+					    bgp_attr_get_lcommunity(pi->attr),
+					    list))
 					continue;
 			}
 			if (type == bgp_show_type_lcommunity_all) {
-				if (!pi->attr->lcommunity)
+				if (!bgp_attr_get_lcommunity(pi->attr))
 					continue;
 			}
 			if (type == bgp_show_type_dampend_paths
@@ -9972,9 +11143,10 @@ static int bgp_show_table(struct vty *vty, struct bgp *bgp, safi_t safi,
 			}
 
 			if (!use_json && header) {
-				vty_out(vty, "BGP table version is %" PRIu64", local router ID is %s, vrf id ",
-					table->version,
-					inet_ntoa(bgp->router_id));
+				vty_out(vty,
+					"BGP table version is %" PRIu64
+					", local router ID is %pI4, vrf id ",
+					table->version, &bgp->router_id);
 				if (bgp->vrf_id == VRF_UNKNOWN)
 					vty_out(vty, "%s", VRFID_NONE_STR);
 				else
@@ -9986,6 +11158,7 @@ static int bgp_show_table(struct vty *vty, struct bgp *bgp, safi_t safi,
 				vty_out(vty, BGP_SHOW_SCODE_HEADER);
 				vty_out(vty, BGP_SHOW_NCODE_HEADER);
 				vty_out(vty, BGP_SHOW_OCODE_HEADER);
+				vty_out(vty, BGP_SHOW_RPKI_HEADER);
 				if (type == bgp_show_type_dampend_paths
 				    || type == bgp_show_type_damp_neighbor)
 					vty_out(vty, BGP_SHOW_DAMP_HEADER);
@@ -9995,8 +11168,28 @@ static int bgp_show_table(struct vty *vty, struct bgp *bgp, safi_t safi,
 				else
 					vty_out(vty, (wide ? BGP_SHOW_HEADER_WIDE
 							   : BGP_SHOW_HEADER));
-				header = 0;
+				header = false;
+
+			} else if (json_detail && json_paths != NULL) {
+				const struct prefix_rd *prd;
+				json_object *jtemp;
+
+				/* Use common detail header, for most types;
+				 * need a json 'object'.
+				 */
+
+				jtemp = json_object_new_object();
+				prd = bgp_rd_from_dest(dest, safi);
+
+				route_vty_out_detail_header(
+					vty, bgp, dest, prd, table->afi,
+					safi, jtemp);
+
+				json_object_array_add(json_paths, jtemp);
+
+				json_detail = false;
 			}
+
 			if (rd != NULL && !display && !output_count) {
 				if (!use_json)
 					vty_out(vty,
@@ -10013,9 +11206,17 @@ static int bgp_show_table(struct vty *vty, struct bgp *bgp, safi_t safi,
 				flap_route_vty_out(vty, dest_p, pi, display,
 						   AFI_IP, safi, use_json,
 						   json_paths);
-			else
-				route_vty_out(vty, dest_p, pi, display, safi,
-					      json_paths, wide);
+			else {
+				if (CHECK_FLAG(show_flags, BGP_SHOW_OPT_DETAIL))
+					route_vty_out_detail(
+						vty, bgp, dest, pi,
+						family2afi(dest_p->family),
+						safi, RPKI_NOT_BEING_USED,
+						json_paths);
+				else
+					route_vty_out(vty, dest_p, pi, display,
+						      safi, json_paths, wide);
+			}
 			display++;
 		}
 
@@ -10050,10 +11251,7 @@ static int bgp_show_table(struct vty *vty, struct bgp *bgp, safi_t safi,
 				else
 					vty_out(vty, ",\"%pFX\": ", dest_p);
 			}
-			vty_out(vty, "%s",
-				json_object_to_json_string_ext(
-					json_paths, JSON_C_TO_STRING_PRETTY));
-			json_object_free(json_paths);
+			vty_json(vty, json_paths);
 			json_paths = NULL;
 			first = 0;
 		} else
@@ -10076,7 +11274,8 @@ static int bgp_show_table(struct vty *vty, struct bgp *bgp, safi_t safi,
 			unsigned long i;
 			for (i = 0; i < *json_header_depth; ++i)
 				vty_out(vty, " } ");
-			vty_out(vty, "\n");
+			if (!all)
+				vty_out(vty, "\n");
 		}
 	} else {
 		if (is_last) {
@@ -10106,8 +11305,12 @@ int bgp_show_table_rd(struct vty *vty, struct bgp *bgp, safi_t safi,
 	unsigned long json_header_depth = 0;
 	struct bgp_table *itable;
 	bool show_msg;
+	uint16_t show_flags = 0;
 
 	show_msg = (!use_json && type == bgp_show_type_normal);
+
+	if (use_json)
+		SET_FLAG(show_flags, BGP_SHOW_OPT_JSON);
 
 	for (dest = bgp_table_top(table); dest; dest = next) {
 		const struct prefix *dest_p = bgp_dest_get_prefix(dest);
@@ -10124,8 +11327,9 @@ int bgp_show_table_rd(struct vty *vty, struct bgp *bgp, safi_t safi,
 			memcpy(&prd, dest_p, sizeof(struct prefix_rd));
 			prefix_rd2str(&prd, rd, sizeof(rd));
 			bgp_show_table(vty, bgp, safi, itable, type, output_arg,
-				       use_json, rd, next == NULL, &output_cum,
-				       &total_cum, &json_header_depth, false);
+				       rd, next == NULL, &output_cum,
+				       &total_cum, &json_header_depth,
+				       show_flags, RPKI_NOT_BEING_USED);
 			if (next == NULL)
 				show_msg = false;
 		}
@@ -10141,12 +11345,14 @@ int bgp_show_table_rd(struct vty *vty, struct bgp *bgp, safi_t safi,
 	}
 	return CMD_SUCCESS;
 }
+
 static int bgp_show(struct vty *vty, struct bgp *bgp, afi_t afi, safi_t safi,
-		    enum bgp_show_type type, void *output_arg, bool use_json,
-		    bool wide)
+		    enum bgp_show_type type, void *output_arg,
+		    uint16_t show_flags, enum rpki_states rpki_target_state)
 {
 	struct bgp_table *table;
 	unsigned long json_header_depth = 0;
+	bool use_json = CHECK_FLAG(show_flags, BGP_SHOW_OPT_JSON);
 
 	if (bgp == NULL) {
 		bgp = bgp_get_default();
@@ -10160,6 +11366,10 @@ static int bgp_show(struct vty *vty, struct bgp *bgp, afi_t afi, safi_t safi,
 		return CMD_WARNING;
 	}
 
+	/* Labeled-unicast routes live in the unicast table. */
+	if (safi == SAFI_LABELED_UNICAST)
+		safi = SAFI_UNICAST;
+
 	table = bgp->rib[afi][safi];
 	/* use MPLS and ENCAP specific shows until they are merged */
 	if (safi == SAFI_MPLS_VPN) {
@@ -10172,22 +11382,20 @@ static int bgp_show(struct vty *vty, struct bgp *bgp, afi_t afi, safi_t safi,
 					       output_arg, use_json,
 					       1, NULL, NULL);
 	}
-	/* labeled-unicast routes live in the unicast table */
-	else if (safi == SAFI_LABELED_UNICAST)
-		safi = SAFI_UNICAST;
 
-	return bgp_show_table(vty, bgp, safi, table, type, output_arg, use_json,
-			      NULL, 1, NULL, NULL, &json_header_depth, wide);
+	return bgp_show_table(vty, bgp, safi, table, type, output_arg, NULL, 1,
+			      NULL, NULL, &json_header_depth, show_flags,
+			      rpki_target_state);
 }
 
 static void bgp_show_all_instances_routes_vty(struct vty *vty, afi_t afi,
-					      safi_t safi, bool use_json,
-					      bool wide)
+					      safi_t safi, uint16_t show_flags)
 {
 	struct listnode *node, *nnode;
 	struct bgp *bgp;
 	int is_first = 1;
 	bool route_output = false;
+	bool use_json = CHECK_FLAG(show_flags, BGP_SHOW_OPT_JSON);
 
 	if (use_json)
 		vty_out(vty, "{\n");
@@ -10211,7 +11419,7 @@ static void bgp_show_all_instances_routes_vty(struct vty *vty, afi_t afi,
 					: bgp->name);
 		}
 		bgp_show(vty, bgp, afi, safi, bgp_show_type_normal, NULL,
-			 use_json, wide);
+			 show_flags, RPKI_NOT_BEING_USED);
 	}
 
 	if (use_json)
@@ -10222,7 +11430,8 @@ static void bgp_show_all_instances_routes_vty(struct vty *vty, afi_t afi,
 
 /* Header of detailed BGP route information */
 void route_vty_out_detail_header(struct vty *vty, struct bgp *bgp,
-				 struct bgp_dest *dest, struct prefix_rd *prd,
+				 struct bgp_dest *dest,
+				 const struct prefix_rd *prd,
 				 afi_t afi, safi_t safi, json_object *json)
 {
 	struct bgp_path_info *pi;
@@ -10230,9 +11439,6 @@ void route_vty_out_detail_header(struct vty *vty, struct bgp *bgp,
 	struct peer *peer;
 	struct listnode *node, *nnode;
 	char buf1[RD_ADDRSTRLEN];
-	char buf2[INET6_ADDRSTRLEN];
-	char buf3[EVPN_ROUTE_STRLEN];
-	char prefix_str[BUFSIZ];
 	int count = 0;
 	int best = 0;
 	int suppress = 0;
@@ -10261,13 +11467,11 @@ void route_vty_out_detail_header(struct vty *vty, struct bgp *bgp,
 		label = label_pton(&dest->local_label);
 
 	if (safi == SAFI_EVPN) {
-
 		if (!json) {
-			vty_out(vty, "BGP routing table entry for %s%s%s\n",
+			vty_out(vty, "BGP routing table entry for %s%s%pFX\n",
 				prd ? prefix_rd2str(prd, buf1, sizeof(buf1))
-				: "", prd ? ":" : "",
-				bgp_evpn_route2str((struct prefix_evpn *)p,
-				buf3, sizeof(buf3)));
+				    : "",
+				prd ? ":" : "", (struct prefix_evpn *)p);
 		} else {
 			json_object_string_add(json, "rd",
 				prd ? prefix_rd2str(prd, buf1, sizeof(buf1)) :
@@ -10276,19 +11480,21 @@ void route_vty_out_detail_header(struct vty *vty, struct bgp *bgp,
 		}
 	} else {
 		if (!json) {
-			vty_out(vty, "BGP routing table entry for %s%s%s/%d\n",
+			vty_out(vty,
+				"BGP routing table entry for %s%s%pFX, version %" PRIu64
+				"\n",
 				((safi == SAFI_MPLS_VPN || safi == SAFI_ENCAP)
-				 ? prefix_rd2str(prd, buf1,
-					 sizeof(buf1))
-				 : ""),
-				safi == SAFI_MPLS_VPN ? ":" : "",
-				inet_ntop(p->family, &p->u.prefix, buf2,
-					INET6_ADDRSTRLEN),
-				p->prefixlen);
+					 ? prefix_rd2str(prd, buf1,
+							 sizeof(buf1))
+					 : ""),
+				safi == SAFI_MPLS_VPN ? ":" : "", p,
+				dest->version);
 
-		} else
-			json_object_string_add(json, "prefix",
-				prefix2str(p, prefix_str, sizeof(prefix_str)));
+		} else {
+			json_object_string_addf(json, "prefix", "%pFX", p);
+			json_object_int_add(json, "version", dest->version);
+
+		}
 	}
 
 	if (has_valid_label) {
@@ -10303,44 +11509,43 @@ void route_vty_out_detail_header(struct vty *vty, struct bgp *bgp,
 			vty_out(vty, "not allocated\n");
 
 	for (pi = bgp_dest_get_bgp_path_info(dest); pi; pi = pi->next) {
+		struct community *picomm = NULL;
+
+		picomm = bgp_attr_get_community(pi->attr);
+
 		count++;
 		if (CHECK_FLAG(pi->flags, BGP_PATH_SELECTED)) {
 			best = count;
-			if (pi->extra && pi->extra->suppress)
+			if (bgp_path_suppressed(pi))
 				suppress = 1;
 
-			if (pi->attr->community == NULL)
+			if (!picomm)
 				continue;
 
 			no_advertise += community_include(
-				pi->attr->community, COMMUNITY_NO_ADVERTISE);
-			no_export += community_include(pi->attr->community,
-						       COMMUNITY_NO_EXPORT);
-			local_as += community_include(pi->attr->community,
-						      COMMUNITY_LOCAL_AS);
-			accept_own += community_include(pi->attr->community,
-							COMMUNITY_ACCEPT_OWN);
+				picomm, COMMUNITY_NO_ADVERTISE);
+			no_export +=
+				community_include(picomm, COMMUNITY_NO_EXPORT);
+			local_as +=
+				community_include(picomm, COMMUNITY_LOCAL_AS);
+			accept_own +=
+				community_include(picomm, COMMUNITY_ACCEPT_OWN);
 			route_filter_translated_v4 += community_include(
-				pi->attr->community,
-				COMMUNITY_ROUTE_FILTER_TRANSLATED_v4);
+				picomm, COMMUNITY_ROUTE_FILTER_TRANSLATED_v4);
 			route_filter_translated_v6 += community_include(
-				pi->attr->community,
-				COMMUNITY_ROUTE_FILTER_TRANSLATED_v6);
+				picomm, COMMUNITY_ROUTE_FILTER_TRANSLATED_v6);
 			route_filter_v4 += community_include(
-				pi->attr->community, COMMUNITY_ROUTE_FILTER_v4);
+				picomm, COMMUNITY_ROUTE_FILTER_v4);
 			route_filter_v6 += community_include(
-				pi->attr->community, COMMUNITY_ROUTE_FILTER_v6);
-			llgr_stale += community_include(pi->attr->community,
-							COMMUNITY_LLGR_STALE);
-			no_llgr += community_include(pi->attr->community,
-						     COMMUNITY_NO_LLGR);
-			accept_own_nexthop +=
-				community_include(pi->attr->community,
-						  COMMUNITY_ACCEPT_OWN_NEXTHOP);
-			blackhole += community_include(pi->attr->community,
-						       COMMUNITY_BLACKHOLE);
-			no_peer += community_include(pi->attr->community,
-						     COMMUNITY_NO_PEER);
+				picomm, COMMUNITY_ROUTE_FILTER_v6);
+			llgr_stale +=
+				community_include(picomm, COMMUNITY_LLGR_STALE);
+			no_llgr += community_include(picomm, COMMUNITY_NO_LLGR);
+			accept_own_nexthop += community_include(
+				picomm, COMMUNITY_ACCEPT_OWN_NEXTHOP);
+			blackhole +=
+				community_include(picomm, COMMUNITY_BLACKHOLE);
+			no_peer += community_include(picomm, COMMUNITY_NO_PEER);
 		}
 	}
 
@@ -10376,7 +11581,7 @@ void route_vty_out_detail_header(struct vty *vty, struct bgp *bgp,
 			", attach RT as-is for VPNv6 route filtering");
 		else if (llgr_stale)
 			vty_out(vty,
-			", mark routes to be retained for a longer time. Requeres support for Long-lived BGP Graceful Restart");
+				", mark routes to be retained for a longer time. Requires support for Long-lived BGP Graceful Restart");
 		else if (no_llgr)
 			vty_out(vty,
 			", mark routes to not be treated according to Long-lived BGP Graceful Restart operations");
@@ -10432,19 +11637,29 @@ void route_vty_out_detail_header(struct vty *vty, struct bgp *bgp,
 	}
 }
 
-static void bgp_show_path_info(struct prefix_rd *pfx_rd,
+static void bgp_show_path_info(const struct prefix_rd *pfx_rd,
 			       struct bgp_dest *bgp_node, struct vty *vty,
 			       struct bgp *bgp, afi_t afi, safi_t safi,
 			       json_object *json, enum bgp_path_type pathtype,
-			       int *display)
+			       int *display, enum rpki_states rpki_target_state)
 {
 	struct bgp_path_info *pi;
 	int header = 1;
 	char rdbuf[RD_ADDRSTRLEN];
 	json_object *json_header = NULL;
 	json_object *json_paths = NULL;
+	const struct prefix *p = bgp_dest_get_prefix(bgp_node);
 
 	for (pi = bgp_dest_get_bgp_path_info(bgp_node); pi; pi = pi->next) {
+		enum rpki_states rpki_curr_state = RPKI_NOT_BEING_USED;
+
+		if (p->family == AF_INET || p->family == AF_INET6)
+			rpki_curr_state = hook_call(bgp_rpki_prefix_status,
+						    pi->peer, pi->attr, p);
+
+		if (rpki_target_state != RPKI_NOT_BEING_USED
+		    && rpki_curr_state != rpki_target_state)
+			continue;
 
 		if (json && !json_paths) {
 			/* Instantiate json_paths only if path is valid */
@@ -10470,9 +11685,8 @@ static void bgp_show_path_info(struct prefix_rd *pfx_rd,
 		    || (pathtype == BGP_PATH_SHOW_MULTIPATH
 			&& (CHECK_FLAG(pi->flags, BGP_PATH_MULTIPATH)
 			    || CHECK_FLAG(pi->flags, BGP_PATH_SELECTED))))
-			route_vty_out_detail(vty, bgp, bgp_node,
-					     pi, AFI_IP, safi,
-					     json_paths);
+			route_vty_out_detail(vty, bgp, bgp_node, pi, AFI_IP,
+					     safi, rpki_curr_state, json_paths);
 	}
 
 	if (json && json_paths) {
@@ -10483,10 +11697,28 @@ static void bgp_show_path_info(struct prefix_rd *pfx_rd,
 	}
 }
 
+/*
+ * Return rd based on safi
+ */
+static const struct prefix_rd *bgp_rd_from_dest(const struct bgp_dest *dest,
+						safi_t safi)
+{
+	switch (safi) {
+	case SAFI_MPLS_VPN:
+	case SAFI_ENCAP:
+	case SAFI_EVPN:
+		return (struct prefix_rd *)(bgp_dest_get_prefix(dest));
+	default:
+		return NULL;
+
+	}
+}
+
 /* Display specified route of BGP table. */
 static int bgp_show_route_in_table(struct vty *vty, struct bgp *bgp,
 				   struct bgp_table *rib, const char *ip_str,
 				   afi_t afi, safi_t safi,
+				   enum rpki_states rpki_target_state,
 				   struct prefix_rd *prd, int prefix_check,
 				   enum bgp_path_type pathtype, bool use_json)
 {
@@ -10522,7 +11754,8 @@ static int bgp_show_route_in_table(struct vty *vty, struct bgp *bgp,
 			if (!table)
 				continue;
 
-			if ((rm = bgp_node_match(table, &match)) == NULL)
+			rm = bgp_node_match(table, &match);
+			if (rm == NULL)
 				continue;
 
 			const struct prefix *rm_p = bgp_dest_get_prefix(rm);
@@ -10534,7 +11767,7 @@ static int bgp_show_route_in_table(struct vty *vty, struct bgp *bgp,
 
 			bgp_show_path_info((struct prefix_rd *)dest_p, rm, vty,
 					   bgp, afi, safi, json, pathtype,
-					   &display);
+					   &display, rpki_target_state);
 
 			bgp_dest_unlock_node(rm);
 		}
@@ -10593,7 +11826,7 @@ static int bgp_show_route_in_table(struct vty *vty, struct bgp *bgp,
 
 			bgp_show_path_info((struct prefix_rd *)dest_p, rm, vty,
 					   bgp, afi, safi, json, pathtype,
-					   &display);
+					   &display, rpki_target_state);
 
 			bgp_dest_unlock_node(rm);
 		}
@@ -10614,13 +11847,14 @@ static int bgp_show_route_in_table(struct vty *vty, struct bgp *bgp,
 				json_object_free(json_paths);
 		}
 	} else {
-		if ((dest = bgp_node_match(rib, &match)) != NULL) {
+		dest = bgp_node_match(rib, &match);
+		if (dest != NULL) {
 			const struct prefix *dest_p = bgp_dest_get_prefix(dest);
 			if (!prefix_check
 			    || dest_p->prefixlen == match.prefixlen) {
 				bgp_show_path_info(NULL, dest, vty, bgp, afi,
 						   safi, json, pathtype,
-						   &display);
+						   &display, rpki_target_state);
 			}
 
 			bgp_dest_unlock_node(dest);
@@ -10628,10 +11862,7 @@ static int bgp_show_route_in_table(struct vty *vty, struct bgp *bgp,
 	}
 
 	if (use_json) {
-		vty_out(vty, "%s\n", json_object_to_json_string_ext(
-					     json, JSON_C_TO_STRING_PRETTY |
-					     JSON_C_TO_STRING_NOSLASHESCAPE));
-		json_object_free(json);
+		vty_json(vty, json);
 	} else {
 		if (!display) {
 			vty_out(vty, "%% Network not in table\n");
@@ -10646,7 +11877,7 @@ static int bgp_show_route_in_table(struct vty *vty, struct bgp *bgp,
 static int bgp_show_route(struct vty *vty, struct bgp *bgp, const char *ip_str,
 			  afi_t afi, safi_t safi, struct prefix_rd *prd,
 			  int prefix_check, enum bgp_path_type pathtype,
-			  bool use_json)
+			  enum rpki_states rpki_target_state, bool use_json)
 {
 	if (!bgp) {
 		bgp = bgp_get_default();
@@ -10664,8 +11895,8 @@ static int bgp_show_route(struct vty *vty, struct bgp *bgp, const char *ip_str,
 		safi = SAFI_UNICAST;
 
 	return bgp_show_route_in_table(vty, bgp, bgp->rib[afi][safi], ip_str,
-				       afi, safi, prd, prefix_check, pathtype,
-				       use_json);
+				       afi, safi, rpki_target_state, prd,
+				       prefix_check, pathtype, use_json);
 }
 
 static int bgp_show_lcommunity(struct vty *vty, struct bgp *bgp, int argc,
@@ -10677,7 +11908,11 @@ static int bgp_show_lcommunity(struct vty *vty, struct bgp *bgp, int argc,
 	int i;
 	char *str;
 	int first = 0;
+	uint16_t show_flags = 0;
 	int ret;
+
+	if (uj)
+		SET_FLAG(show_flags, BGP_SHOW_OPT_JSON);
 
 	b = buffer_new(1024);
 	for (i = 0; i < argc; i++) {
@@ -10703,9 +11938,9 @@ static int bgp_show_lcommunity(struct vty *vty, struct bgp *bgp, int argc,
 	}
 
 	ret = bgp_show(vty, bgp, afi, safi,
-			(exact ? bgp_show_type_lcommunity_exact
-			       : bgp_show_type_lcommunity),
-			lcom, uj, false);
+		       (exact ? bgp_show_type_lcommunity_exact
+			      : bgp_show_type_lcommunity),
+		       lcom, show_flags, RPKI_NOT_BEING_USED);
 
 	lcommunity_free(&lcom);
 	return ret;
@@ -10716,6 +11951,11 @@ static int bgp_show_lcommunity_list(struct vty *vty, struct bgp *bgp,
 				    safi_t safi, bool uj)
 {
 	struct community_list *list;
+	uint16_t show_flags = 0;
+
+	if (uj)
+		SET_FLAG(show_flags, BGP_SHOW_OPT_JSON);
+
 
 	list = community_list_lookup(bgp_clist, lcom, 0,
 				     LARGE_COMMUNITY_LIST_MASTER);
@@ -10728,12 +11968,12 @@ static int bgp_show_lcommunity_list(struct vty *vty, struct bgp *bgp,
 	return bgp_show(vty, bgp, afi, safi,
 			(exact ? bgp_show_type_lcommunity_list_exact
 			       : bgp_show_type_lcommunity_list),
-			list, uj, false);
+			list, show_flags, RPKI_NOT_BEING_USED);
 }
 
 DEFUN (show_ip_bgp_large_community_list,
        show_ip_bgp_large_community_list_cmd,
-       "show [ip] bgp [<view|vrf> VIEWVRFNAME] ["BGP_AFI_CMD_STR" ["BGP_SAFI_WITH_LABEL_CMD_STR"]] large-community-list <(1-500)|WORD> [exact-match] [json]",
+       "show [ip] bgp [<view|vrf> VIEWVRFNAME] ["BGP_AFI_CMD_STR" ["BGP_SAFI_WITH_LABEL_CMD_STR"]] large-community-list <(1-500)|LCOMMUNITY_LIST_NAME> [exact-match] [json]",
        SHOW_STR
        IP_STR
        BGP_STR
@@ -10753,13 +11993,13 @@ DEFUN (show_ip_bgp_large_community_list,
 	struct bgp *bgp = NULL;
 	bool uj = use_json(argc, argv);
 
-        if (uj)
-                argc--;
+	if (uj)
+		argc--;
 
-        bgp_vty_find_and_parse_afi_safi_bgp(vty, argv, argc, &idx, &afi, &safi,
-                                            &bgp, uj);
-        if (!idx)
-                return CMD_WARNING;
+	bgp_vty_find_and_parse_afi_safi_bgp(vty, argv, argc, &idx, &afi, &safi,
+					    &bgp, uj);
+	if (!idx)
+		return CMD_WARNING;
 
 	argv_find(argv, argc, "large-community-list", &idx);
 
@@ -10791,14 +12031,17 @@ DEFUN (show_ip_bgp_large_community,
 	bool exact_match = 0;
 	struct bgp *bgp = NULL;
 	bool uj = use_json(argc, argv);
+	uint16_t show_flags = 0;
 
-        if (uj)
-                argc--;
+	if (uj) {
+		argc--;
+		SET_FLAG(show_flags, BGP_SHOW_OPT_JSON);
+	}
 
-        bgp_vty_find_and_parse_afi_safi_bgp(vty, argv, argc, &idx, &afi, &safi,
-                                            &bgp, uj);
-        if (!idx)
-                return CMD_WARNING;
+	bgp_vty_find_and_parse_afi_safi_bgp(vty, argv, argc, &idx, &afi, &safi,
+					    &bgp, uj);
+	if (!idx)
+		return CMD_WARNING;
 
 	if (argv_find(argv, argc, "AA:BB:CC", &idx)) {
 		if (argv_find(argv, argc, "exact-match", &idx))
@@ -10807,7 +12050,8 @@ DEFUN (show_ip_bgp_large_community,
 					exact_match, afi, safi, uj);
 	} else
 		return bgp_show(vty, bgp, afi, safi,
-				bgp_show_type_lcommunity_all, NULL, uj, false);
+				bgp_show_type_lcommunity_all, NULL, show_flags,
+				RPKI_NOT_BEING_USED);
 }
 
 static int bgp_table_stats_single(struct vty *vty, struct bgp *bgp, afi_t afi,
@@ -10859,12 +12103,8 @@ DEFUN(show_ip_bgp_statistics_all, show_ip_bgp_statistics_all_cmd,
 		bgp_table_stats(vty, bgp, afi, safi, json_afi_safi);
 	}
 
-	if (uj) {
-		vty_out(vty, "%s",
-			json_object_to_json_string_ext(
-				json_all, JSON_C_TO_STRING_PRETTY));
-		json_object_free(json_all);
-	}
+	if (uj)
+		vty_json(vty, json_all);
 
 	return CMD_SUCCESS;
 }
@@ -10905,9 +12145,7 @@ DEFUN (show_ip_bgp_l2vpn_evpn_statistics,
 		json = json_object_new_object();
 		json_object_object_add(json, get_afi_safi_str(afi, safi, true),
 				       json_afi_safi);
-		vty_out(vty, "%s", json_object_to_json_string_ext(
-					  json, JSON_C_TO_STRING_PRETTY));
-		json_object_free(json);
+		vty_json(vty, json);
 	}
 	return ret;
 }
@@ -10945,95 +12183,58 @@ DEFUN(show_ip_bgp_afi_safi_statistics, show_ip_bgp_afi_safi_statistics_cmd,
 		json = json_object_new_object();
 		json_object_object_add(json, get_afi_safi_str(afi, safi, true),
 				       json_afi_safi);
-		vty_out(vty, "%s",
-			json_object_to_json_string_ext(
-				json, JSON_C_TO_STRING_PRETTY));
-		json_object_free(json);
+		vty_json(vty, json);
 	}
 	return ret;
 }
 
-/* BGP route print out function without JSON */
-DEFUN(show_ip_bgp, show_ip_bgp_cmd,
+DEFPY(show_ip_bgp_dampening_params, show_ip_bgp_dampening_params_cmd,
       "show [ip] bgp [<view|vrf> VIEWVRFNAME] [" BGP_AFI_CMD_STR
       " [" BGP_SAFI_WITH_LABEL_CMD_STR
-      "]]\
-          <dampening <parameters>\
-           |route-map WORD\
-           |prefix-list WORD\
-           |filter-list WORD\
-           |community-list <(1-500)|WORD> [exact-match]\
-           |A.B.C.D/M longer-prefixes\
-           |X:X::X:X/M longer-prefixes\
-         >",
+      "]] [all$all] dampening parameters [json]",
       SHOW_STR IP_STR BGP_STR BGP_INSTANCE_HELP_STR BGP_AFI_HELP_STR
 	      BGP_SAFI_WITH_LABEL_HELP_STR
+      "Display the entries for all address families\n"
       "Display detailed information about dampening\n"
       "Display detail of configured dampening parameters\n"
-      "Display routes matching the route-map\n"
-      "A route-map to match on\n"
-      "Display routes conforming to the prefix-list\n"
-      "Prefix-list name\n"
-      "Display routes conforming to the filter-list\n"
-      "Regular expression access list name\n"
-      "Display routes matching the community-list\n"
-      "community-list number\n"
-      "community-list name\n"
-      "Exact match of the communities\n"
-      "IPv4 prefix\n"
-      "Display route and more specific routes\n"
-      "IPv6 prefix\n"
-      "Display route and more specific routes\n")
+      JSON_STR)
 {
 	afi_t afi = AFI_IP6;
 	safi_t safi = SAFI_UNICAST;
-	int exact_match = 0;
 	struct bgp *bgp = NULL;
 	int idx = 0;
+	uint16_t show_flags = 0;
+	bool uj = use_json(argc, argv);
+
+	if (uj) {
+		argc--;
+		SET_FLAG(show_flags, BGP_SHOW_OPT_JSON);
+	}
+
+	/* [<ipv4|ipv6> [all]] */
+	if (all) {
+		SET_FLAG(show_flags, BGP_SHOW_OPT_AFI_ALL);
+		if (argv_find(argv, argc, "ipv4", &idx))
+			SET_FLAG(show_flags, BGP_SHOW_OPT_AFI_IP);
+
+		if (argv_find(argv, argc, "ipv6", &idx))
+			SET_FLAG(show_flags, BGP_SHOW_OPT_AFI_IP6);
+	}
 
 	bgp_vty_find_and_parse_afi_safi_bgp(vty, argv, argc, &idx, &afi, &safi,
 					    &bgp, false);
 	if (!idx)
 		return CMD_WARNING;
 
-	if (argv_find(argv, argc, "dampening", &idx)) {
-		if (argv_find(argv, argc, "parameters", &idx))
-			return bgp_show_dampening_parameters(vty, afi, safi);
-	}
-
-	if (argv_find(argv, argc, "prefix-list", &idx))
-		return bgp_show_prefix_list(vty, bgp, argv[idx + 1]->arg, afi,
-					    safi, bgp_show_type_prefix_list);
-
-	if (argv_find(argv, argc, "filter-list", &idx))
-		return bgp_show_filter_list(vty, bgp, argv[idx + 1]->arg, afi,
-					    safi, bgp_show_type_filter_list);
-
-	if (argv_find(argv, argc, "route-map", &idx))
-		return bgp_show_route_map(vty, bgp, argv[idx + 1]->arg, afi,
-					  safi, bgp_show_type_route_map);
-
-	if (argv_find(argv, argc, "community-list", &idx)) {
-		const char *clist_number_or_name = argv[++idx]->arg;
-		if (++idx < argc && strmatch(argv[idx]->text, "exact-match"))
-			exact_match = 1;
-		return bgp_show_community_list(vty, bgp, clist_number_or_name,
-					       exact_match, afi, safi);
-	}
-	/* prefix-longer */
-	if (argv_find(argv, argc, "A.B.C.D/M", &idx)
-	    || argv_find(argv, argc, "X:X::X:X/M", &idx))
-		return bgp_show_prefix_longer(vty, bgp, argv[idx]->arg, afi,
-					      safi,
-					      bgp_show_type_prefix_longer);
-
-	return CMD_WARNING;
+	return bgp_show_dampening_parameters(vty, afi, safi, show_flags);
 }
 
-/* BGP route print out function with JSON */
-DEFPY (show_ip_bgp_json,
-       show_ip_bgp_json_cmd,
-       "show [ip] bgp [<view|vrf> VIEWVRFNAME] ["BGP_AFI_CMD_STR" ["BGP_SAFI_WITH_LABEL_CMD_STR"]]\
+/* BGP route print out function */
+DEFPY(show_ip_bgp, show_ip_bgp_cmd,
+      "show [ip] bgp [<view|vrf> VIEWVRFNAME] [" BGP_AFI_CMD_STR
+      " [" BGP_SAFI_WITH_LABEL_CMD_STR
+      "]]\
+          [all$all]\
           [cidr-only\
           |dampening <flap-statistics|dampened-paths>\
           |community [AA:NN|local-AS|no-advertise|no-export\
@@ -11041,46 +12242,99 @@ DEFPY (show_ip_bgp_json,
                      |accept-own|accept-own-nexthop|route-filter-v6\
                      |route-filter-v4|route-filter-translated-v6\
                      |route-filter-translated-v4] [exact-match]\
-          ] [json$uj | wide$wide]",
-       SHOW_STR
-       IP_STR
-       BGP_STR
-       BGP_INSTANCE_HELP_STR
-       BGP_AFI_HELP_STR
-       BGP_SAFI_WITH_LABEL_HELP_STR
-       "Display only routes with non-natural netmasks\n"
-       "Display detailed information about dampening\n"
-       "Display flap statistics of routes\n"
-       "Display paths suppressed due to dampening\n"
-       "Display routes matching the communities\n"
-       COMMUNITY_AANN_STR
-       "Do not send outside local AS (well-known community)\n"
-       "Do not advertise to any peer (well-known community)\n"
-       "Do not export to next AS (well-known community)\n"
-       "Graceful shutdown (well-known community)\n"
-       "Do not export to any peer (well-known community)\n"
-       "Inform EBGP peers to blackhole traffic to prefix (well-known community)\n"
-       "Staled Long-lived Graceful Restart VPN route (well-known community)\n"
-       "Removed because Long-lived Graceful Restart was not enabled for VPN route (well-known community)\n"
-       "Should accept local VPN route if exported and imported into different VRF (well-known community)\n"
-       "Should accept VPN route with local nexthop (well-known community)\n"
-       "RT VPNv6 route filtering (well-known community)\n"
-       "RT VPNv4 route filtering (well-known community)\n"
-       "RT translated VPNv6 route filtering (well-known community)\n"
-       "RT translated VPNv4 route filtering (well-known community)\n"
-       "Exact match of the communities\n"
-       JSON_STR
-       "Increase table width for longer prefixes\n")
+          |community-list <(1-500)|COMMUNITY_LIST_NAME> [exact-match]\
+          |filter-list AS_PATH_FILTER_NAME\
+          |prefix-list WORD\
+          |route-map WORD\
+          |rpki <invalid|valid|notfound>\
+          |version (1-4294967295)\
+          |alias ALIAS_NAME\
+          |A.B.C.D/M longer-prefixes\
+          |X:X::X:X/M longer-prefixes\
+          ] [json$uj [detail$detail] | wide$wide]",
+      SHOW_STR IP_STR BGP_STR BGP_INSTANCE_HELP_STR BGP_AFI_HELP_STR
+	      BGP_SAFI_WITH_LABEL_HELP_STR
+      "Display the entries for all address families\n"
+      "Display only routes with non-natural netmasks\n"
+      "Display detailed information about dampening\n"
+      "Display flap statistics of routes\n"
+      "Display paths suppressed due to dampening\n"
+      "Display routes matching the communities\n" COMMUNITY_AANN_STR
+      "Do not send outside local AS (well-known community)\n"
+      "Do not advertise to any peer (well-known community)\n"
+      "Do not export to next AS (well-known community)\n"
+      "Graceful shutdown (well-known community)\n"
+      "Do not export to any peer (well-known community)\n"
+      "Inform EBGP peers to blackhole traffic to prefix (well-known community)\n"
+      "Staled Long-lived Graceful Restart VPN route (well-known community)\n"
+      "Removed because Long-lived Graceful Restart was not enabled for VPN route (well-known community)\n"
+      "Should accept local VPN route if exported and imported into different VRF (well-known community)\n"
+      "Should accept VPN route with local nexthop (well-known community)\n"
+      "RT VPNv6 route filtering (well-known community)\n"
+      "RT VPNv4 route filtering (well-known community)\n"
+      "RT translated VPNv6 route filtering (well-known community)\n"
+      "RT translated VPNv4 route filtering (well-known community)\n"
+      "Exact match of the communities\n"
+      "Community-list number\n"
+      "Community-list name\n"
+      "Display routes matching the community-list\n"
+      "Exact match of the communities\n"
+      "Display routes conforming to the filter-list\n"
+      "Regular expression access list name\n"
+      "Display routes conforming to the prefix-list\n"
+      "Prefix-list name\n"
+      "Display routes matching the route-map\n"
+      "A route-map to match on\n"
+      "RPKI route types\n"
+      "A valid path as determined by rpki\n"
+      "A invalid path as determined by rpki\n"
+      "A path that has no rpki data\n"
+      "Display prefixes with matching version numbers\n"
+      "Version number and above\n"
+      "Display prefixes with matching BGP community alias\n"
+      "BGP community alias\n"
+      "IPv4 prefix\n"
+      "Display route and more specific routes\n"
+      "IPv6 prefix\n"
+      "Display route and more specific routes\n"
+      JSON_STR
+      "Display detailed version of JSON output\n"
+      "Increase table width for longer prefixes\n")
 {
 	afi_t afi = AFI_IP6;
 	safi_t safi = SAFI_UNICAST;
 	enum bgp_show_type sh_type = bgp_show_type_normal;
+	void *output_arg = NULL;
 	struct bgp *bgp = NULL;
 	int idx = 0;
 	int exact_match = 0;
+	char *community = NULL;
+	bool first = true;
+	uint16_t show_flags = 0;
+	enum rpki_states rpki_target_state = RPKI_NOT_BEING_USED;
+	struct prefix p;
 
-	if (uj)
+	if (uj) {
 		argc--;
+		SET_FLAG(show_flags, BGP_SHOW_OPT_JSON);
+	}
+
+	if (detail)
+		SET_FLAG(show_flags, BGP_SHOW_OPT_DETAIL);
+
+	/* [<ipv4|ipv6> [all]] */
+	if (all) {
+		SET_FLAG(show_flags, BGP_SHOW_OPT_AFI_ALL);
+
+		if (argv_find(argv, argc, "ipv4", &idx))
+			SET_FLAG(show_flags, BGP_SHOW_OPT_AFI_IP);
+
+		if (argv_find(argv, argc, "ipv6", &idx))
+			SET_FLAG(show_flags, BGP_SHOW_OPT_AFI_IP6);
+	}
+
+	if (wide)
+		SET_FLAG(show_flags, BGP_SHOW_OPT_WIDE);
 
 	bgp_vty_find_and_parse_afi_safi_bgp(vty, argv, argc, &idx, &afi, &safi,
 					    &bgp, uj);
@@ -11088,23 +12342,17 @@ DEFPY (show_ip_bgp_json,
 		return CMD_WARNING;
 
 	if (argv_find(argv, argc, "cidr-only", &idx))
-		return bgp_show(vty, bgp, afi, safi, bgp_show_type_cidr_only,
-				NULL, uj, wide);
+		sh_type = bgp_show_type_cidr_only;
 
 	if (argv_find(argv, argc, "dampening", &idx)) {
 		if (argv_find(argv, argc, "dampened-paths", &idx))
-			return bgp_show(vty, bgp, afi, safi,
-					bgp_show_type_dampend_paths, NULL, uj,
-					wide);
+			sh_type = bgp_show_type_dampend_paths;
 		else if (argv_find(argv, argc, "flap-statistics", &idx))
-			return bgp_show(vty, bgp, afi, safi,
-					bgp_show_type_flap_statistics, NULL, uj,
-					wide);
+			sh_type = bgp_show_type_flap_statistics;
 	}
 
 	if (argv_find(argv, argc, "community", &idx)) {
 		char *maybecomm = NULL;
-		char *community = NULL;
 
 		if (idx + 1 < argc) {
 			if (argv[idx + 1]->type == VARIABLE_TKN)
@@ -11120,21 +12368,222 @@ DEFPY (show_ip_bgp_json,
 		if (argv_find(argv, argc, "exact-match", &idx))
 			exact_match = 1;
 
-		if (community)
-			return bgp_show_community(vty, bgp, community,
-						  exact_match, afi, safi, uj);
-		else
-			return (bgp_show(vty, bgp, afi, safi,
-					 bgp_show_type_community_all, NULL, uj,
-					 wide));
+		if (!community)
+			sh_type = bgp_show_type_community_all;
 	}
 
-	return bgp_show(vty, bgp, afi, safi, sh_type, NULL, uj, wide);
+	if (argv_find(argv, argc, "community-list", &idx)) {
+		const char *clist_number_or_name = argv[++idx]->arg;
+		struct community_list *list;
+
+		if (argv_find(argv, argc, "exact-match", &idx))
+			exact_match = 1;
+
+		list = community_list_lookup(bgp_clist, clist_number_or_name, 0,
+					     COMMUNITY_LIST_MASTER);
+		if (list == NULL) {
+			vty_out(vty,
+				"%% %s is not a valid community-list name\n",
+				clist_number_or_name);
+			return CMD_WARNING;
+		}
+
+		if (exact_match)
+			sh_type = bgp_show_type_community_list_exact;
+		else
+			sh_type = bgp_show_type_community_list;
+		output_arg = list;
+	}
+
+	if (argv_find(argv, argc, "filter-list", &idx)) {
+		const char *filter = argv[++idx]->arg;
+		struct as_list *as_list;
+
+		as_list = as_list_lookup(filter);
+		if (as_list == NULL) {
+			vty_out(vty,
+				"%% %s is not a valid AS-path access-list name\n",
+				filter);
+			return CMD_WARNING;
+		}
+
+		sh_type = bgp_show_type_filter_list;
+		output_arg = as_list;
+	}
+
+	if (argv_find(argv, argc, "prefix-list", &idx)) {
+		const char *prefix_list_str = argv[++idx]->arg;
+		struct prefix_list *plist;
+
+		plist = prefix_list_lookup(afi, prefix_list_str);
+		if (plist == NULL) {
+			vty_out(vty, "%% %s is not a valid prefix-list name\n",
+				prefix_list_str);
+			return CMD_WARNING;
+		}
+
+		sh_type = bgp_show_type_prefix_list;
+		output_arg = plist;
+	}
+
+	if (argv_find(argv, argc, "route-map", &idx)) {
+		const char *rmap_str = argv[++idx]->arg;
+		struct route_map *rmap;
+
+		rmap = route_map_lookup_by_name(rmap_str);
+		if (!rmap) {
+			vty_out(vty, "%% %s is not a valid route-map name\n",
+				rmap_str);
+			return CMD_WARNING;
+		}
+
+		sh_type = bgp_show_type_route_map;
+		output_arg = rmap;
+	}
+
+	if (argv_find(argv, argc, "rpki", &idx)) {
+		sh_type = bgp_show_type_rpki;
+		if (argv_find(argv, argc, "valid", &idx))
+			rpki_target_state = RPKI_VALID;
+		else if (argv_find(argv, argc, "invalid", &idx))
+			rpki_target_state = RPKI_INVALID;
+	}
+
+	/* Display prefixes with matching version numbers */
+	if (argv_find(argv, argc, "version", &idx)) {
+		sh_type = bgp_show_type_prefix_version;
+		output_arg = argv[idx + 1]->arg;
+	}
+
+	/* Display prefixes with matching BGP community alias */
+	if (argv_find(argv, argc, "alias", &idx)) {
+		sh_type = bgp_show_type_community_alias;
+		output_arg = argv[idx + 1]->arg;
+	}
+
+	/* prefix-longer */
+	if (argv_find(argv, argc, "A.B.C.D/M", &idx)
+	    || argv_find(argv, argc, "X:X::X:X/M", &idx)) {
+		const char *prefix_str = argv[idx]->arg;
+
+		if (!str2prefix(prefix_str, &p)) {
+			vty_out(vty, "%% Malformed Prefix\n");
+			return CMD_WARNING;
+		}
+
+		sh_type = bgp_show_type_prefix_longer;
+		output_arg = &p;
+	}
+
+	if (!all) {
+		/* show bgp: AFI_IP6, show ip bgp: AFI_IP */
+		if (community)
+			return bgp_show_community(vty, bgp, community,
+						  exact_match, afi, safi,
+						  show_flags);
+		else
+			return bgp_show(vty, bgp, afi, safi, sh_type,
+					output_arg, show_flags,
+					rpki_target_state);
+	} else {
+		struct listnode *node;
+		struct bgp *abgp;
+		/* show <ip> bgp ipv4 all: AFI_IP, show <ip> bgp ipv6 all:
+		 * AFI_IP6 */
+
+		if (uj)
+			vty_out(vty, "{\n");
+
+		if (CHECK_FLAG(show_flags, BGP_SHOW_OPT_AFI_IP)
+		    || CHECK_FLAG(show_flags, BGP_SHOW_OPT_AFI_IP6)) {
+			afi = CHECK_FLAG(show_flags, BGP_SHOW_OPT_AFI_IP)
+				      ? AFI_IP
+				      : AFI_IP6;
+			for (ALL_LIST_ELEMENTS_RO(bm->bgp, node, abgp)) {
+				FOREACH_SAFI (safi) {
+					if (!bgp_afi_safi_peer_exists(abgp, afi,
+								      safi))
+						continue;
+
+					if (uj) {
+						if (first)
+							first = false;
+						else
+							vty_out(vty, ",\n");
+						vty_out(vty, "\"%s\":{\n",
+							get_afi_safi_str(afi,
+									 safi,
+									 true));
+					} else
+						vty_out(vty,
+							"\nFor address family: %s\n",
+							get_afi_safi_str(
+								afi, safi,
+								false));
+
+					if (community)
+						bgp_show_community(
+							vty, abgp, community,
+							exact_match, afi, safi,
+							show_flags);
+					else
+						bgp_show(vty, abgp, afi, safi,
+							 sh_type, output_arg,
+							 show_flags,
+							 rpki_target_state);
+					if (uj)
+						vty_out(vty, "}\n");
+				}
+			}
+		} else {
+			/* show <ip> bgp all: for each AFI and SAFI*/
+			for (ALL_LIST_ELEMENTS_RO(bm->bgp, node, abgp)) {
+				FOREACH_AFI_SAFI (afi, safi) {
+					if (!bgp_afi_safi_peer_exists(abgp, afi,
+								      safi))
+						continue;
+
+					if (uj) {
+						if (first)
+							first = false;
+						else
+							vty_out(vty, ",\n");
+
+						vty_out(vty, "\"%s\":{\n",
+							get_afi_safi_str(afi,
+									 safi,
+									 true));
+					} else
+						vty_out(vty,
+							"\nFor address family: %s\n",
+							get_afi_safi_str(
+								afi, safi,
+								false));
+
+					if (community)
+						bgp_show_community(
+							vty, abgp, community,
+							exact_match, afi, safi,
+							show_flags);
+					else
+						bgp_show(vty, abgp, afi, safi,
+							 sh_type, output_arg,
+							 show_flags,
+							 rpki_target_state);
+					if (uj)
+						vty_out(vty, "}\n");
+				}
+			}
+		}
+		if (uj)
+			vty_out(vty, "}\n");
+	}
+	return CMD_SUCCESS;
 }
 
 DEFUN (show_ip_bgp_route,
        show_ip_bgp_route_cmd,
-       "show [ip] bgp [<view|vrf> VIEWVRFNAME] ["BGP_AFI_CMD_STR" ["BGP_SAFI_WITH_LABEL_CMD_STR"]]<A.B.C.D|A.B.C.D/M|X:X::X:X|X:X::X:X/M> [<bestpath|multipath>] [json]",
+       "show [ip] bgp [<view|vrf> VIEWVRFNAME] ["BGP_AFI_CMD_STR" ["BGP_SAFI_WITH_LABEL_CMD_STR"]]<A.B.C.D|A.B.C.D/M|X:X::X:X|X:X::X:X/M> [<bestpath|multipath>] [rpki <valid|invalid|notfound>] [json]",
        SHOW_STR
        IP_STR
        BGP_STR
@@ -11147,6 +12596,10 @@ DEFUN (show_ip_bgp_route,
        "IPv6 prefix\n"
        "Display only the bestpath\n"
        "Display only multipaths\n"
+       "Display only paths that match the specified rpki state\n"
+       "A valid path as determined by rpki\n"
+       "A invalid path as determined by rpki\n"
+       "A path that has no rpki data\n"
        JSON_STR)
 {
 	int prefix_check = 0;
@@ -11203,7 +12656,7 @@ DEFUN (show_ip_bgp_route,
 		path_type = BGP_PATH_SHOW_ALL;
 
 	return bgp_show_route(vty, bgp, prefix, afi, safi, NULL, prefix_check,
-			      path_type, uj);
+			      path_type, RPKI_NOT_BEING_USED, uj);
 }
 
 DEFUN (show_ip_bgp_regexp,
@@ -11252,20 +12705,26 @@ DEFPY (show_ip_bgp_instance_all,
        JSON_STR
       "Increase table width for longer prefixes\n")
 {
-	afi_t afi = AFI_IP;
+	afi_t afi = AFI_IP6;
 	safi_t safi = SAFI_UNICAST;
 	struct bgp *bgp = NULL;
 	int idx = 0;
+	uint16_t show_flags = 0;
 
-	if (uj)
+	if (uj) {
 		argc--;
+		SET_FLAG(show_flags, BGP_SHOW_OPT_JSON);
+	}
+
+	if (wide)
+		SET_FLAG(show_flags, BGP_SHOW_OPT_WIDE);
 
 	bgp_vty_find_and_parse_afi_safi_bgp(vty, argv, argc, &idx, &afi, &safi,
 					    &bgp, uj);
 	if (!idx)
 		return CMD_WARNING;
 
-	bgp_show_all_instances_routes_vty(vty, afi, safi, uj, wide);
+	bgp_show_all_instances_routes_vty(vty, afi, safi, show_flags);
 	return CMD_SUCCESS;
 }
 
@@ -11275,6 +12734,10 @@ static int bgp_show_regexp(struct vty *vty, struct bgp *bgp, const char *regstr,
 {
 	regex_t *regex;
 	int rc;
+	uint16_t show_flags = 0;
+
+	if (use_json)
+		SET_FLAG(show_flags, BGP_SHOW_OPT_JSON);
 
 	if (!config_bgp_aspath_validate(regstr)) {
 		vty_out(vty, "Invalid character in REGEX %s\n",
@@ -11288,61 +12751,15 @@ static int bgp_show_regexp(struct vty *vty, struct bgp *bgp, const char *regstr,
 		return CMD_WARNING;
 	}
 
-	rc = bgp_show(vty, bgp, afi, safi, type, regex, use_json, false);
+	rc = bgp_show(vty, bgp, afi, safi, type, regex, show_flags,
+		      RPKI_NOT_BEING_USED);
 	bgp_regex_free(regex);
 	return rc;
 }
 
-static int bgp_show_prefix_list(struct vty *vty, struct bgp *bgp,
-				const char *prefix_list_str, afi_t afi,
-				safi_t safi, enum bgp_show_type type)
-{
-	struct prefix_list *plist;
-
-	plist = prefix_list_lookup(afi, prefix_list_str);
-	if (plist == NULL) {
-		vty_out(vty, "%% %s is not a valid prefix-list name\n",
-			prefix_list_str);
-		return CMD_WARNING;
-	}
-
-	return bgp_show(vty, bgp, afi, safi, type, plist, 0, false);
-}
-
-static int bgp_show_filter_list(struct vty *vty, struct bgp *bgp,
-				const char *filter, afi_t afi, safi_t safi,
-				enum bgp_show_type type)
-{
-	struct as_list *as_list;
-
-	as_list = as_list_lookup(filter);
-	if (as_list == NULL) {
-		vty_out(vty, "%% %s is not a valid AS-path access-list name\n",
-			filter);
-		return CMD_WARNING;
-	}
-
-	return bgp_show(vty, bgp, afi, safi, type, as_list, 0, false);
-}
-
-static int bgp_show_route_map(struct vty *vty, struct bgp *bgp,
-			      const char *rmap_str, afi_t afi, safi_t safi,
-			      enum bgp_show_type type)
-{
-	struct route_map *rmap;
-
-	rmap = route_map_lookup_by_name(rmap_str);
-	if (!rmap) {
-		vty_out(vty, "%% %s is not a valid route-map name\n", rmap_str);
-		return CMD_WARNING;
-	}
-
-	return bgp_show(vty, bgp, afi, safi, type, rmap, 0, false);
-}
-
 static int bgp_show_community(struct vty *vty, struct bgp *bgp,
 			      const char *comstr, int exact, afi_t afi,
-			      safi_t safi, bool use_json)
+			      safi_t safi, uint16_t show_flags)
 {
 	struct community *com;
 	int ret = 0;
@@ -11356,47 +12773,9 @@ static int bgp_show_community(struct vty *vty, struct bgp *bgp,
 	ret = bgp_show(vty, bgp, afi, safi,
 		       (exact ? bgp_show_type_community_exact
 			      : bgp_show_type_community),
-		       com, use_json, false);
+		       com, show_flags, RPKI_NOT_BEING_USED);
 	community_free(&com);
 
-	return ret;
-}
-
-static int bgp_show_community_list(struct vty *vty, struct bgp *bgp,
-				   const char *com, int exact, afi_t afi,
-				   safi_t safi)
-{
-	struct community_list *list;
-
-	list = community_list_lookup(bgp_clist, com, 0, COMMUNITY_LIST_MASTER);
-	if (list == NULL) {
-		vty_out(vty, "%% %s is not a valid community-list name\n", com);
-		return CMD_WARNING;
-	}
-
-	return bgp_show(vty, bgp, afi, safi,
-			(exact ? bgp_show_type_community_list_exact
-			       : bgp_show_type_community_list),
-			list, 0, false);
-}
-
-static int bgp_show_prefix_longer(struct vty *vty, struct bgp *bgp,
-				  const char *prefix, afi_t afi, safi_t safi,
-				  enum bgp_show_type type)
-{
-	int ret;
-	struct prefix *p;
-
-	p = prefix_new();
-
-	ret = str2prefix(prefix, p);
-	if (!ret) {
-		vty_out(vty, "%% Malformed Prefix\n");
-		return CMD_WARNING;
-	}
-
-	ret = bgp_show(vty, bgp, afi, safi, type, p, 0, false);
-	prefix_free(&p);
 	return ret;
 }
 
@@ -11453,22 +12832,6 @@ struct bgp_table_stats {
 	double total_space;
 };
 
-#if 0
-#define TALLY_SIGFIG 100000
-static unsigned long
-ravg_tally (unsigned long count, unsigned long oldavg, unsigned long newval)
-{
-  unsigned long newtot = (count-1) * oldavg + (newval * TALLY_SIGFIG);
-  unsigned long res = (newtot * TALLY_SIGFIG) / count;
-  unsigned long ret = newtot / count;
-
-  if ((res % TALLY_SIGFIG) > (TALLY_SIGFIG/2))
-    return ret + 1;
-  else
-    return ret;
-}
-#endif
-
 static void bgp_table_stats_rn(struct bgp_dest *dest, struct bgp_dest *top,
 			       struct bgp_table_stats *ts, unsigned int space)
 {
@@ -11482,13 +12845,6 @@ static void bgp_table_stats_rn(struct bgp_dest *dest, struct bgp_dest *top,
 	rn_p = bgp_dest_get_prefix(dest);
 	ts->counts[BGP_STATS_PREFIXES]++;
 	ts->counts[BGP_STATS_TOTPLEN] += rn_p->prefixlen;
-
-#if 0
-      ts->counts[BGP_STATS_AVGPLEN]
-        = ravg_tally (ts->counts[BGP_STATS_PREFIXES],
-                      ts->counts[BGP_STATS_AVGPLEN],
-                      rn_p->prefixlen);
-#endif
 
 	/* check if the prefix is included by any other announcements */
 	while (pdest && !bgp_dest_has_bgp_path_info_data(pdest))
@@ -11526,23 +12882,13 @@ static void bgp_table_stats_rn(struct bgp_dest *dest, struct bgp_dest *top,
 
 			ts->counts[BGP_STATS_ASPATH_TOTHOPS] += hops;
 			ts->counts[BGP_STATS_ASPATH_TOTSIZE] += size;
-#if 0
-              ts->counts[BGP_STATS_ASPATH_AVGHOPS]
-                = ravg_tally (ts->counts[BGP_STATS_ASPATH_COUNT],
-                              ts->counts[BGP_STATS_ASPATH_AVGHOPS],
-                              hops);
-              ts->counts[BGP_STATS_ASPATH_AVGSIZE]
-                = ravg_tally (ts->counts[BGP_STATS_ASPATH_COUNT],
-                              ts->counts[BGP_STATS_ASPATH_AVGSIZE],
-                              size);
-#endif
 			if (highest > ts->counts[BGP_STATS_ASN_HIGHEST])
 				ts->counts[BGP_STATS_ASN_HIGHEST] = highest;
 		}
 	}
 }
 
-static int bgp_table_stats_walker(struct thread *t)
+static void bgp_table_stats_walker(struct thread *t)
 {
 	struct bgp_dest *dest, *ndest;
 	struct bgp_dest *top;
@@ -11550,7 +12896,7 @@ static int bgp_table_stats_walker(struct thread *t)
 	unsigned int space = 0;
 
 	if (!(top = bgp_table_top(ts->table)))
-		return 0;
+		return;
 
 	switch (ts->table->afi) {
 	case AFI_IP:
@@ -11559,8 +12905,11 @@ static int bgp_table_stats_walker(struct thread *t)
 	case AFI_IP6:
 		space = IPV6_MAX_BITLEN;
 		break;
+	case AFI_L2VPN:
+		space = EVPN_ROUTE_PREFIXLEN;
+		break;
 	default:
-		return 0;
+		return;
 	}
 
 	ts->counts[BGP_STATS_MAXBITLEN] = space;
@@ -11583,8 +12932,6 @@ static int bgp_table_stats_walker(struct thread *t)
 			bgp_table_stats_rn(dest, top, ts, space);
 		}
 	}
-
-	return 0;
 }
 
 static void bgp_table_stats_all(struct vty *vty, afi_t afi, safi_t safi,
@@ -11645,15 +12992,6 @@ static int bgp_table_stats_single(struct vty *vty, struct bgp *bgp, afi_t afi,
 			continue;
 
 		switch (i) {
-#if 0
-          case BGP_STATS_ASPATH_AVGHOPS:
-          case BGP_STATS_ASPATH_AVGSIZE:
-          case BGP_STATS_AVGPLEN:
-            vty_out (vty, "%-30s: ", table_stats_strs[i]);
-            vty_out (vty, "%12.2f",
-                     (float)ts.counts[i] / (float)TALLY_SIGFIG);
-            break;
-#endif
 		case BGP_STATS_ASPATH_TOTHOPS:
 		case BGP_STATS_ASPATH_TOTSIZE:
 			if (!json) {
@@ -11911,7 +13249,7 @@ static void bgp_peer_count_proc(struct bgp_dest *rn, struct peer_pcounts *pc)
 	}
 }
 
-static int bgp_peer_count_walker(struct thread *t)
+static void bgp_peer_count_walker(struct thread *t)
 {
 	struct bgp_dest *rn, *rm;
 	const struct bgp_table *table;
@@ -11931,8 +13269,6 @@ static int bgp_peer_count_walker(struct thread *t)
 	} else
 		for (rn = bgp_table_top(pc->table); rn; rn = bgp_route_next(rn))
 			bgp_peer_count_proc(rn, pc);
-
-	return 0;
 }
 
 static int bgp_peer_counts(struct vty *vty, struct peer *peer, afi_t afi,
@@ -11994,9 +13330,7 @@ static int bgp_peer_counts(struct vty *vty, struct peer *peer, afi_t afi,
 				json, "recommended",
 				"Please report this bug, with the above command output");
 		}
-		vty_out(vty, "%s\n", json_object_to_json_string_ext(
-					     json, JSON_C_TO_STRING_PRETTY));
-		json_object_free(json);
+		vty_json(vty, json);
 	} else {
 
 		if (peer->hostname
@@ -12122,7 +13456,8 @@ DEFUN (show_ip_bgp_vpn_all_route_prefix,
 	}
 
 	return bgp_show_route(vty, bgp, network, AFI_IP, SAFI_MPLS_VPN, NULL, 0,
-			      BGP_PATH_SHOW_ALL, use_json(argc, argv));
+			      BGP_PATH_SHOW_ALL, RPKI_NOT_BEING_USED,
+			      use_json(argc, argv));
 }
 #endif /* KEEP_OLD_VPN_COMMANDS */
 
@@ -12156,10 +13491,10 @@ DEFUN (show_bgp_l2vpn_evpn_route_prefix,
 	}
 	return bgp_show_route(vty, NULL, network, AFI_L2VPN, SAFI_EVPN, NULL,
 			      prefix_check, BGP_PATH_SHOW_ALL,
-			      use_json(argc, argv));
+			      RPKI_NOT_BEING_USED, use_json(argc, argv));
 }
 
-static void show_adj_route_header(struct vty *vty, struct bgp *bgp,
+static void show_adj_route_header(struct vty *vty, struct peer *peer,
 				  struct bgp_table *table, int *header1,
 				  int *header2, json_object *json,
 				  json_object *json_scode,
@@ -12170,30 +13505,37 @@ static void show_adj_route_header(struct vty *vty, struct bgp *bgp,
 	if (*header1) {
 		if (json) {
 			json_object_int_add(json, "bgpTableVersion", version);
-			json_object_string_add(json, "bgpLocalRouterId",
-					       inet_ntoa(bgp->router_id));
+			json_object_string_addf(json, "bgpLocalRouterId",
+						"%pI4", &peer->bgp->router_id);
 			json_object_int_add(json, "defaultLocPrf",
-					    bgp->default_local_pref);
-			json_object_int_add(json, "localAS", bgp->as);
+					    peer->bgp->default_local_pref);
+			json_object_int_add(json, "localAS",
+					    peer->change_local_as
+						    ? peer->change_local_as
+						    : peer->local_as);
 			json_object_object_add(json, "bgpStatusCodes",
 					       json_scode);
 			json_object_object_add(json, "bgpOriginCodes",
 					       json_ocode);
 		} else {
 			vty_out(vty,
-				"BGP table version is %" PRIu64 ", local router ID is %s, vrf id ",
-				version, inet_ntoa(bgp->router_id));
-			if (bgp->vrf_id == VRF_UNKNOWN)
+				"BGP table version is %" PRIu64
+				", local router ID is %pI4, vrf id ",
+				version, &peer->bgp->router_id);
+			if (peer->bgp->vrf_id == VRF_UNKNOWN)
 				vty_out(vty, "%s", VRFID_NONE_STR);
 			else
-				vty_out(vty, "%u", bgp->vrf_id);
+				vty_out(vty, "%u", peer->bgp->vrf_id);
 			vty_out(vty, "\n");
 			vty_out(vty, "Default local pref %u, ",
-				bgp->default_local_pref);
-			vty_out(vty, "local AS %u\n", bgp->as);
+				peer->bgp->default_local_pref);
+			vty_out(vty, "local AS %u\n",
+				peer->change_local_as ? peer->change_local_as
+						      : peer->local_as);
 			vty_out(vty, BGP_SHOW_SCODE_HEADER);
 			vty_out(vty, BGP_SHOW_NCODE_HEADER);
 			vty_out(vty, BGP_SHOW_OCODE_HEADER);
+			vty_out(vty, BGP_SHOW_RPKI_HEADER);
 		}
 		*header1 = 0;
 	}
@@ -12205,69 +13547,32 @@ static void show_adj_route_header(struct vty *vty, struct bgp *bgp,
 	}
 }
 
-static void show_adj_route(struct vty *vty, struct peer *peer, afi_t afi,
-			   safi_t safi, enum bgp_show_adj_route_type type,
-			   const char *rmap_name, bool use_json,
-			   json_object *json, bool wide)
+static void
+show_adj_route(struct vty *vty, struct peer *peer, struct bgp_table *table,
+	       afi_t afi, safi_t safi, enum bgp_show_adj_route_type type,
+	       const char *rmap_name, json_object *json, json_object *json_ar,
+	       json_object *json_scode, json_object *json_ocode,
+	       uint16_t show_flags, int *header1, int *header2, char *rd_str,
+	       unsigned long *output_count, unsigned long *filtered_count)
 {
-	struct bgp_table *table;
 	struct bgp_adj_in *ain;
 	struct bgp_adj_out *adj;
-	unsigned long output_count = 0;
-	unsigned long filtered_count = 0;
 	struct bgp_dest *dest;
-	int header1 = 1;
 	struct bgp *bgp;
-	int header2 = 1;
 	struct attr attr;
 	int ret;
 	struct update_subgroup *subgrp;
-	json_object *json_scode = NULL;
-	json_object *json_ocode = NULL;
-	json_object *json_ar = NULL;
 	struct peer_af *paf;
 	bool route_filtered;
-
-	if (use_json) {
-		json_scode = json_object_new_object();
-		json_ocode = json_object_new_object();
-		json_ar = json_object_new_object();
-
-		json_object_string_add(json_scode, "suppressed", "s");
-		json_object_string_add(json_scode, "damped", "d");
-		json_object_string_add(json_scode, "history", "h");
-		json_object_string_add(json_scode, "valid", "*");
-		json_object_string_add(json_scode, "best", ">");
-		json_object_string_add(json_scode, "multipath", "=");
-		json_object_string_add(json_scode, "internal", "i");
-		json_object_string_add(json_scode, "ribFailure", "r");
-		json_object_string_add(json_scode, "stale", "S");
-		json_object_string_add(json_scode, "removed", "R");
-
-		json_object_string_add(json_ocode, "igp", "i");
-		json_object_string_add(json_ocode, "egp", "e");
-		json_object_string_add(json_ocode, "incomplete", "?");
-	}
+	bool use_json = CHECK_FLAG(show_flags, BGP_SHOW_OPT_JSON);
+	bool wide = CHECK_FLAG(show_flags, BGP_SHOW_OPT_WIDE);
+	bool show_rd = ((safi == SAFI_MPLS_VPN) || (safi == SAFI_ENCAP)
+			|| (safi == SAFI_EVPN))
+			       ? true
+			       : false;
 
 	bgp = peer->bgp;
 
-	if (!bgp) {
-		if (use_json) {
-			json_object_string_add(json, "alert", "no BGP");
-			vty_out(vty, "%s\n", json_object_to_json_string(json));
-			json_object_free(json);
-		} else
-			vty_out(vty, "%% No bgp\n");
-		return;
-	}
-
-	/* labeled-unicast routes live in the unicast table */
-	if (safi == SAFI_LABELED_UNICAST)
-		table = bgp->rib[afi][SAFI_UNICAST];
-	else
-		table = bgp->rib[afi][safi];
-
-	output_count = filtered_count = 0;
 	subgrp = peer_subgroup(peer, afi, safi);
 
 	if (type == bgp_show_adj_route_advertised && subgrp
@@ -12275,11 +13580,14 @@ static void show_adj_route(struct vty *vty, struct peer *peer, afi_t afi,
 		if (use_json) {
 			json_object_int_add(json, "bgpTableVersion",
 					    table->version);
-			json_object_string_add(json, "bgpLocalRouterId",
-					       inet_ntoa(bgp->router_id));
+			json_object_string_addf(json, "bgpLocalRouterId",
+						"%pI4", &bgp->router_id);
 			json_object_int_add(json, "defaultLocPrf",
 						bgp->default_local_pref);
-			json_object_int_add(json, "localAS", bgp->as);
+			json_object_int_add(json, "localAS",
+					    peer->change_local_as
+						    ? peer->change_local_as
+						    : peer->local_as);
 			json_object_object_add(json, "bgpStatusCodes",
 					       json_scode);
 			json_object_object_add(json, "bgpOriginCodes",
@@ -12288,8 +13596,10 @@ static void show_adj_route(struct vty *vty, struct peer *peer, afi_t afi,
 				json, "bgpOriginatingDefaultNetwork",
 				(afi == AFI_IP) ? "0.0.0.0/0" : "::/0");
 		} else {
-			vty_out(vty, "BGP table version is %" PRIu64", local router ID is %s, vrf id ",
-				table->version, inet_ntoa(bgp->router_id));
+			vty_out(vty,
+				"BGP table version is %" PRIu64
+				", local router ID is %pI4, vrf id ",
+				table->version, &bgp->router_id);
 			if (bgp->vrf_id == VRF_UNKNOWN)
 				vty_out(vty, "%s", VRFID_NONE_STR);
 			else
@@ -12297,15 +13607,18 @@ static void show_adj_route(struct vty *vty, struct peer *peer, afi_t afi,
 			vty_out(vty, "\n");
 			vty_out(vty, "Default local pref %u, ",
 				bgp->default_local_pref);
-			vty_out(vty, "local AS %u\n", bgp->as);
+			vty_out(vty, "local AS %u\n",
+				peer->change_local_as ? peer->change_local_as
+						      : peer->local_as);
 			vty_out(vty, BGP_SHOW_SCODE_HEADER);
 			vty_out(vty, BGP_SHOW_NCODE_HEADER);
 			vty_out(vty, BGP_SHOW_OCODE_HEADER);
+			vty_out(vty, BGP_SHOW_RPKI_HEADER);
 
 			vty_out(vty, "Originating default network %s\n\n",
 				(afi == AFI_IP) ? "0.0.0.0/0" : "::/0");
 		}
-		header1 = 0;
+		*header1 = 0;
 	}
 
 	for (dest = bgp_table_top(table); dest; dest = bgp_route_next(dest)) {
@@ -12315,9 +13628,23 @@ static void show_adj_route(struct vty *vty, struct peer *peer, afi_t afi,
 				if (ain->peer != peer)
 					continue;
 
-				show_adj_route_header(
-					vty, bgp, table, &header1, &header2,
-					json, json_scode, json_ocode, wide);
+				show_adj_route_header(vty, peer, table, header1,
+						      header2, json, json_scode,
+						      json_ocode, wide);
+
+				if ((safi == SAFI_MPLS_VPN)
+				    || (safi == SAFI_ENCAP)
+				    || (safi == SAFI_EVPN)) {
+					if (use_json)
+						json_object_string_add(
+							json_ar, "rd", rd_str);
+					else if (show_rd && rd_str) {
+						vty_out(vty,
+							"Route Distinguisher: %s\n",
+							rd_str);
+						show_rd = false;
+					}
+				}
 
 				attr = *ain->attr;
 				route_filtered = false;
@@ -12339,18 +13666,18 @@ static void show_adj_route(struct vty *vty, struct peer *peer, afi_t afi,
 
 				if (type == bgp_show_adj_route_filtered &&
 					!route_filtered && ret != RMAP_DENY) {
-					bgp_attr_undup(&attr, ain->attr);
+					bgp_attr_flush(&attr);
 					continue;
 				}
 
-				if (type == bgp_show_adj_route_received &&
-					(route_filtered || ret == RMAP_DENY))
-					filtered_count++;
+				if (type == bgp_show_adj_route_received
+				    && (route_filtered || ret == RMAP_DENY))
+					(*filtered_count)++;
 
-				route_vty_out_tmp(vty, rn_p, &attr, safi,
+				route_vty_out_tmp(vty, dest, rn_p, &attr, safi,
 						  use_json, json_ar, wide);
-				bgp_attr_undup(&attr, ain->attr);
-				output_count++;
+				bgp_attr_flush(&attr);
+				(*output_count)++;
 			}
 		} else if (type == bgp_show_adj_route_advertised) {
 			RB_FOREACH (adj, bgp_adj_out_rb, &dest->adj_out)
@@ -12358,10 +13685,10 @@ static void show_adj_route(struct vty *vty, struct peer *peer, afi_t afi,
 					if (paf->peer != peer || !adj->attr)
 						continue;
 
-					show_adj_route_header(
-						vty, bgp, table, &header1,
-						&header2, json, json_scode,
-						json_ocode, wide);
+					show_adj_route_header(vty, peer, table,
+							      header1, header2,
+							      json, json_scode,
+							      json_ocode, wide);
 
 					const struct prefix *rn_p =
 						bgp_dest_get_prefix(dest);
@@ -12372,22 +13699,38 @@ static void show_adj_route(struct vty *vty, struct peer *peer, afi_t afi,
 						rmap_name);
 
 					if (ret != RMAP_DENY) {
+						if ((safi == SAFI_MPLS_VPN)
+						    || (safi == SAFI_ENCAP)
+						    || (safi == SAFI_EVPN)) {
+							if (use_json)
+								json_object_string_add(
+									json_ar,
+									"rd",
+									rd_str);
+							else if (show_rd
+								 && rd_str) {
+								vty_out(vty,
+									"Route Distinguisher: %s\n",
+									rd_str);
+								show_rd = false;
+							}
+						}
 						route_vty_out_tmp(
-							vty, rn_p, &attr, safi,
-							use_json, json_ar,
+							vty, dest, rn_p, &attr,
+							safi, use_json, json_ar,
 							wide);
-						output_count++;
+						(*output_count)++;
 					} else {
-						filtered_count++;
+						(*filtered_count)++;
 					}
 
-					bgp_attr_undup(&attr, adj->attr);
+					bgp_attr_flush(&attr);
 				}
 		} else if (type == bgp_show_adj_route_bestpath) {
 			struct bgp_path_info *pi;
 
-			show_adj_route_header(vty, bgp, table, &header1,
-					      &header2, json, json_scode,
+			show_adj_route_header(vty, peer, table, header1,
+					      header2, json, json_scode,
 					      json_ocode, wide);
 
 			for (pi = bgp_dest_get_bgp_path_info(dest); pi;
@@ -12398,49 +13741,71 @@ static void show_adj_route(struct vty *vty, struct peer *peer, afi_t afi,
 				if (!CHECK_FLAG(pi->flags, BGP_PATH_SELECTED))
 					continue;
 
-				route_vty_out_tmp(vty,
+				route_vty_out_tmp(vty, dest,
 						  bgp_dest_get_prefix(dest),
 						  pi->attr, safi, use_json,
 						  json_ar, wide);
-				output_count++;
+				(*output_count)++;
 			}
 		}
-	}
-
-	if (use_json) {
-		json_object_object_add(json, "advertisedRoutes", json_ar);
-		json_object_int_add(json, "totalPrefixCounter", output_count);
-		json_object_int_add(json, "filteredPrefixCounter",
-				    filtered_count);
-
-		vty_out(vty, "%s\n", json_object_to_json_string_ext(
-					     json, JSON_C_TO_STRING_PRETTY));
-
-		if (!output_count && !filtered_count) {
-			json_object_free(json_scode);
-			json_object_free(json_ocode);
-		}
-
-		json_object_free(json);
-	} else if (output_count > 0) {
-		if (filtered_count > 0)
-			vty_out(vty,
-				"\nTotal number of prefixes %ld (%ld filtered)\n",
-				output_count, filtered_count);
-		else
-			vty_out(vty, "\nTotal number of prefixes %ld\n",
-				output_count);
 	}
 }
 
 static int peer_adj_routes(struct vty *vty, struct peer *peer, afi_t afi,
 			   safi_t safi, enum bgp_show_adj_route_type type,
-			   const char *rmap_name, bool use_json, bool wide)
+			   const char *rmap_name, uint16_t show_flags)
 {
+	struct bgp *bgp;
+	struct bgp_table *table;
 	json_object *json = NULL;
+	json_object *json_scode = NULL;
+	json_object *json_ocode = NULL;
+	json_object *json_ar = NULL;
+	bool use_json = CHECK_FLAG(show_flags, BGP_SHOW_OPT_JSON);
 
-	if (use_json)
+	/* Init BGP headers here so they're only displayed once
+	 * even if 'table' is 2-tier (MPLS_VPN, ENCAP, EVPN).
+	 */
+	int header1 = 1;
+	int header2 = 1;
+
+	/*
+	 * Initialize variables for each RD
+	 * All prefixes under an RD is aggregated within "json_routes"
+	 */
+	char rd_str[BUFSIZ] = {0};
+	json_object *json_routes = NULL;
+
+
+	/* For 2-tier tables, prefix counts need to be
+	 * maintained across multiple runs of show_adj_route()
+	 */
+	unsigned long output_count_per_rd;
+	unsigned long filtered_count_per_rd;
+	unsigned long output_count = 0;
+	unsigned long filtered_count = 0;
+
+	if (use_json) {
 		json = json_object_new_object();
+		json_ar = json_object_new_object();
+		json_scode = json_object_new_object();
+		json_ocode = json_object_new_object();
+
+		json_object_string_add(json_scode, "suppressed", "s");
+		json_object_string_add(json_scode, "damped", "d");
+		json_object_string_add(json_scode, "history", "h");
+		json_object_string_add(json_scode, "valid", "*");
+		json_object_string_add(json_scode, "best", ">");
+		json_object_string_add(json_scode, "multipath", "=");
+		json_object_string_add(json_scode, "internal", "i");
+		json_object_string_add(json_scode, "ribFailure", "r");
+		json_object_string_add(json_scode, "stale", "S");
+		json_object_string_add(json_scode, "removed", "R");
+
+		json_object_string_add(json_ocode, "igp", "i");
+		json_object_string_add(json_ocode, "egp", "e");
+		json_object_string_add(json_ocode, "incomplete", "?");
+	}
 
 	if (!peer || !peer->afc[afi][safi]) {
 		if (use_json) {
@@ -12449,6 +13814,9 @@ static int peer_adj_routes(struct vty *vty, struct peer *peer, afi_t afi,
 				"No such neighbor or address family");
 			vty_out(vty, "%s\n", json_object_to_json_string(json));
 			json_object_free(json);
+			json_object_free(json_ar);
+			json_object_free(json_scode);
+			json_object_free(json_ocode);
 		} else
 			vty_out(vty, "%% No such neighbor or address family\n");
 
@@ -12465,6 +13833,9 @@ static int peer_adj_routes(struct vty *vty, struct peer *peer, afi_t afi,
 				"Inbound soft reconfiguration not enabled");
 			vty_out(vty, "%s\n", json_object_to_json_string(json));
 			json_object_free(json);
+			json_object_free(json_ar);
+			json_object_free(json_scode);
+			json_object_free(json_ocode);
 		} else
 			vty_out(vty,
 				"%% Inbound soft reconfiguration not enabled\n");
@@ -12472,8 +13843,87 @@ static int peer_adj_routes(struct vty *vty, struct peer *peer, afi_t afi,
 		return CMD_WARNING;
 	}
 
-	show_adj_route(vty, peer, afi, safi, type, rmap_name, use_json, json,
-		       wide);
+	bgp = peer->bgp;
+
+	/* labeled-unicast routes live in the unicast table */
+	if (safi == SAFI_LABELED_UNICAST)
+		table = bgp->rib[afi][SAFI_UNICAST];
+	else
+		table = bgp->rib[afi][safi];
+
+	if ((safi == SAFI_MPLS_VPN) || (safi == SAFI_ENCAP)
+	    || (safi == SAFI_EVPN)) {
+
+		struct bgp_dest *dest;
+
+		for (dest = bgp_table_top(table); dest;
+		     dest = bgp_route_next(dest)) {
+			table = bgp_dest_get_bgp_table_info(dest);
+			if (!table)
+				continue;
+
+			output_count_per_rd = 0;
+			filtered_count_per_rd = 0;
+
+			if (use_json)
+				json_routes = json_object_new_object();
+
+			const struct prefix_rd *prd;
+			prd = (const struct prefix_rd *)bgp_dest_get_prefix(
+				dest);
+
+			prefix_rd2str(prd, rd_str, sizeof(rd_str));
+
+			show_adj_route(vty, peer, table, afi, safi, type,
+				       rmap_name, json, json_routes, json_scode,
+				       json_ocode, show_flags, &header1,
+				       &header2, rd_str, &output_count_per_rd,
+				       &filtered_count_per_rd);
+
+			/* Don't include an empty RD in the output! */
+			if (json_routes && (output_count_per_rd > 0))
+				json_object_object_add(json_ar, rd_str,
+						       json_routes);
+
+			output_count += output_count_per_rd;
+			filtered_count += filtered_count_per_rd;
+		}
+	} else
+		show_adj_route(vty, peer, table, afi, safi, type, rmap_name,
+			       json, json_ar, json_scode, json_ocode,
+			       show_flags, &header1, &header2, rd_str,
+			       &output_count, &filtered_count);
+
+	if (use_json) {
+		if (type == bgp_show_adj_route_advertised)
+			json_object_object_add(json, "advertisedRoutes",
+					       json_ar);
+		else
+			json_object_object_add(json, "receivedRoutes", json_ar);
+		json_object_int_add(json, "totalPrefixCounter", output_count);
+		json_object_int_add(json, "filteredPrefixCounter",
+				    filtered_count);
+
+		/*
+		 * These fields only give up ownership to `json` when `header1`
+		 * is used (set to zero). See code in `show_adj_route` and
+		 * `show_adj_route_header`.
+		 */
+		if (header1 == 1) {
+			json_object_free(json_scode);
+			json_object_free(json_ocode);
+		}
+
+		vty_json(vty, json);
+	} else if (output_count > 0) {
+		if (filtered_count > 0)
+			vty_out(vty,
+				"\nTotal number of prefixes %ld (%ld filtered)\n",
+				output_count, filtered_count);
+		else
+			vty_out(vty, "\nTotal number of prefixes %ld\n",
+				output_count);
+	}
 
 	return CMD_SUCCESS;
 }
@@ -12503,6 +13953,13 @@ DEFPY (show_ip_bgp_instance_neighbor_bestpath_route,
 	struct peer *peer;
 	enum bgp_show_adj_route_type type = bgp_show_adj_route_bestpath;
 	int idx = 0;
+	uint16_t show_flags = 0;
+
+	if (uj)
+		SET_FLAG(show_flags, BGP_SHOW_OPT_JSON);
+
+	if (wide)
+		SET_FLAG(show_flags, BGP_SHOW_OPT_WIDE);
 
 	bgp_vty_find_and_parse_afi_safi_bgp(vty, argv, argc, &idx, &afi, &safi,
 					    &bgp, uj);
@@ -12517,18 +13974,20 @@ DEFPY (show_ip_bgp_instance_neighbor_bestpath_route,
 	if (!peer)
 		return CMD_WARNING;
 
-	return peer_adj_routes(vty, peer, afi, safi, type, rmap_name, uj, wide);
+	return peer_adj_routes(vty, peer, afi, safi, type, rmap_name,
+			       show_flags);
 }
 
 DEFPY (show_ip_bgp_instance_neighbor_advertised_route,
        show_ip_bgp_instance_neighbor_advertised_route_cmd,
-       "show [ip] bgp [<view|vrf> VIEWVRFNAME] ["BGP_AFI_CMD_STR" ["BGP_SAFI_WITH_LABEL_CMD_STR"]] neighbors <A.B.C.D|X:X::X:X|WORD> <advertised-routes|received-routes|filtered-routes> [route-map WORD] [json$uj | wide$wide]",
+       "show [ip] bgp [<view|vrf> VIEWVRFNAME] ["BGP_AFI_CMD_STR" ["BGP_SAFI_WITH_LABEL_CMD_STR"]] [all$all] neighbors <A.B.C.D|X:X::X:X|WORD> <advertised-routes|received-routes|filtered-routes> [route-map WORD] [json$uj | wide$wide]",
        SHOW_STR
        IP_STR
        BGP_STR
        BGP_INSTANCE_HELP_STR
        BGP_AFI_HELP_STR
        BGP_SAFI_WITH_LABEL_HELP_STR
+       "Display the entries for all address families\n"
        "Detailed information on TCP and BGP neighbor connections\n"
        "Neighbor to display information about\n"
        "Neighbor to display information about\n"
@@ -12549,9 +14008,27 @@ DEFPY (show_ip_bgp_instance_neighbor_advertised_route,
 	struct peer *peer;
 	enum bgp_show_adj_route_type type = bgp_show_adj_route_advertised;
 	int idx = 0;
+	bool first = true;
+	uint16_t show_flags = 0;
+	struct listnode *node;
+	struct bgp *abgp;
 
-	if (uj)
+	if (uj) {
 		argc--;
+		SET_FLAG(show_flags, BGP_SHOW_OPT_JSON);
+	}
+
+	if (all) {
+		SET_FLAG(show_flags, BGP_SHOW_OPT_AFI_ALL);
+		if (argv_find(argv, argc, "ipv4", &idx))
+			SET_FLAG(show_flags, BGP_SHOW_OPT_AFI_IP);
+
+		if (argv_find(argv, argc, "ipv6", &idx))
+			SET_FLAG(show_flags, BGP_SHOW_OPT_AFI_IP6);
+	}
+
+	if (wide)
+		SET_FLAG(show_flags, BGP_SHOW_OPT_WIDE);
 
 	bgp_vty_find_and_parse_afi_safi_bgp(vty, argv, argc, &idx, &afi, &safi,
 					    &bgp, uj);
@@ -12576,15 +14053,77 @@ DEFPY (show_ip_bgp_instance_neighbor_advertised_route,
 	if (argv_find(argv, argc, "route-map", &idx))
 		rmap_name = argv[++idx]->arg;
 
-	return peer_adj_routes(vty, peer, afi, safi, type, rmap_name, uj, wide);
+	if (!all)
+		return peer_adj_routes(vty, peer, afi, safi, type, rmap_name,
+				       show_flags);
+	if (uj)
+		vty_out(vty, "{\n");
+
+	if (CHECK_FLAG(show_flags, BGP_SHOW_OPT_AFI_IP)
+	    || CHECK_FLAG(show_flags, BGP_SHOW_OPT_AFI_IP6)) {
+		afi = CHECK_FLAG(show_flags, BGP_SHOW_OPT_AFI_IP) ? AFI_IP
+								  : AFI_IP6;
+		for (ALL_LIST_ELEMENTS_RO(bm->bgp, node, abgp)) {
+			FOREACH_SAFI (safi) {
+				if (!bgp_afi_safi_peer_exists(abgp, afi, safi))
+					continue;
+
+				if (uj) {
+					if (first)
+						first = false;
+					else
+						vty_out(vty, ",\n");
+					vty_out(vty, "\"%s\":",
+						get_afi_safi_str(afi, safi,
+								 true));
+				} else
+					vty_out(vty,
+						"\nFor address family: %s\n",
+						get_afi_safi_str(afi, safi,
+								 false));
+
+				peer_adj_routes(vty, peer, afi, safi, type,
+						rmap_name, show_flags);
+			}
+		}
+	} else {
+		for (ALL_LIST_ELEMENTS_RO(bm->bgp, node, abgp)) {
+			FOREACH_AFI_SAFI (afi, safi) {
+				if (!bgp_afi_safi_peer_exists(abgp, afi, safi))
+					continue;
+
+				if (uj) {
+					if (first)
+						first = false;
+					else
+						vty_out(vty, ",\n");
+					vty_out(vty, "\"%s\":",
+						get_afi_safi_str(afi, safi,
+								 true));
+				} else
+					vty_out(vty,
+						"\nFor address family: %s\n",
+						get_afi_safi_str(afi, safi,
+								 false));
+
+				peer_adj_routes(vty, peer, afi, safi, type,
+						rmap_name, show_flags);
+			}
+		}
+	}
+	if (uj)
+		vty_out(vty, "}\n");
+
+	return CMD_SUCCESS;
 }
 
 DEFUN (show_ip_bgp_neighbor_received_prefix_filter,
        show_ip_bgp_neighbor_received_prefix_filter_cmd,
-       "show [ip] bgp [<ipv4|ipv6> [unicast]] neighbors <A.B.C.D|X:X::X:X|WORD> received prefix-filter [json]",
+       "show [ip] bgp [<view|vrf> VIEWVRFNAME] [<ipv4|ipv6> [unicast]] neighbors <A.B.C.D|X:X::X:X|WORD> received prefix-filter [json]",
        SHOW_STR
        IP_STR
        BGP_STR
+       BGP_INSTANCE_HELP_STR
        "Address Family\n"
        "Address Family\n"
        "Address Family modifier\n"
@@ -12599,50 +14138,28 @@ DEFUN (show_ip_bgp_neighbor_received_prefix_filter,
 	afi_t afi = AFI_IP6;
 	safi_t safi = SAFI_UNICAST;
 	char *peerstr = NULL;
-
 	char name[BUFSIZ];
-	union sockunion su;
 	struct peer *peer;
-	int count, ret;
-
+	int count;
 	int idx = 0;
+	struct bgp *bgp = NULL;
+	bool uj = use_json(argc, argv);
 
-	/* show [ip] bgp */
-	if (argv_find(argv, argc, "ip", &idx))
-		afi = AFI_IP;
-	/* [<ipv4|ipv6> [unicast]] */
-	if (argv_find(argv, argc, "ipv4", &idx))
-		afi = AFI_IP;
-	if (argv_find(argv, argc, "ipv6", &idx))
-		afi = AFI_IP6;
+	if (uj)
+		argc--;
+
+	bgp_vty_find_and_parse_afi_safi_bgp(vty, argv, argc, &idx, &afi, &safi,
+					    &bgp, uj);
+	if (!idx)
+		return CMD_WARNING;
+
 	/* neighbors <A.B.C.D|X:X::X:X|WORD> */
 	argv_find(argv, argc, "neighbors", &idx);
 	peerstr = argv[++idx]->arg;
 
-	bool uj = use_json(argc, argv);
-
-	ret = str2sockunion(peerstr, &su);
-	if (ret < 0) {
-		peer = peer_lookup_by_conf_if(NULL, peerstr);
-		if (!peer) {
-			if (uj)
-				vty_out(vty, "{}\n");
-			else
-				vty_out(vty,
-					"%% Malformed address or name: %s\n",
-					peerstr);
-			return CMD_WARNING;
-		}
-	} else {
-		peer = peer_lookup(NULL, &su);
-		if (!peer) {
-			if (uj)
-				vty_out(vty, "{}\n");
-			else
-				vty_out(vty, "No peer\n");
-			return CMD_WARNING;
-		}
-	}
+	peer = peer_lookup_in_view(vty, bgp, peerstr, uj);
+	if (!peer)
+		return CMD_WARNING;
 
 	snprintf(name, sizeof(name), "%s.%d.%d", peer->host, afi, safi);
 	count = prefix_bgp_show_prefix_list(NULL, afi, name, uj);
@@ -12665,6 +14182,11 @@ static int bgp_show_neighbor_route(struct vty *vty, struct peer *peer,
 				   afi_t afi, safi_t safi,
 				   enum bgp_show_type type, bool use_json)
 {
+	uint16_t show_flags = 0;
+
+	if (use_json)
+		SET_FLAG(show_flags, BGP_SHOW_OPT_JSON);
+
 	if (!peer || !peer->afc[afi][safi]) {
 		if (use_json) {
 			json_object *json_no = NULL;
@@ -12684,8 +14206,8 @@ static int bgp_show_neighbor_route(struct vty *vty, struct peer *peer,
 	if (safi == SAFI_LABELED_UNICAST)
 		safi = SAFI_UNICAST;
 
-	return bgp_show(vty, peer->bgp, afi, safi, type, &peer->su, use_json,
-			false);
+	return bgp_show(vty, peer->bgp, afi, safi, type, &peer->su, show_flags,
+			RPKI_NOT_BEING_USED);
 }
 
 DEFUN (show_ip_bgp_flowspec_routes_detailed,
@@ -12700,22 +14222,25 @@ DEFUN (show_ip_bgp_flowspec_routes_detailed,
        "Detailed information on flowspec entries\n"
        JSON_STR)
 {
-	afi_t afi = AFI_IP;
+	afi_t afi = AFI_IP6;
 	safi_t safi = SAFI_UNICAST;
 	struct bgp *bgp = NULL;
 	int idx = 0;
 	bool uj = use_json(argc, argv);
+	uint16_t show_flags = BGP_SHOW_OPT_DETAIL;
 
-	if (uj)
+	if (uj) {
 		argc--;
+		SET_FLAG(show_flags, BGP_SHOW_OPT_JSON);
+	}
 
 	bgp_vty_find_and_parse_afi_safi_bgp(vty, argv, argc, &idx, &afi, &safi,
 					    &bgp, uj);
 	if (!idx)
 		return CMD_WARNING;
 
-	return bgp_show(vty, bgp, afi, safi, bgp_show_type_detail, NULL, uj,
-			false);
+	return bgp_show(vty, bgp, afi, safi, bgp_show_type_detail, NULL,
+			show_flags, RPKI_NOT_BEING_USED);
 }
 
 DEFUN (show_ip_bgp_neighbor_routes,
@@ -12783,13 +14308,14 @@ struct bgp_distance {
 
 DEFUN (show_bgp_afi_vpn_rd_route,
        show_bgp_afi_vpn_rd_route_cmd,
-       "show bgp "BGP_AFI_CMD_STR" vpn rd ASN:NN_OR_IP-ADDRESS:NN <A.B.C.D/M|X:X::X:X/M> [json]",
+       "show bgp "BGP_AFI_CMD_STR" vpn rd <ASN:NN_OR_IP-ADDRESS:NN|all> <A.B.C.D/M|X:X::X:X/M> [json]",
        SHOW_STR
        BGP_STR
        BGP_AFI_HELP_STR
        "Address Family modifier\n"
        "Display information for a route distinguisher\n"
        "Route Distinguisher\n"
+       "All Route Distinguishers\n"
        "Network in the BGP routing table to display\n"
        "Network in the BGP routing table to display\n"
        JSON_STR)
@@ -12804,6 +14330,12 @@ DEFUN (show_bgp_afi_vpn_rd_route,
 		return CMD_WARNING;
 	}
 
+	if (!strcmp(argv[5]->arg, "all"))
+		return bgp_show_route(vty, NULL, argv[6]->arg, afi,
+				      SAFI_MPLS_VPN, NULL, 0, BGP_PATH_SHOW_ALL,
+				      RPKI_NOT_BEING_USED,
+				      use_json(argc, argv));
+
 	ret = str2prefix_rd(argv[5]->arg, &prd);
 	if (!ret) {
 		vty_out(vty, "%% Malformed Route Distinguisher\n");
@@ -12811,7 +14343,8 @@ DEFUN (show_bgp_afi_vpn_rd_route,
 	}
 
 	return bgp_show_route(vty, NULL, argv[6]->arg, afi, SAFI_MPLS_VPN, &prd,
-			      0, BGP_PATH_SHOW_ALL, use_json(argc, argv));
+			      0, BGP_PATH_SHOW_ALL, RPKI_NOT_BEING_USED,
+			      use_json(argc, argv));
 }
 
 static struct bgp_distance *bgp_distance_new(void)
@@ -12899,6 +14432,7 @@ static int bgp_distance_unset(struct vty *vty, const char *distance_str,
 
 	if (bdistance->distance != distance) {
 		vty_out(vty, "Distance does not match configured\n");
+		bgp_dest_unlock_node(dest);
 		return CMD_WARNING_CONFIG_FAILED;
 	}
 
@@ -12917,7 +14451,7 @@ uint8_t bgp_distance_apply(const struct prefix *p, struct bgp_path_info *pinfo,
 			   afi_t afi, safi_t safi, struct bgp *bgp)
 {
 	struct bgp_dest *dest;
-	struct prefix q;
+	struct prefix q = {0};
 	struct peer *peer;
 	struct bgp_distance *bdistance;
 	struct access_list *alist;
@@ -12931,8 +14465,13 @@ uint8_t bgp_distance_apply(const struct prefix *p, struct bgp_path_info *pinfo,
 	if (pinfo->attr->distance)
 		return pinfo->attr->distance;
 
-	/* Check source address. */
-	sockunion2hostprefix(&peer->su, &q);
+	/* Check source address.
+	 * Note: for aggregate route, peer can have unspec af type.
+	 */
+	if (pinfo->sub_type != BGP_ROUTE_AGGREGATE
+	    && !sockunion2hostprefix(&peer->su, &q))
+		return 0;
+
 	dest = bgp_node_match(bgp_distance_table[afi][safi], &q);
 	if (dest) {
 		bdistance = bgp_dest_get_bgp_distance_info(dest);
@@ -13176,7 +14715,7 @@ DEFUN (no_ipv6_bgp_distance_source_access_list,
 
 DEFUN (bgp_damp_set,
        bgp_damp_set_cmd,
-       "bgp dampening [(1-45) [(1-20000) (1-20000) (1-255)]]",
+       "bgp dampening [(1-45) [(1-20000) (1-50000) (1-255)]]",
        "BGP Specific commands\n"
        "Enable route-flap dampening\n"
        "Half-life time for the penalty\n"
@@ -13222,7 +14761,7 @@ DEFUN (bgp_damp_set,
 
 DEFUN (bgp_damp_unset,
        bgp_damp_unset_cmd,
-       "no bgp dampening [(1-45) [(1-20000) (1-20000) (1-255)]]",
+       "no bgp dampening [(1-45) [(1-20000) (1-50000) (1-255)]]",
        NO_STR
        "BGP Specific commands\n"
        "Enable route-flap dampening\n"
@@ -13285,7 +14824,8 @@ static int bgp_clear_damp_route(struct vty *vty, const char *view_name,
 			table = bgp_dest_get_bgp_table_info(dest);
 			if (!table)
 				continue;
-			if ((rm = bgp_node_match(table, &match)) == NULL)
+			rm = bgp_node_match(table, &match);
+			if (rm == NULL)
 				continue;
 
 			const struct prefix *rm_p = bgp_dest_get_prefix(dest);
@@ -13308,8 +14848,8 @@ static int bgp_clear_damp_route(struct vty *vty, const char *view_name,
 			bgp_dest_unlock_node(rm);
 		}
 	} else {
-		if ((dest = bgp_node_match(bgp->rib[afi][safi], &match))
-		    != NULL) {
+		dest = bgp_node_match(bgp->rib[afi][safi], &match);
+		if (dest != NULL) {
 			const struct prefix *dest_p = bgp_dest_get_prefix(dest);
 
 			if (!prefix_check
@@ -13390,7 +14930,7 @@ DEFUN (clear_ip_bgp_dampening_address_mask,
 	char prefix_str[BUFSIZ];
 
 	ret = netmask_str2prefix_str(argv[idx_ipv4]->arg, argv[idx_ipv4_2]->arg,
-				     prefix_str);
+				     prefix_str, sizeof(prefix_str));
 	if (!ret) {
 		vty_out(vty, "%% Inconsistent address and mask\n");
 		return CMD_WARNING;
@@ -13453,7 +14993,6 @@ static void bgp_config_write_network_vpn(struct vty *vty, struct bgp *bgp,
 	const struct prefix_rd *prd;
 	struct bgp_static *bgp_static;
 	mpls_label_t label;
-	char buf[SU_ADDRSTRLEN];
 	char rdbuf[RD_ADDRSTRLEN];
 
 	/* Network configuration. */
@@ -13477,10 +15016,7 @@ static void bgp_config_write_network_vpn(struct vty *vty, struct bgp *bgp,
 			prefix_rd2str(prd, rdbuf, sizeof(rdbuf));
 			label = decode_label(&bgp_static->label);
 
-			vty_out(vty, "  network %s/%d rd %s",
-				inet_ntop(p->family, &p->u.prefix, buf,
-					  SU_ADDRSTRLEN),
-				p->prefixlen, rdbuf);
+			vty_out(vty, "  network %pFX rd %s", p, rdbuf);
 			if (safi == SAFI_MPLS_VPN)
 				vty_out(vty, " label %u", label);
 
@@ -13508,7 +15044,7 @@ static void bgp_config_write_network_evpn(struct vty *vty, struct bgp *bgp,
 	char buf[PREFIX_STRLEN * 2];
 	char buf2[SU_ADDRSTRLEN];
 	char rdbuf[RD_ADDRSTRLEN];
-	char esi_buf[ESI_BYTES];
+	char esi_buf[ESI_STR_LEN];
 
 	/* Network configuration. */
 	for (pdest = bgp_table_top(bgp->route[afi][safi]); pdest;
@@ -13578,7 +15114,6 @@ void bgp_config_write_network(struct vty *vty, struct bgp *bgp, afi_t afi,
 	const struct prefix *p;
 	struct bgp_static *bgp_static;
 	struct bgp_aggregate *bgp_aggregate;
-	char buf[SU_ADDRSTRLEN];
 
 	if ((safi == SAFI_MPLS_VPN) || (safi == SAFI_ENCAP)) {
 		bgp_config_write_network_vpn(vty, bgp, afi, safi);
@@ -13599,9 +15134,7 @@ void bgp_config_write_network(struct vty *vty, struct bgp *bgp, afi_t afi,
 
 		p = bgp_dest_get_prefix(dest);
 
-		vty_out(vty, "  network %s/%d",
-			inet_ntop(p->family, &p->u.prefix, buf, SU_ADDRSTRLEN),
-			p->prefixlen);
+		vty_out(vty, "  network %pFX", p);
 
 		if (bgp_static->label_index != BGP_INVALID_LABEL_INDEX)
 			vty_out(vty, " label-index %u",
@@ -13625,9 +15158,7 @@ void bgp_config_write_network(struct vty *vty, struct bgp *bgp, afi_t afi,
 
 		p = bgp_dest_get_prefix(dest);
 
-		vty_out(vty, "  aggregate-address %s/%d",
-			inet_ntop(p->family, &p->u.prefix, buf, SU_ADDRSTRLEN),
-			p->prefixlen);
+		vty_out(vty, "  aggregate-address %pFX", p);
 
 		if (bgp_aggregate->as_set)
 			vty_out(vty, " as-set");
@@ -13641,6 +15172,13 @@ void bgp_config_write_network(struct vty *vty, struct bgp *bgp, afi_t afi,
 		if (bgp_aggregate->origin != BGP_ORIGIN_UNSPECIFIED)
 			vty_out(vty, " origin %s",
 				bgp_origin2str(bgp_aggregate->origin));
+
+		if (bgp_aggregate->match_med)
+			vty_out(vty, " matching-MED-only");
+
+		if (bgp_aggregate->suppress_map_name)
+			vty_out(vty, " suppress-map %s",
+				bgp_aggregate->suppress_map_name);
 
 		vty_out(vty, "\n");
 	}
@@ -13669,7 +15207,7 @@ void bgp_config_write_distance(struct vty *vty, struct bgp *bgp, afi_t afi,
 	     dest = bgp_route_next(dest)) {
 		bdistance = bgp_dest_get_bgp_distance_info(dest);
 		if (bdistance != NULL)
-			vty_out(vty, "  distance %d %pRN %s\n",
+			vty_out(vty, "  distance %d %pBD %s\n",
 				bdistance->distance, dest,
 				bdistance->access_list ? bdistance->access_list
 						       : "");
@@ -13691,42 +15229,30 @@ void bgp_route_init(void)
 	install_element(BGP_NODE, &bgp_network_cmd);
 	install_element(BGP_NODE, &no_bgp_table_map_cmd);
 
-	install_element(BGP_NODE, &aggregate_address_cmd);
-	install_element(BGP_NODE, &aggregate_address_mask_cmd);
-	install_element(BGP_NODE, &no_aggregate_address_cmd);
-	install_element(BGP_NODE, &no_aggregate_address_mask_cmd);
+	install_element(BGP_NODE, &aggregate_addressv4_cmd);
 
 	/* IPv4 unicast configuration.  */
 	install_element(BGP_IPV4_NODE, &bgp_table_map_cmd);
 	install_element(BGP_IPV4_NODE, &bgp_network_cmd);
 	install_element(BGP_IPV4_NODE, &no_bgp_table_map_cmd);
 
-	install_element(BGP_IPV4_NODE, &aggregate_address_cmd);
-	install_element(BGP_IPV4_NODE, &aggregate_address_mask_cmd);
-	install_element(BGP_IPV4_NODE, &no_aggregate_address_cmd);
-	install_element(BGP_IPV4_NODE, &no_aggregate_address_mask_cmd);
+	install_element(BGP_IPV4_NODE, &aggregate_addressv4_cmd);
 
 	/* IPv4 multicast configuration.  */
 	install_element(BGP_IPV4M_NODE, &bgp_table_map_cmd);
 	install_element(BGP_IPV4M_NODE, &bgp_network_cmd);
 	install_element(BGP_IPV4M_NODE, &no_bgp_table_map_cmd);
-	install_element(BGP_IPV4M_NODE, &aggregate_address_cmd);
-	install_element(BGP_IPV4M_NODE, &aggregate_address_mask_cmd);
-	install_element(BGP_IPV4M_NODE, &no_aggregate_address_cmd);
-	install_element(BGP_IPV4M_NODE, &no_aggregate_address_mask_cmd);
+	install_element(BGP_IPV4M_NODE, &aggregate_addressv4_cmd);
 
 	/* IPv4 labeled-unicast configuration.  */
 	install_element(BGP_IPV4L_NODE, &bgp_network_cmd);
-	install_element(BGP_IPV4L_NODE, &aggregate_address_cmd);
-	install_element(BGP_IPV4L_NODE, &aggregate_address_mask_cmd);
-	install_element(BGP_IPV4L_NODE, &no_aggregate_address_cmd);
-	install_element(BGP_IPV4L_NODE, &no_aggregate_address_mask_cmd);
+	install_element(BGP_IPV4L_NODE, &aggregate_addressv4_cmd);
 
 	install_element(VIEW_NODE, &show_ip_bgp_instance_all_cmd);
-	install_element(VIEW_NODE, &show_ip_bgp_cmd);
 	install_element(VIEW_NODE, &show_ip_bgp_afi_safi_statistics_cmd);
 	install_element(VIEW_NODE, &show_ip_bgp_l2vpn_evpn_statistics_cmd);
-	install_element(VIEW_NODE, &show_ip_bgp_json_cmd);
+	install_element(VIEW_NODE, &show_ip_bgp_dampening_params_cmd);
+	install_element(VIEW_NODE, &show_ip_bgp_cmd);
 	install_element(VIEW_NODE, &show_ip_bgp_route_cmd);
 	install_element(VIEW_NODE, &show_ip_bgp_regexp_cmd);
 	install_element(VIEW_NODE, &show_ip_bgp_statistics_all_cmd);
@@ -13765,15 +15291,13 @@ void bgp_route_init(void)
 	install_element(BGP_IPV6_NODE, &ipv6_bgp_network_cmd);
 	install_element(BGP_IPV6_NODE, &no_bgp_table_map_cmd);
 
-	install_element(BGP_IPV6_NODE, &ipv6_aggregate_address_cmd);
-	install_element(BGP_IPV6_NODE, &no_ipv6_aggregate_address_cmd);
+	install_element(BGP_IPV6_NODE, &aggregate_addressv6_cmd);
 
 	install_element(BGP_IPV6M_NODE, &ipv6_bgp_network_cmd);
 
 	/* IPv6 labeled unicast address family. */
 	install_element(BGP_IPV6L_NODE, &ipv6_bgp_network_cmd);
-	install_element(BGP_IPV6L_NODE, &ipv6_aggregate_address_cmd);
-	install_element(BGP_IPV6L_NODE, &no_ipv6_aggregate_address_cmd);
+	install_element(BGP_IPV6L_NODE, &aggregate_addressv6_cmd);
 
 	install_element(BGP_NODE, &bgp_distance_cmd);
 	install_element(BGP_NODE, &no_bgp_distance_cmd);

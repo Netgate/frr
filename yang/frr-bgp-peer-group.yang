@@ -9,8 +9,13 @@ submodule frr-bgp-peer-group {
     prefix inet;
   }
 
-  include frr-bgp-common-structure;
-  include frr-bgp-neighbor;
+  import frr-bgp-types {
+    prefix frr-bt;
+  }
+
+  include "frr-bgp-common-structure";
+
+  include "frr-bgp-neighbor";
 
   organization
     "FRRouting";
@@ -72,7 +77,11 @@ submodule frr-bgp-peer-group {
         "Configure BGP dynamic neighbors listen range.";
     }
 
+    uses neighbor-remote-as;
+
     uses neighbor-parameters;
+
+    uses structure-neighbor-group-capability-options;
   }
 
   grouping bgp-peer-group-list {

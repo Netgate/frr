@@ -35,7 +35,7 @@
 #include "linklist.h"
 #include "frr_pthread.h"
 
-DEFINE_MTYPE_STATIC(LIB, ERRINFO, "error information")
+DEFINE_MTYPE_STATIC(LIB, ERRINFO, "error information");
 
 /*
  * Thread-specific key for temporary storage of allocated ferr.
@@ -86,7 +86,7 @@ void log_ref_add(struct log_ref *ref)
 
 	frr_with_mutex(&refs_mtx) {
 		while (ref[i].code != END_FERR) {
-			hash_get(refs, &ref[i], hash_alloc_intern);
+			(void)hash_get(refs, &ref[i], hash_alloc_intern);
 			i++;
 		}
 	}
@@ -157,13 +157,7 @@ void log_ref_display(struct vty *vty, uint32_t code, bool json)
 		}
 	}
 
-	if (json) {
-		const char *str = json_object_to_json_string_ext(
-			top, JSON_C_TO_STRING_PRETTY);
-		vty_out(vty, "%s\n", str);
-		json_object_free(top);
-	}
-
+	vty_json(vty, top);
 	list_delete(&errlist);
 }
 

@@ -2343,7 +2343,7 @@ check_argument_type (const format_char_info *fci,
       /* note printf extension type checks are *additional* - %p must always
        * be pointer compatible, %d always int compatible.
        */
-      if (!kef)
+      if (first_wanted_type->kind != CF_KIND_FORMAT || !kef)
 	return true;
 
       const struct kernel_ext_fmt *kef_now;
@@ -2729,6 +2729,16 @@ tree type_normalize (tree type, tree *cousin, tree target = NULL)
   return type;
 }
 
+/* gcc-10 asserts when you give a TYPE_DECL instead of the actual TYPE */
+static tree
+decl_deref(tree typ)
+{
+  while (TREE_CODE (typ) == TYPE_DECL)
+    typ = DECL_ORIGINAL_TYPE (typ);
+
+  return typ;
+}
+
 static void
 check_format_types (const substring_loc &fmt_loc,
 		    format_wanted_type *types, const format_kind_info *fki,
@@ -2749,6 +2759,8 @@ check_format_types (const substring_loc &fmt_loc,
 
       wanted_type = types->wanted_type;
       arg_num = types->arg_num;
+
+      wanted_type = decl_deref(wanted_type);
 
       /* The following should not occur here.  */
       gcc_assert (wanted_type);
@@ -2873,7 +2885,7 @@ check_format_types (const substring_loc &fmt_loc,
 			  || cur_type == signed_char_type_node
 			  || cur_type == unsigned_char_type_node);
 
-      int compat = lang_hooks.types_compatible_p (wanted_type, cur_type);
+      int compat = lang_hooks.types_compatible_p (decl_deref (wanted_type), decl_deref (cur_type));
       /* Check the type of the "real" argument, if there's a type we want.  */
       if ((TREE_CODE (wanted_type) != INTEGER_TYPE || types->pointer_count)
 	  && compat)
@@ -3179,6 +3191,9 @@ matching_type_p (tree spec_type, tree arg_type)
 {
   gcc_assert (spec_type);
   gcc_assert (arg_type);
+
+  spec_type = decl_deref (spec_type);
+  arg_type = decl_deref (arg_type);
 
   /* If any of the types requires structural equality, we can't compare
      their canonical types.  */
@@ -4226,6 +4241,11 @@ handle_finish_parse (void *event_data, void *data)
 		  continue;
 		}
 	      node = TREE_TYPE (node);
+
+	      if (etab->t_unsigned)
+		node = c_common_unsigned_type (node);
+	      else if (etab->t_signed)
+		node = c_common_signed_type (node);
 	    }
 
 	  etab->type = node;
@@ -4342,9 +4362,17 @@ handle_pragma_printfrr_ext (cpp_reader *dummy)
   ttype = pragma_lex (&token, &loc);
 
   /* qualifiers */
-  if (ttype == CPP_NAME && !strcmp (IDENTIFIER_POINTER (token), "const"))
+  while (ttype == CPP_NAME)
     {
-      etab->t_const = true;
+      if (!strcmp (IDENTIFIER_POINTER (token), "const"))
+        etab->t_const = true;
+      else if (!strcmp (IDENTIFIER_POINTER (token), "signed"))
+        etab->t_signed = true;
+      else if (!strcmp (IDENTIFIER_POINTER (token), "unsigned"))
+        etab->t_unsigned = true;
+      else
+        break;
+
       ttype = pragma_lex (&token, &loc);
     }
 

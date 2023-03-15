@@ -38,7 +38,9 @@
 #define SET_LABEL(label) ((label << 8) & SET_LABEL_MASK)
 #define GET_LABEL(label) ((label >> 8) & GET_LABEL_MASK)
 
-#define OSPF_SR_DEFAULT_METRIC		1
+/* smallest configurable SRGB / SRLB sizes */
+#define MIN_SRLB_SIZE 16
+#define MIN_SRGB_SIZE 16
 
 /* Segment Routing TLVs as per RFC 8665 */
 
@@ -61,7 +63,7 @@
 
 /* SID/Label Sub TLV - section 2.1 */
 #define SUBTLV_SID_LABEL		1
-#define SUBTLV_SID_LABEL_SIZE		8
+#define SUBTLV_SID_LABEL_SIZE		4
 struct subtlv_sid_label {
 	/* Length is 3 (20 rightmost bits MPLS label) or 4 (32 bits SID) */
 	struct tlv_header header;
@@ -88,6 +90,7 @@ struct ri_sr_tlv_sr_algorithm {
 /* RI SID/Label Range TLV used for SRGB & SRLB - section 3.2 & 3.3 */
 #define RI_SR_TLV_SRGB_LABEL_RANGE	9
 #define RI_SR_TLV_SRLB_LABEL_RANGE	14
+#define RI_SR_TLV_LABEL_RANGE_SIZE	12
 struct ri_sr_tlv_sid_label_range {
 	struct tlv_header header;
 /* Only 24 upper most bits are significant */
@@ -99,6 +102,7 @@ struct ri_sr_tlv_sid_label_range {
 
 /* RI Node/MSD TLV as per RFC 8476 */
 #define RI_SR_TLV_NODE_MSD		12
+#define RI_SR_TLV_NODE_MSD_SIZE		4
 struct ri_sr_tlv_node_msd {
 	struct tlv_header header;
 	uint8_t subtype; /* always = 1 */
@@ -184,10 +188,12 @@ struct ext_subtlv_lan_adj_sid {
 /* Default min and size of SR Global Block label range */
 #define DEFAULT_SRGB_LABEL        16000
 #define DEFAULT_SRGB_SIZE         8000
+#define DEFAULT_SRGB_END (DEFAULT_SRGB_LABEL + DEFAULT_SRGB_SIZE - 1)
 
 /* Default min and size of SR Local Block label range */
 #define DEFAULT_SRLB_LABEL        15000
 #define DEFAULT_SRLB_SIZE         1000
+#define DEFAULT_SRLB_END (DEFAULT_SRLB_LABEL + DEFAULT_SRLB_SIZE - 1)
 
 /* Structure aggregating SR Range Block info retrieved from an lsa */
 struct sr_block {
@@ -217,7 +223,7 @@ struct sr_local_block {
 enum sid_type { PREF_SID, LOCAL_SID, ADJ_SID, LAN_ADJ_SID };
 
 /* Status of Segment Routing: Off (Disable), On (Enable), (Up) Started */
-enum sr_status { SR_OFF, SR_ON, SR_UP, SR_DOWN };
+enum sr_status { SR_OFF, SR_ON, SR_UP };
 
 /* Structure aggregating all OSPF Segment Routing information for the node */
 struct ospf_sr_db {
@@ -232,9 +238,6 @@ struct ospf_sr_db {
 
 	/* List of neighbour SR nodes */
 	struct hash *neighbors;
-
-	/* List of SR prefix */
-	struct route_table *prefix;
 
 	/* Local SR info announced in Router Info LSA */
 
@@ -269,7 +272,7 @@ struct sr_node {
 
 	/* List of Prefix & Link advertise by this node */
 	struct list *ext_prefix; /* For Node SID */
-	struct list *ext_link;   /* For Adj and LAN SID */
+	struct list *ext_link;   /* For Adjacency SID */
 
 	/* Pointer to FRR SR-Node or NULL if it is not a neighbor */
 	struct sr_node *neighbor;
@@ -289,6 +292,9 @@ struct sr_link {
 	struct in_addr adv_router; /* used to identify sender of LSA */
 	/* 24-bit Opaque-ID field value according to RFC 7684 specification */
 	uint32_t instance;
+
+	/* Addressed (remote) router id */
+	struct in_addr remote_id;
 
 	/* Interface address */
 	struct in_addr itf_addr;
@@ -361,4 +367,11 @@ extern void ospf_sr_update_local_prefix(struct interface *ifp,
 					struct prefix *p);
 /* Segment Routing re-routing function */
 extern void ospf_sr_update_task(struct ospf *ospf);
+
+/* Support for TI-LFA */
+extern mpls_label_t ospf_sr_get_prefix_sid_by_id(struct in_addr *id);
+extern mpls_label_t ospf_sr_get_adj_sid_by_id(struct in_addr *root_id,
+					      struct in_addr *neighbor_id);
+extern struct sr_node *ospf_sr_node_create(struct in_addr *rid);
+
 #endif /* _FRR_OSPF_SR_H */

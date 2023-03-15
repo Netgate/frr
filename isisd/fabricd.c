@@ -22,7 +22,6 @@
 #include <zebra.h>
 #include "isisd/fabricd.h"
 #include "isisd/isisd.h"
-#include "isisd/isis_memory.h"
 #include "isisd/isis_circuit.h"
 #include "isisd/isis_misc.h"
 #include "isisd/isis_adjacency.h"
@@ -33,9 +32,9 @@
 #include "isisd/isis_tx_queue.h"
 #include "isisd/isis_csm.h"
 
-DEFINE_MTYPE_STATIC(ISISD, FABRICD_STATE, "ISIS OpenFabric")
-DEFINE_MTYPE_STATIC(ISISD, FABRICD_NEIGHBOR, "ISIS OpenFabric Neighbor Entry")
-DEFINE_MTYPE_STATIC(ISISD, FABRICD_FLOODING_INFO, "ISIS OpenFabric Flooding Log")
+DEFINE_MTYPE_STATIC(ISISD, FABRICD_STATE, "ISIS OpenFabric");
+DEFINE_MTYPE_STATIC(ISISD, FABRICD_NEIGHBOR, "ISIS OpenFabric Neighbor Entry");
+DEFINE_MTYPE_STATIC(ISISD, FABRICD_FLOODING_INFO, "ISIS OpenFabric Flooding Log");
 
 /* Tracks initial synchronization as per section 2.4
  *
@@ -239,14 +238,11 @@ struct fabricd *fabricd_new(struct isis_area *area)
 
 void fabricd_finish(struct fabricd *f)
 {
-	if (f->initial_sync_timeout)
-		thread_cancel(f->initial_sync_timeout);
+	thread_cancel(&(f->initial_sync_timeout));
 
-	if (f->tier_calculation_timer)
-		thread_cancel(f->tier_calculation_timer);
+	thread_cancel(&(f->tier_calculation_timer));
 
-	if (f->tier_set_timer)
-		thread_cancel(f->tier_set_timer);
+	thread_cancel(&(f->tier_set_timer));
 
 	isis_spftree_del(f->spftree);
 	neighbor_lists_clear(f);
@@ -254,7 +250,7 @@ void fabricd_finish(struct fabricd *f)
 	hash_free(f->neighbors_neighbors);
 }
 
-static int fabricd_initial_sync_timeout(struct thread *thread)
+static void fabricd_initial_sync_timeout(struct thread *thread)
 {
 	struct fabricd *f = THREAD_ARG(thread);
 
@@ -262,8 +258,6 @@ static int fabricd_initial_sync_timeout(struct thread *thread)
 		  f->initial_sync_circuit->interface->name);
 	f->initial_sync_state = FABRICD_SYNC_PENDING;
 	f->initial_sync_circuit = NULL;
-	f->initial_sync_timeout = NULL;
-	return 0;
 }
 
 void fabricd_initial_sync_hello(struct isis_circuit *circuit)
@@ -340,8 +334,7 @@ void fabricd_initial_sync_finish(struct isis_area *area)
 		  f->initial_sync_circuit->interface->name);
 	f->initial_sync_state = FABRICD_SYNC_COMPLETE;
 	f->initial_sync_circuit = NULL;
-	thread_cancel(f->initial_sync_timeout);
-	f->initial_sync_timeout = NULL;
+	thread_cancel(&(f->initial_sync_timeout));
 }
 
 static void fabricd_bump_tier_calculation_timer(struct fabricd *f);
@@ -405,24 +398,21 @@ static uint8_t fabricd_calculate_fabric_tier(struct isis_area *area)
 	return tier;
 }
 
-static int fabricd_tier_set_timer(struct thread *thread)
+static void fabricd_tier_set_timer(struct thread *thread)
 {
 	struct fabricd *f = THREAD_ARG(thread);
-	f->tier_set_timer = NULL;
 
 	fabricd_set_tier(f, f->tier_pending);
-	return 0;
 }
 
-static int fabricd_tier_calculation_cb(struct thread *thread)
+static void fabricd_tier_calculation_cb(struct thread *thread)
 {
 	struct fabricd *f = THREAD_ARG(thread);
 	uint8_t tier = ISIS_TIER_UNDEFINED;
-	f->tier_calculation_timer = NULL;
 
 	tier = fabricd_calculate_fabric_tier(f->area);
 	if (tier == ISIS_TIER_UNDEFINED)
-		return 0;
+		return;
 
 	zlog_info("OpenFabric: Got tier %hhu from algorithm. Arming timer.",
 		  tier);
@@ -431,28 +421,20 @@ static int fabricd_tier_calculation_cb(struct thread *thread)
 			 f->area->lsp_gen_interval[ISIS_LEVEL2 - 1],
 			 &f->tier_set_timer);
 
-	return 0;
 }
 
 static void fabricd_bump_tier_calculation_timer(struct fabricd *f)
 {
 	/* Cancel timer if we already know our tier */
-	if (f->tier != ISIS_TIER_UNDEFINED
-	    || f->tier_set_timer) {
-		if (f->tier_calculation_timer) {
-			thread_cancel(f->tier_calculation_timer);
-			f->tier_calculation_timer = NULL;
-		}
+	if (f->tier != ISIS_TIER_UNDEFINED || f->tier_set_timer) {
+		thread_cancel(&(f->tier_calculation_timer));
 		return;
 	}
 
 	/* If we need to calculate the tier, wait some
 	 * time for the topology to settle before running
 	 * the calculation */
-	if (f->tier_calculation_timer) {
-		thread_cancel(f->tier_calculation_timer);
-		f->tier_calculation_timer = NULL;
-	}
+	thread_cancel(&(f->tier_calculation_timer));
 
 	thread_add_timer(master, fabricd_tier_calculation_cb, f,
 			 2 * f->area->lsp_gen_interval[ISIS_LEVEL2 - 1],
@@ -737,7 +719,7 @@ void fabricd_trigger_csnp(struct isis_area *area, bool circuit_scoped)
 		if (!circuit->t_send_csnp[1])
 			continue;
 
-		thread_cancel(circuit->t_send_csnp[ISIS_LEVEL2 - 1]);
+		thread_cancel(&(circuit->t_send_csnp[ISIS_LEVEL2 - 1]));
 		thread_add_timer_msec(master, send_l2_csnp, circuit,
 				      isis_jitter(f->csnp_delay, CSNP_JITTER),
 				      &circuit->t_send_csnp[ISIS_LEVEL2 - 1]);
@@ -746,7 +728,7 @@ void fabricd_trigger_csnp(struct isis_area *area, bool circuit_scoped)
 
 struct list *fabricd_ip_addrs(struct isis_circuit *circuit)
 {
-	if (circuit->ip_addrs && listcount(circuit->ip_addrs))
+	if (listcount(circuit->ip_addrs))
 		return circuit->ip_addrs;
 
 	if (!fabricd || !circuit->area || !circuit->area->circuit_list)
@@ -759,7 +741,7 @@ struct list *fabricd_ip_addrs(struct isis_circuit *circuit)
 		if (c->circ_type != CIRCUIT_T_LOOPBACK)
 			continue;
 
-		if (!c->ip_addrs || !listcount(c->ip_addrs))
+		if (!listcount(c->ip_addrs))
 			return NULL;
 
 		return c->ip_addrs;

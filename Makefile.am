@@ -1,25 +1,61 @@
 ## Process this file with automake to produce Makefile.in.
 
 AUTOMAKE_OPTIONS = subdir-objects 1.12
-ACLOCAL_AMFLAGS = -I m4
+ACLOCAL_AMFLAGS = -I m4 -Wall,no-override
 
 AM_CFLAGS = \
+	$(AC_CFLAGS) \
 	$(LIBYANG_CFLAGS) \
 	$(SQLITE3_CFLAGS) \
 	$(UNWIND_CFLAGS) \
 	$(SAN_FLAGS) \
 	$(WERROR) \
 	# end
-AM_CPPFLAGS = \
+AM_CXXFLAGS = \
+	$(AC_CXXFLAGS) \
+	$(LIBYANG_CFLAGS) \
+	$(WERROR) \
+	# end
+
+# CPPFLAGS_BASE does not contain the include path for overriding assert.h,
+# therefore should be used in tools that do *not* link libfrr or do not want
+# assert() overridden
+CPPFLAGS_BASE = \
 	-I$(top_srcdir) -I$(top_srcdir)/include -I$(top_srcdir)/lib \
-	-I$(top_builddir) -I$(top_builddir)/include -I$(top_builddir)/lib \
+	-I$(top_builddir) \
 	$(LUA_INCLUDE) \
 	# end
+AM_CPPFLAGS = \
+	-I$(top_srcdir)/lib/assert \
+	$(CPPFLAGS_BASE) \
+	# end
+
+# AM_LDFLAGS is used for executables (daemons).  LDFLAGS can be left alone,
+# but if it is changed it should include $(AM_LDFLAGS)
 AM_LDFLAGS = \
+	-export-dynamic \
+	$(AC_LDFLAGS) \
+	$(AC_LDFLAGS_EXEC) \
+	$(SAN_FLAGS) \
+	# end
+
+# libraries need to use libxxx_LDFLAGS = $(LIB_LDFLAGS) -version-info X:Y:Z
+LIB_LDFLAGS = \
 	-export-dynamic \
 	$(AC_LDFLAGS) \
 	$(SAN_FLAGS) \
 	# end
+
+# modules need to use xxx_LDFLAGS = $(MODULE_LDFLAGS)
+MODULE_LDFLAGS = \
+	-export-dynamic \
+	-avoid-version \
+	-module \
+	-shared \
+	$(AC_LDFLAGS) \
+	$(SAN_FLAGS) \
+	# end
+
 DEFS = @DEFS@ -DSYSCONFDIR=\"$(sysconfdir)/\" -DCONFDATE=$(CONFDATE)
 
 AR_FLAGS = @AR_FLAGS@
@@ -95,8 +131,6 @@ CLEANFILES =
 DISTCLEANFILES =
 SUFFIXES =
 
-examplesdir = $(exampledir)
-
 bin_PROGRAMS =
 sbin_PROGRAMS =
 sbin_SCRIPTS =
@@ -108,10 +142,10 @@ lib_LTLIBRARIES =
 module_LTLIBRARIES =
 pkginclude_HEADERS =
 nodist_pkginclude_HEADERS =
-dist_examples_DATA =
 dist_yangmodels_DATA =
 man_MANS =
 vtysh_scan =
+vtysh_daemons =
 clippy_scan =
 
 ## libtool, the self-made GNU scourge
@@ -135,7 +169,6 @@ include qpb/subdir.am
 include fpm/subdir.am
 include grpc/subdir.am
 include tools/subdir.am
-include solaris/subdir.am
 
 include bgpd/subdir.am
 include bgpd/rfp-example/librfp/subdir.am
@@ -158,6 +191,9 @@ include bfdd/subdir.am
 include yang/subdir.am
 include yang/libyang_plugins/subdir.am
 include vrrpd/subdir.am
+include pceplib/subdir.am
+include pceplib/test/subdir.am
+include pathd/subdir.am
 
 include vtysh/subdir.am
 include tests/subdir.am
@@ -181,13 +217,19 @@ EXTRA_DIST += \
 	m4/README.txt \
 	m4/libtool-whole-archive.patch \
 	config.version \
-	changelog-auto \
-	changelog-auto.in \
 	\
 	python/clidef.py \
 	python/clippy/__init__.py \
+	python/clippy/elf.py \
+	python/clippy/uidhash.py \
 	python/makevars.py \
 	python/makefile.py \
+	python/tiabwarfo.py \
+	python/xrelfo.py \
+	python/test_xrelfo.py \
+	python/runtests.py \
+	\
+	python/xrefstructs.json \
 	\
 	redhat/frr.logrotate \
 	redhat/frr.pam \
@@ -232,20 +274,6 @@ EXTRA_DIST += \
 	zebra/Makefile \
 	vrrpd/Makefile \
 	# end
-
-#### include version information in the distibution tarball
-EXTRA_DIST += extras/scripts/version
-
-extras/scripts/.tmpversion:
-	sh extras/scripts/version > extras/scripts/.tmpversion
-
-DISTCLEANFILES += extras/scripts/.tmpversion *.tar.gz
-
-dist-hook: extras/scripts/.tmpversion
-	mv $(srcdir)/extras/scripts/.tmpversion $(distdir)/extras/scripts/.version
-
-clean-local-build:
-	@rm -rf build-root
 
 AM_V_LLVM_BC = $(am__v_LLVM_BC_$(V))
 am__v_LLVM_BC_ = $(am__v_LLVM_BC_$(AM_DEFAULT_VERBOSITY))
@@ -314,3 +342,13 @@ force-check-coverage: coverage upload-check-coverage
 check-coverage: coverage yorn upload-check-coverage
 
 endif
+
+#### include version information in the distibution tarball
+EXTRA_DIST += extras/scripts/version
+DISTCLEANFILES += extras/scripts/.tmpversion *.tar.gz
+
+extras/scripts/.tmpversion:
+	sh extras/scripts/version > extras/scripts/.tmpversion
+
+dist-hook: extras/scripts/.tmpversion
+	mv $(srcdir)/extras/scripts/.tmpversion $(distdir)/extras/scripts/.version

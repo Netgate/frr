@@ -30,8 +30,13 @@
 #include "smux.h"
 #include "memory.h"
 #include "linklist.h"
-#include "version.h"
+#include "lib/version.h"
 #include "lib_errors.h"
+#include "xref.h"
+
+XREF_SETUP();
+
+DEFINE_HOOK(agentx_enabled, (), ());
 
 static int agentx_enabled = 0;
 
@@ -41,7 +46,7 @@ static struct list *events = NULL;
 
 static void agentx_events_update(void);
 
-static int agentx_timeout(struct thread *t)
+static void agentx_timeout(struct thread *t)
 {
 	timeout_thr = NULL;
 
@@ -49,15 +54,16 @@ static int agentx_timeout(struct thread *t)
 	run_alarms();
 	netsnmp_check_outstanding_agent_requests();
 	agentx_events_update();
-	return 0;
 }
 
-static int agentx_read(struct thread *t)
+static void agentx_read(struct thread *t)
 {
 	fd_set fds;
 	int flags, new_flags = 0;
 	int nonblock = false;
 	struct listnode *ln = THREAD_ARG(t);
+	struct thread **thr = listgetdata(ln);
+	XFREE(MTYPE_TMP, thr);
 	list_delete_node(events, ln);
 
 	/* fix for non blocking socket */
@@ -65,7 +71,7 @@ static int agentx_read(struct thread *t)
 	if (-1 == flags) {
 		flog_err(EC_LIB_SYSTEM_CALL, "Failed to get FD settings fcntl: %s(%d)",
 			 strerror(errno), errno);
-		return -1;
+		return;
 	}
 
 	if (flags & O_NONBLOCK)
@@ -94,7 +100,6 @@ static int agentx_read(struct thread *t)
 
 	netsnmp_check_outstanding_agent_requests();
 	agentx_events_update();
-	return 0;
 }
 
 static void agentx_events_update(void)
@@ -104,10 +109,10 @@ static void agentx_events_update(void)
 	struct timeval timeout = {.tv_sec = 0, .tv_usec = 0};
 	fd_set fds;
 	struct listnode *ln;
-	struct thread *thr;
+	struct thread **thr;
 	int fd, thr_fd;
 
-	THREAD_OFF(timeout_thr);
+	thread_cancel(&timeout_thr);
 
 	FD_ZERO(&fds);
 	snmp_select_info(&maxfd, &fds, &timeout, &block);
@@ -120,7 +125,7 @@ static void agentx_events_update(void)
 
 	ln = listhead(events);
 	thr = ln ? listgetdata(ln) : NULL;
-	thr_fd = thr ? THREAD_FD(thr) : -1;
+	thr_fd = thr ? THREAD_FD(*thr) : -1;
 
 	/* "two-pointer" / two-list simultaneous iteration
 	 * ln/thr/thr_fd point to the next existing event listener to hit while
@@ -131,19 +136,20 @@ static void agentx_events_update(void)
 			struct listnode *nextln = listnextnode(ln);
 			if (!FD_ISSET(fd, &fds)) {
 				thread_cancel(thr);
+				XFREE(MTYPE_TMP, thr);
 				list_delete_node(events, ln);
 			}
 			ln = nextln;
 			thr = ln ? listgetdata(ln) : NULL;
-			thr_fd = thr ? THREAD_FD(thr) : -1;
+			thr_fd = thr ? THREAD_FD(*thr) : -1;
 		}
 		/* need listener, but haven't hit one where it would be */
 		else if (FD_ISSET(fd, &fds)) {
 			struct listnode *newln;
-			thr = NULL;
-			thread_add_read(agentx_tm, agentx_read, NULL, fd, &thr);
+			thr = XCALLOC(MTYPE_TMP, sizeof(struct thread *));
+			thread_add_read(agentx_tm, agentx_read, NULL, fd, thr);
 			newln = listnode_add_before(events, ln, thr);
-			thr->arg = newln;
+			(*thr)->arg = newln;
 		}
 	}
 
@@ -151,7 +157,9 @@ static void agentx_events_update(void)
 	 */
 	while (ln) {
 		struct listnode *nextln = listnextnode(ln);
-		thread_cancel(listgetdata(ln));
+		thr = listgetdata(ln);
+		thread_cancel(thr);
+		XFREE(MTYPE_TMP, thr);
 		list_delete_node(events, ln);
 		ln = nextln;
 	}
@@ -222,6 +230,7 @@ DEFUN (agentx_enable,
 		events = list_new();
 		agentx_events_update();
 		agentx_enabled = 1;
+		hook_call(agentx_enabled);
 	}
 
 	return CMD_SUCCESS;
@@ -237,6 +246,11 @@ DEFUN (no_agentx,
 		return CMD_SUCCESS;
 	vty_out(vty, "SNMP AgentX support cannot be disabled once enabled\n");
 	return CMD_WARNING_CONFIG_FAILED;
+}
+
+int smux_enabled(void)
+{
+	return agentx_enabled;
 }
 
 void smux_init(struct thread_master *tm)
@@ -255,17 +269,44 @@ void smux_init(struct thread_master *tm)
 	install_element(CONFIG_NODE, &no_agentx_cmd);
 }
 
+void smux_agentx_enable(void)
+{
+	if (!agentx_enabled) {
+		init_snmp(FRR_SMUX_NAME);
+		events = list_new();
+		agentx_events_update();
+		agentx_enabled = 1;
+	}
+}
+
 void smux_register_mib(const char *descr, struct variable *var, size_t width,
 		       int num, oid name[], size_t namelen)
 {
 	register_mib(descr, var, width, num, name, namelen);
 }
 
-int smux_trap(struct variable *vp, size_t vp_len, const oid *ename,
-	      size_t enamelen, const oid *name, size_t namelen,
-	      const oid *iname, size_t inamelen,
-	      const struct trap_object *trapobj, size_t trapobjlen,
-	      uint8_t sptrap)
+void smux_trap(struct variable *vp, size_t vp_len, const oid *ename,
+	       size_t enamelen, const oid *name, size_t namelen,
+	       const oid *iname, size_t inamelen,
+	       const struct trap_object *trapobj, size_t trapobjlen,
+	       uint8_t sptrap)
+{
+	struct index_oid trap_index[1];
+
+	/* copy the single index into the multi-index format */
+	oid_copy(trap_index[0].indexname, iname, inamelen);
+	trap_index[0].indexlen = inamelen;
+
+	smux_trap_multi_index(vp, vp_len, ename, enamelen, name, namelen,
+			      trap_index, array_size(trap_index), trapobj,
+			      trapobjlen, sptrap);
+}
+
+int smux_trap_multi_index(struct variable *vp, size_t vp_len, const oid *ename,
+			  size_t enamelen, const oid *name, size_t namelen,
+			  struct index_oid *iname, size_t index_len,
+			  const struct trap_object *trapobj, size_t trapobjlen,
+			  uint8_t sptrap)
 {
 	oid objid_snmptrap[] = {1, 3, 6, 1, 6, 3, 1, 1, 4, 1, 0};
 	size_t objid_snmptrap_len = sizeof(objid_snmptrap) / sizeof(oid);
@@ -295,6 +336,13 @@ int smux_trap(struct variable *vp, size_t vp_len, const oid *ename,
 		size_t val_len;
 		WriteMethod *wm = NULL;
 		struct variable cvp;
+		unsigned int iindex;
+		/*
+		 * this allows the behaviour of smux_trap with a singe index
+		 * for all objects to be maintained whilst allowing traps which
+		 * have different indices per object to be supported
+		 */
+		iindex = (index_len == 1) ? 0 : i;
 
 		/* Make OID. */
 		if (trapobj[i].namelen > 0) {
@@ -302,8 +350,10 @@ int smux_trap(struct variable *vp, size_t vp_len, const oid *ename,
 			onamelen = trapobj[i].namelen;
 			oid_copy(oid, name, namelen);
 			oid_copy(oid + namelen, trapobj[i].name, onamelen);
-			oid_copy(oid + namelen + onamelen, iname, inamelen);
-			oid_len = namelen + onamelen + inamelen;
+			oid_copy(oid + namelen + onamelen,
+				 iname[iindex].indexname,
+				 iname[iindex].indexlen);
+			oid_len = namelen + onamelen + iname[iindex].indexlen;
 		} else {
 			/* Scalar object */
 			onamelen = trapobj[i].namelen * (-1);
@@ -329,6 +379,7 @@ int smux_trap(struct variable *vp, size_t vp_len, const oid *ename,
 			cvp.magic = vp[j].magic;
 			cvp.acl = vp[j].acl;
 			cvp.findVar = vp[j].findVar;
+
 			/* Grab the result. */
 			val = cvp.findVar(&cvp, oid, &oid_len, 1, &val_len,
 					  &wm);
@@ -346,6 +397,11 @@ int smux_trap(struct variable *vp, size_t vp_len, const oid *ename,
 	snmp_free_varbind(notification_vars);
 	agentx_events_update();
 	return 1;
+}
+
+void smux_events_update(void)
+{
+	agentx_events_update();
 }
 
 #endif /* SNMP_AGENTX */

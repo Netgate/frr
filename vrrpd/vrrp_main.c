@@ -40,7 +40,7 @@
 #include "vrrp_vty.h"
 #include "vrrp_zebra.h"
 
-DEFINE_MGROUP(VRRPD, "vrrpd")
+DEFINE_MGROUP(VRRPD, "vrrpd");
 
 char backup_config_file[256];
 
@@ -93,7 +93,7 @@ static void sigusr1(void)
 	zlog_rotate();
 }
 
-struct quagga_signal_t vrrp_signals[] = {
+struct frr_signal_t vrrp_signals[] = {
 	{
 		.signal = SIGHUP,
 		.handler = &sighup,
@@ -128,7 +128,7 @@ FRR_DAEMON_INFO(vrrpd, VRRP, .vty_port = VRRP_VTY_PORT,
 		.privs = &vrrp_privs,
 		.yang_modules = vrrp_yang_modules,
 		.n_yang_modules = array_size(vrrp_yang_modules),
-)
+);
 
 int main(int argc, char **argv, char **envp)
 {
@@ -148,7 +148,6 @@ int main(int argc, char **argv, char **envp)
 			break;
 		default:
 			frr_help_exit(1);
-			break;
 		}
 	}
 

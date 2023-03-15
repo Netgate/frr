@@ -63,17 +63,42 @@ static inline int advertise_type5_routes(struct bgp *bgp_vrf,
 	if (!bgp_vrf->l3vni)
 		return 0;
 
-	if (afi == AFI_IP &&
-	    CHECK_FLAG(bgp_vrf->af_flags[AFI_L2VPN][SAFI_EVPN],
-		       BGP_L2VPN_EVPN_ADVERTISE_IPV4_UNICAST))
+	if ((afi == AFI_IP)
+	    && ((CHECK_FLAG(bgp_vrf->af_flags[AFI_L2VPN][SAFI_EVPN],
+			    BGP_L2VPN_EVPN_ADV_IPV4_UNICAST))
+		|| (CHECK_FLAG(bgp_vrf->af_flags[AFI_L2VPN][SAFI_EVPN],
+			       BGP_L2VPN_EVPN_ADV_IPV4_UNICAST_GW_IP))))
 		return 1;
 
-	if (afi == AFI_IP6 &&
-	    CHECK_FLAG(bgp_vrf->af_flags[AFI_L2VPN][SAFI_EVPN],
-		       BGP_L2VPN_EVPN_ADVERTISE_IPV6_UNICAST))
+	if ((afi == AFI_IP6)
+	    && ((CHECK_FLAG(bgp_vrf->af_flags[AFI_L2VPN][SAFI_EVPN],
+			    BGP_L2VPN_EVPN_ADV_IPV6_UNICAST))
+		|| (CHECK_FLAG(bgp_vrf->af_flags[AFI_L2VPN][SAFI_EVPN],
+			       BGP_L2VPN_EVPN_ADV_IPV6_UNICAST_GW_IP))))
 		return 1;
 
 	return 0;
+}
+
+/* Flag if the route's parent is a EVPN route. */
+static inline struct bgp_path_info *
+get_route_parent_evpn(struct bgp_path_info *ri)
+{
+	struct bgp_path_info *parent_ri;
+
+	/* If not imported (or doesn't have a parent), bail. */
+	if (ri->sub_type != BGP_ROUTE_IMPORTED ||
+	    !ri->extra ||
+	    !ri->extra->parent)
+		return NULL;
+
+	/* Determine parent recursively */
+	for (parent_ri = ri->extra->parent;
+	     parent_ri->extra && parent_ri->extra->parent;
+	     parent_ri = parent_ri->extra->parent)
+		;
+
+	return parent_ri;
 }
 
 /* Flag if the route's parent is a EVPN route. */
@@ -83,17 +108,9 @@ static inline int is_route_parent_evpn(struct bgp_path_info *ri)
 	struct bgp_table *table;
 	struct bgp_dest *dest;
 
-	/* If not imported (or doesn't have a parent), bail. */
-	if (ri->sub_type != BGP_ROUTE_IMPORTED ||
-	    !ri->extra ||
-	    !ri->extra->parent)
+	parent_ri = get_route_parent_evpn(ri);
+	if (!parent_ri)
 		return 0;
-
-	/* Determine parent recursively */
-	for (parent_ri = ri->extra->parent;
-	     parent_ri->extra && parent_ri->extra->parent;
-	     parent_ri = parent_ri->extra->parent)
-		;
 
 	/* See if of family L2VPN/EVPN */
 	dest = parent_ri->net;
@@ -139,6 +156,14 @@ static inline bool is_route_injectable_into_evpn(struct bgp_path_info *pi)
 	return true;
 }
 
+static inline bool evpn_resolve_overlay_index(void)
+{
+	struct bgp *bgp = NULL;
+
+	bgp = bgp_get_evpn();
+	return bgp ? bgp->resolve_overlay_index : false;
+}
+
 extern void bgp_evpn_advertise_type5_route(struct bgp *bgp_vrf,
 					   const struct prefix *p,
 					   struct attr *src_attr, afi_t afi,
@@ -154,13 +179,11 @@ extern void bgp_evpn_vrf_delete(struct bgp *bgp_vrf);
 extern void bgp_evpn_handle_router_id_update(struct bgp *bgp, int withdraw);
 extern char *bgp_evpn_label2str(mpls_label_t *label, uint32_t num_labels,
 				char *buf, int len);
-extern char *bgp_evpn_route2str(const struct prefix_evpn *p, char *buf,
-				int len);
 extern void bgp_evpn_route2json(const struct prefix_evpn *p, json_object *json);
 extern void bgp_evpn_encode_prefix(struct stream *s, const struct prefix *p,
 				   const struct prefix_rd *prd,
 				   mpls_label_t *label, uint32_t num_labels,
-				   struct attr *attr, int addpath_encode,
+				   struct attr *attr, bool addpath_capable,
 				   uint32_t addpath_tx_id);
 extern int bgp_nlri_parse_evpn(struct peer *peer, struct attr *attr,
 			       struct bgp_nlri *packet, int withdraw);
@@ -187,7 +210,8 @@ extern int bgp_evpn_local_vni_del(struct bgp *bgp, vni_t vni);
 extern int bgp_evpn_local_vni_add(struct bgp *bgp, vni_t vni,
 				  struct in_addr originator_ip,
 				  vrf_id_t tenant_vrf_id,
-				  struct in_addr mcast_grp);
+				  struct in_addr mcast_grp,
+				  ifindex_t svi_ifindex);
 extern void bgp_evpn_flood_control_change(struct bgp *bgp);
 extern void bgp_evpn_cleanup_on_disable(struct bgp *bgp);
 extern void bgp_evpn_cleanup(struct bgp *bgp);
@@ -195,5 +219,15 @@ extern void bgp_evpn_init(struct bgp *bgp);
 extern int bgp_evpn_get_type5_prefixlen(const struct prefix *pfx);
 extern bool bgp_evpn_is_prefix_nht_supported(const struct prefix *pfx);
 extern void update_advertise_vrf_routes(struct bgp *bgp_vrf);
+extern void bgp_evpn_show_remote_ip_hash(struct hash_bucket *bucket,
+					 void *args);
+extern void bgp_evpn_show_vni_svi_hash(struct hash_bucket *bucket, void *args);
+extern bool bgp_evpn_is_gateway_ip_resolved(struct bgp_nexthop_cache *bnc);
+extern void
+bgp_evpn_handle_resolve_overlay_index_set(struct hash_bucket *bucket,
+					  void *arg);
+extern void
+bgp_evpn_handle_resolve_overlay_index_unset(struct hash_bucket *bucket,
+					    void *arg);
 
 #endif /* _QUAGGA_BGP_EVPN_H */

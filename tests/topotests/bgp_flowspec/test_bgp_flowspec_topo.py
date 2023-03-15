@@ -54,7 +54,6 @@ import functools
 import os
 import sys
 import pytest
-import getopt
 
 # Save the Current Working Directory to find configuration files.
 CWD = os.path.dirname(os.path.realpath(__file__))
@@ -65,11 +64,12 @@ sys.path.append(os.path.join(CWD, "../"))
 from lib import topotest
 from lib.topogen import Topogen, TopoRouter, get_topogen
 from lib.topolog import logger
-from lib.lutil import lUtil
-from lib.lutil import luCommand
 
 # Required to instantiate the topology builder class.
-from mininet.topo import Topo
+
+
+pytestmark = [pytest.mark.bgpd]
+
 
 #####################################################
 ##
@@ -78,24 +78,18 @@ from mininet.topo import Topo
 #####################################################
 
 
-class BGPFLOWSPECTopo1(Topo):
-    "BGP EBGP Flowspec Topology 1"
+def build_topo(tgen):
+    tgen.add_router("r1")
 
-    def build(self, **_opts):
-        tgen = get_topogen(self)
+    # Setup Control Path Switch 1. r1-eth0
+    switch = tgen.add_switch("s1")
+    switch.add_link(tgen.gears["r1"])
 
-        # Setup Routers
-        tgen.add_router("r1")
-
-        # Setup Control Path Switch 1. r1-eth0
-        switch = tgen.add_switch("s1")
-        switch.add_link(tgen.gears["r1"])
-
-        ## Add eBGP ExaBGP neighbors
-        peer_ip = "10.0.1.101"  ## peer
-        peer_route = "via 10.0.1.1"  ## router
-        peer = tgen.add_exabgp_peer("peer1", ip=peer_ip, defaultRoute=peer_route)
-        switch.add_link(peer)
+    ## Add eBGP ExaBGP neighbors
+    peer_ip = "10.0.1.101"  ## peer
+    peer_route = "via 10.0.1.1"  ## router
+    peer = tgen.add_exabgp_peer("peer1", ip=peer_ip, defaultRoute=peer_route)
+    switch.add_link(peer)
 
 
 #####################################################
@@ -106,7 +100,7 @@ class BGPFLOWSPECTopo1(Topo):
 
 
 def setup_module(module):
-    tgen = Topogen(BGPFLOWSPECTopo1, module.__name__)
+    tgen = Topogen(build_topo, module.__name__)
 
     tgen.start_topology()
     # check for zebra capability
@@ -124,7 +118,7 @@ def setup_module(module):
     router.start()
 
     peer_list = tgen.exabgp_peers()
-    for pname, peer in peer_list.iteritems():
+    for pname, peer in peer_list.items():
         peer_dir = os.path.join(CWD, pname)
         env_file = os.path.join(CWD, "exabgp.env")
         peer.start(peer_dir, env_file)
@@ -199,6 +193,7 @@ def test_bgp_flowspec():
         assert 0, assertmsg
     else:
         logger.info("Check BGP FS entry for 3::3 with redirect IP OK")
+
 
 if __name__ == "__main__":
 

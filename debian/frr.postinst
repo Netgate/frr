@@ -22,8 +22,8 @@ if getent passwd frr >/dev/null ; then \
     /sbin/usermod -a -G vpp,root frr || : ; \
 fi
 
-mkdir -p /var/log/frr
-mkdir -p /etc/frr
+mkdir -m 0755 -p /var/log/frr
+mkdir -m 0755 -p /etc/frr/dataplane/known_hosts
 
 
 # only change ownership of files when they were previously owned by root or

@@ -23,71 +23,13 @@
 #include "nexthop.h"
 #include "table.h"
 #include "srcdest_table.h"
+#include "northbound_cli.h"
 
-#include "static_memory.h"
 #include "static_vrf.h"
 #include "static_routes.h"
 #include "static_zebra.h"
-#include "static_vty.h"
 
 DEFINE_MTYPE_STATIC(STATIC, STATIC_RTABLE_INFO, "Static Route Table Info");
-
-static void zebra_stable_node_cleanup(struct route_table *table,
-				      struct route_node *node)
-{
-	struct static_nexthop *nh;
-	struct static_path *pn;
-	struct static_route_info *si;
-	struct route_table *src_table;
-	struct route_node *src_node;
-	struct static_path *src_pn;
-	struct static_route_info *src_si;
-
-	si = node->info;
-
-	if (si) {
-		frr_each_safe(static_path_list, &si->path_list, pn) {
-			frr_each_safe(static_nexthop_list, &pn->nexthop_list,
-				       nh) {
-				static_nexthop_list_del(&pn->nexthop_list, nh);
-				XFREE(MTYPE_STATIC_NEXTHOP, nh);
-			}
-			static_path_list_del(&si->path_list, pn);
-			XFREE(MTYPE_STATIC_PATH, pn);
-		}
-
-		/* clean up for dst table */
-		src_table = srcdest_srcnode_table(node);
-		if (src_table) {
-			/* This means the route_node is part of the top
-			 * hierarchy and refers to a destination prefix.
-			 */
-			for (src_node = route_top(src_table); src_node;
-			     src_node = route_next(src_node)) {
-				src_si = src_node->info;
-
-				frr_each_safe(static_path_list,
-					      &src_si->path_list, src_pn) {
-					frr_each_safe(static_nexthop_list,
-						      &src_pn->nexthop_list,
-						      nh) {
-						static_nexthop_list_del(
-							&src_pn->nexthop_list,
-							nh);
-						XFREE(MTYPE_STATIC_NEXTHOP, nh);
-					}
-					static_path_list_del(&src_si->path_list,
-							     src_pn);
-					XFREE(MTYPE_STATIC_PATH, src_pn);
-				}
-
-				XFREE(MTYPE_STATIC_ROUTE, src_node->info);
-			}
-		}
-
-		XFREE(MTYPE_STATIC_ROUTE, node->info);
-	}
-}
 
 static struct static_vrf *static_vrf_alloc(void)
 {
@@ -181,17 +123,6 @@ struct route_table *static_vrf_static_table(afi_t afi, safi_t safi,
 	return svrf->stable[afi][safi];
 }
 
-struct static_vrf *static_vrf_lookup_by_id(vrf_id_t vrf_id)
-{
-	struct vrf *vrf;
-
-	vrf = vrf_lookup_by_id(vrf_id);
-	if (vrf)
-		return ((struct static_vrf *)vrf->info);
-
-	return NULL;
-}
-
 struct static_vrf *static_vrf_lookup_by_name(const char *name)
 {
 	struct vrf *vrf;
@@ -208,55 +139,24 @@ struct static_vrf *static_vrf_lookup_by_name(const char *name)
 
 static int static_vrf_config_write(struct vty *vty)
 {
-	struct vrf *vrf;
+	struct lyd_node *dnode;
+	int written = 0;
 
-	RB_FOREACH (vrf, vrf_name_head, &vrfs_by_name) {
-		if (vrf->vrf_id != VRF_DEFAULT)
-			vty_frame(vty, "vrf %s\n", vrf->name);
-
-		static_config(vty, vrf->info, AFI_IP,
-			      SAFI_UNICAST, "ip route");
-		static_config(vty, vrf->info, AFI_IP,
-			      SAFI_MULTICAST, "ip mroute");
-		static_config(vty, vrf->info, AFI_IP6,
-			      SAFI_UNICAST, "ipv6 route");
-
-		if (vrf->vrf_id != VRF_DEFAULT)
-			vty_endframe(vty, " exit-vrf\n!\n");
+	dnode = yang_dnode_get(running_config->dnode, "/frr-routing:routing");
+	if (dnode) {
+		nb_cli_show_dnode_cmds(vty, dnode, false);
+		written = 1;
 	}
 
-	return 0;
-}
-
-int static_vrf_has_config(struct static_vrf *svrf)
-{
-	struct route_table *table;
-	safi_t safi;
-	afi_t afi;
-
-	/*
-	 * NOTE: This is a don't care for the default VRF, but we go through
-	 * the motions to keep things consistent.
-	 */
-	for (afi = AFI_IP; afi < AFI_MAX; afi++) {
-		for (safi = SAFI_UNICAST; safi < SAFI_MAX; safi++) {
-			table = svrf->stable[afi][safi];
-			if (!table)
-				continue;
-			if (route_table_count(table))
-				return 1;
-		}
-	}
-
-	return 0;
+	return written;
 }
 
 void static_vrf_init(void)
 {
-	vrf_init(static_vrf_new, static_vrf_enable,
-		 static_vrf_disable, static_vrf_delete, NULL);
+	vrf_init(static_vrf_new, static_vrf_enable, static_vrf_disable,
+		 static_vrf_delete);
 
-	vrf_cmd_init(static_vrf_config_write, &static_privs);
+	vrf_cmd_init(static_vrf_config_write);
 }
 
 void static_vrf_terminate(void)

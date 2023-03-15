@@ -588,8 +588,7 @@ static struct eigrp_neighbor *eigrpNbrLookup(struct variable *v, oid *name,
 
 		if (nbr) {
 			*length = v->namelen + IN_ADDR_SIZE + 1;
-			oid_copy_addr(name + v->namelen, nbr_addr,
-				      IN_ADDR_SIZE);
+			oid_copy_in_addr(name + v->namelen, nbr_addr);
 			name[v->namelen + IN_ADDR_SIZE] = *ifindex;
 			return nbr;
 		}
@@ -1035,7 +1034,7 @@ static uint8_t *eigrpPeerEntry(struct variable *v, oid *name, size_t *length,
 	    == MATCH_FAILED)
 		return NULL;
 
-	memset(&nbr_addr, 0, sizeof(struct in_addr));
+	memset(&nbr_addr, 0, sizeof(nbr_addr));
 	ifindex = 0;
 
 	nbr = eigrpNbrLookup(v, name, length, &nbr_addr, &ifindex, exact);

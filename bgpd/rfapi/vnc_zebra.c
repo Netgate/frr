@@ -105,7 +105,8 @@ static void vnc_redistribute_add(struct prefix *p, uint32_t metric,
 	vnaddr.addr_family = bgp->rfapi_cfg->rfg_redist->vn_prefix.family;
 	switch (bgp->rfapi_cfg->rfg_redist->vn_prefix.family) {
 	case AF_INET:
-		if (bgp->rfapi_cfg->rfg_redist->vn_prefix.prefixlen != 32) {
+		if (bgp->rfapi_cfg->rfg_redist->vn_prefix.prefixlen
+		    != IPV4_MAX_BITLEN) {
 			vnc_zlog_debug_verbose(
 				"%s: redist nve group VN prefix len (%d) != 32, skipping",
 				__func__,
@@ -117,7 +118,8 @@ static void vnc_redistribute_add(struct prefix *p, uint32_t metric,
 			bgp->rfapi_cfg->rfg_redist->vn_prefix.u.prefix4;
 		break;
 	case AF_INET6:
-		if (bgp->rfapi_cfg->rfg_redist->vn_prefix.prefixlen != 128) {
+		if (bgp->rfapi_cfg->rfg_redist->vn_prefix.prefixlen
+		    != IPV6_MAX_BITLEN) {
 			vnc_zlog_debug_verbose(
 				"%s: redist nve group VN prefix len (%d) != 128, skipping",
 				__func__,
@@ -153,7 +155,7 @@ static void vnc_redistribute_add(struct prefix *p, uint32_t metric,
 
 		switch (pfx_un.prefix.addr_family) {
 		case AF_INET:
-			if (pfx_un.length != 32) {
+			if (pfx_un.length != IPV4_MAX_BITLEN) {
 				vnc_zlog_debug_verbose(
 					"%s: redist nve group UN prefix len (%d) != 32, skipping",
 					__func__, pfx_un.length);
@@ -161,7 +163,7 @@ static void vnc_redistribute_add(struct prefix *p, uint32_t metric,
 			}
 			break;
 		case AF_INET6:
-			if (pfx_un.length != 128) {
+			if (pfx_un.length != IPV6_MAX_BITLEN) {
 				vnc_zlog_debug_verbose(
 					"%s: redist nve group UN prefix len (%d) != 128, skipping",
 					__func__, pfx_un.length);
@@ -363,15 +365,11 @@ static int vnc_zebra_read_route(ZAPI_CALLBACK_ARGS)
 	else
 		vnc_redistribute_delete(&api.prefix, api.type);
 
-	if (BGP_DEBUG(zebra, ZEBRA)) {
-		char buf[PREFIX_STRLEN];
-
-		prefix2str(&api.prefix, buf, sizeof(buf));
+	if (BGP_DEBUG(zebra, ZEBRA))
 		vnc_zlog_debug_verbose(
-			"%s: Zebra rcvd: route delete %s %s metric %u",
-			__func__, zebra_route_string(api.type), buf,
+			"%s: Zebra rcvd: route delete %s %pFX metric %u",
+			__func__, zebra_route_string(api.type), &api.prefix,
 			api.metric);
-	}
 
 	return 0;
 }
@@ -425,14 +423,10 @@ static void vnc_zebra_route_msg(const struct prefix *p, unsigned int nhp_count,
 		}
 	}
 
-	if (BGP_DEBUG(zebra, ZEBRA)) {
-		char buf[PREFIX_STRLEN];
-
-		prefix2str(&api.prefix, buf, sizeof(buf));
+	if (BGP_DEBUG(zebra, ZEBRA))
 		vnc_zlog_debug_verbose(
-			"%s: Zebra send: route %s %s, nhp_count=%d", __func__,
-			(add ? "add" : "del"), buf, nhp_count);
-	}
+			"%s: Zebra send: route %s %pFX, nhp_count=%d", __func__,
+			(add ? "add" : "del"), &api.prefix, nhp_count);
 
 	zclient_route_send((add ? ZEBRA_ROUTE_ADD : ZEBRA_ROUTE_DELETE),
 			   zclient_vnc, &api);
@@ -901,6 +895,11 @@ int vnc_redistribute_unset(struct bgp *bgp, afi_t afi, int type)
 
 extern struct zebra_privs_t bgpd_privs;
 
+static zclient_handler *const vnc_handlers[] = {
+	[ZEBRA_REDISTRIBUTE_ROUTE_ADD] = vnc_zebra_read_route,
+	[ZEBRA_REDISTRIBUTE_ROUTE_DEL] = vnc_zebra_read_route,
+};
+
 /*
  * Modeled after bgp_zebra.c'bgp_zebra_init()
  * Charriere asks, "Is it possible to carry two?"
@@ -908,11 +907,9 @@ extern struct zebra_privs_t bgpd_privs;
 void vnc_zebra_init(struct thread_master *master)
 {
 	/* Set default values. */
-	zclient_vnc = zclient_new(master, &zclient_options_default);
+	zclient_vnc = zclient_new(master, &zclient_options_default,
+				  vnc_handlers, array_size(vnc_handlers));
 	zclient_init(zclient_vnc, ZEBRA_ROUTE_VNC, 0, &bgpd_privs);
-
-	zclient_vnc->redistribute_route_add = vnc_zebra_read_route;
-	zclient_vnc->redistribute_route_del = vnc_zebra_read_route;
 }
 
 void vnc_zebra_destroy(void)

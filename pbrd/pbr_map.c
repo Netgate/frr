@@ -37,9 +37,9 @@
 #include "pbr_debug.h"
 #include "pbr_vrf.h"
 
-DEFINE_MTYPE_STATIC(PBRD, PBR_MAP, "PBR Map")
-DEFINE_MTYPE_STATIC(PBRD, PBR_MAP_SEQNO, "PBR Map Sequence")
-DEFINE_MTYPE_STATIC(PBRD, PBR_MAP_INTERFACE, "PBR Map Interface")
+DEFINE_MTYPE_STATIC(PBRD, PBR_MAP, "PBR Map");
+DEFINE_MTYPE_STATIC(PBRD, PBR_MAP_SEQNO, "PBR Map Sequence");
+DEFINE_MTYPE_STATIC(PBRD, PBR_MAP_INTERFACE, "PBR Map Interface");
 
 static uint32_t pbr_map_sequence_unique;
 
@@ -51,7 +51,7 @@ RB_GENERATE(pbr_map_entry_head, pbr_map, pbr_map_entry, pbr_map_compare)
 
 struct pbr_map_entry_head pbr_maps = RB_INITIALIZER(&pbr_maps);
 
-DEFINE_QOBJ_TYPE(pbr_map_sequence)
+DEFINE_QOBJ_TYPE(pbr_map_sequence);
 
 static inline int pbr_map_compare(const struct pbr_map *pbrmap1,
 				  const struct pbr_map *pbrmap2)
@@ -178,9 +178,9 @@ static void pbr_map_pbrms_uninstall(struct pbr_map_sequence *pbrms)
 }
 
 static const char *const pbr_map_reason_str[] = {
-	"Invalid NH-group",     "Invalid NH",	 "No Nexthops",
-	"Both NH and NH-Group", "Invalid Src or Dst", "Invalid VRF",
-	"Deleting Sequence",
+	"Invalid NH-group",	"Invalid NH",	 "No Nexthops",
+	"Both NH and NH-Group",    "Invalid Src or Dst", "Invalid VRF",
+	"Both VLAN Set and Strip", "Deleting Sequence",
 };
 
 void pbr_map_reason_string(unsigned int reason, char *buf, int size)
@@ -304,7 +304,7 @@ static void pbrms_vrf_update(struct pbr_map_sequence *pbrms,
 	if (pbrms->vrf_lookup
 	    && (strncmp(vrf_name, pbrms->vrf_name, sizeof(pbrms->vrf_name))
 		== 0)) {
-		DEBUGD(&pbr_dbg_map, "\tSeq %u uses vrf %s (%u), updating map",
+		DEBUGD(&pbr_dbg_map, "    Seq %u uses vrf %s (%u), updating map",
 		       pbrms->seqno, vrf_name, pbr_vrf_id(pbr_vrf));
 
 		pbr_map_check(pbrms, false);
@@ -408,8 +408,7 @@ struct pbr_map_sequence *pbrms_lookup_unique(uint32_t unique, char *ifname,
 
 	RB_FOREACH (pbrm, pbr_map_entry_head, &pbr_maps) {
 		for (ALL_LIST_ELEMENTS_RO(pbrm->incoming, inode, pmi)) {
-			if (strncmp(pmi->ifp->name, ifname, INTERFACE_NAMSIZ)
-			    != 0)
+			if (strcmp(pmi->ifp->name, ifname) != 0)
 				continue;
 
 			if (ppmi)
@@ -539,6 +538,13 @@ struct pbr_map_sequence *pbrms_get(const char *name, uint32_t seqno)
 		pbrms->seqno = seqno;
 		pbrms->ruleno = pbr_nht_get_next_rule(seqno);
 		pbrms->parent = pbrm;
+
+		pbrms->action_vlan_id = 0;
+		pbrms->action_vlan_flags = 0;
+		pbrms->action_pcp = 0;
+
+		pbrms->action_queue_id = PBR_MAP_UNDEFINED_QUEUE_ID;
+
 		pbrms->reason =
 			PBR_MAP_INVALID_EMPTY |
 			PBR_MAP_INVALID_NO_NEXTHOPS;
@@ -601,9 +607,27 @@ pbr_map_sequence_check_nexthops_valid(struct pbr_map_sequence *pbrms)
 
 static void pbr_map_sequence_check_not_empty(struct pbr_map_sequence *pbrms)
 {
-	if (!pbrms->src && !pbrms->dst && !pbrms->mark && !pbrms->dsfield)
+	if (!pbrms->src && !pbrms->dst && !pbrms->mark && !pbrms->dsfield
+	    && !pbrms->action_vlan_id && !pbrms->action_vlan_flags
+	    && !pbrms->action_pcp
+	    && pbrms->action_queue_id == PBR_MAP_UNDEFINED_QUEUE_ID)
 		pbrms->reason |= PBR_MAP_INVALID_EMPTY;
 }
+
+static void pbr_map_sequence_check_vlan_actions(struct pbr_map_sequence *pbrms)
+{
+	/* The set vlan tag action does the following:
+	 *  1. If the frame is untagged, it tags the frame with the
+	 *     configured VLAN ID.
+	 *  2. If the frame is tagged, if replaces the tag.
+	 *
+	 * The strip vlan action removes any inner tag, so it is invalid to
+	 * specify both a set and strip action.
+	 */
+	if ((pbrms->action_vlan_id != 0) && (pbrms->action_vlan_flags != 0))
+		pbrms->reason |= PBR_MAP_INVALID_SET_STRIP_VLAN;
+}
+
 
 /*
  * Checks to see if we think that the pbmrs is valid.  If we think
@@ -612,7 +636,7 @@ static void pbr_map_sequence_check_not_empty(struct pbr_map_sequence *pbrms)
 static void pbr_map_sequence_check_valid(struct pbr_map_sequence *pbrms)
 {
 	pbr_map_sequence_check_nexthops_valid(pbrms);
-
+	pbr_map_sequence_check_vlan_actions(pbrms);
 	pbr_map_sequence_check_not_empty(pbrms);
 }
 
@@ -666,7 +690,7 @@ void pbr_map_schedule_policy_from_nhg(const char *nh_group, bool installed)
 	RB_FOREACH (pbrm, pbr_map_entry_head, &pbr_maps) {
 		DEBUGD(&pbr_dbg_map, "%s: Looking at %s", __func__, pbrm->name);
 		for (ALL_LIST_ELEMENTS_RO(pbrm->seqnumbers, node, pbrms)) {
-			DEBUGD(&pbr_dbg_map, "\tNH Grp name: %s",
+			DEBUGD(&pbr_dbg_map, "    NH Grp name: %s",
 			       pbrms->nhgrp_name ?
 			       pbrms->nhgrp_name : pbrms->internal_nhg_name);
 
@@ -707,7 +731,7 @@ void pbr_map_policy_install(const char *name)
 
 		if (pbrm->valid && pbrms->nhs_installed
 		    && pbrm->incoming->count) {
-			DEBUGD(&pbr_dbg_map, "\tInstalling %s %u", pbrm->name,
+			DEBUGD(&pbr_dbg_map, "    Installing %s %u", pbrm->name,
 			       pbrms->seqno);
 			for (ALL_LIST_ELEMENTS_RO(pbrm->incoming, inode, pmi))
 				if (pbr_map_interface_is_valid(pmi))
@@ -766,6 +790,12 @@ void pbr_map_check_nh_group_change(const char *nh_group)
 
 			if (found_name) {
 				bool original = pbrm->valid;
+
+				/* Set data we were waiting on */
+				if (pbrms->nhgrp_name)
+					pbr_nht_set_seq_nhg_data(
+						pbrms,
+						nhgc_find(pbrms->nhgrp_name));
 
 				pbr_map_check_valid_internal(pbrm);
 
@@ -861,7 +891,7 @@ void pbr_map_check(struct pbr_map_sequence *pbrms, bool changed)
 		DEBUGD(&pbr_dbg_map, "%s: Installing %s(%u) reason: %" PRIu64,
 		       __func__, pbrm->name, pbrms->seqno, pbrms->reason);
 		DEBUGD(&pbr_dbg_map,
-		       "\tSending PBR_MAP_POLICY_INSTALL event");
+		       "    Sending PBR_MAP_POLICY_INSTALL event");
 	} else {
 		install = false;
 		DEBUGD(&pbr_dbg_map, "%s: Removing %s(%u) reason: %" PRIu64,

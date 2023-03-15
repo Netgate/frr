@@ -230,16 +230,35 @@ DEFPY  (ldp_ordered_control,
 	return (ldp_vty_ordered_control(vty, no));
 }
 
+DEFPY  (ldp_wait_for_sync,
+        ldp_wait_for_sync_cmd,
+        "[no] wait-for-sync (1-10000)$waitforsync",
+        NO_STR
+        "Time to wait for LDP-IGP Sync to complete label exchange\n"
+        "Time (seconds)\n")
+{
+        return (ldp_vty_wait_for_sync_interval(vty, no, waitforsync));
+
+}
+
+DEFPY  (ldp_allow_broken_lsps,
+	ldp_allow_broken_lsps_cmd,
+	"[no] install allow-broken-lsps",
+	NO_STR
+	"install lsps\n"
+	"if no remote-label install with imp-null")
+{
+	return (ldp_vty_allow_broken_lsp(vty, no));
+}
+
 DEFPY  (ldp_discovery_targeted_hello_accept,
 	ldp_discovery_targeted_hello_accept_cmd,
-	"[no] discovery targeted-hello accept [from <(1-199)|(1300-2699)|WORD>$from_acl]",
+	"[no] discovery targeted-hello accept [from ACCESSLIST_NAME$from_acl]",
 	NO_STR
 	"Configure discovery parameters\n"
 	"LDP Targeted Hellos\n"
 	"Accept and respond to targeted hellos\n"
 	"Access list to specify acceptable targeted hello source\n"
-	"IP access-list number\n"
-	"IP access-list number (expanded range)\n"
 	"IP access-list name\n")
 {
 	return (ldp_vty_targeted_hello_accept(vty, no, from_acl));
@@ -269,18 +288,14 @@ DEFPY  (ldp_discovery_transport_address_ipv6,
 
 DEFPY  (ldp_label_local_advertise,
 	ldp_label_local_advertise_cmd,
-	"[no] label local advertise [{to <(1-199)|(1300-2699)|WORD>$to_acl|for <(1-199)|(1300-2699)|WORD>$for_acl}]",
+	"[no] label local advertise [{to ACCESSLIST_NAME$to_acl|for ACCESSLIST_NAME$for_acl}]",
 	NO_STR
 	"Configure label control and policies\n"
 	"Configure local label control and policies\n"
 	"Configure outbound label advertisement control\n"
 	"IP Access-list specifying controls on LDP Peers\n"
-	"IP access-list number\n"
-	"IP access-list number (expanded range)\n"
 	"IP access-list name\n"
 	"IP access-list for destination prefixes\n"
-	"IP access-list number\n"
-	"IP access-list number (expanded range)\n"
 	"IP access-list name\n")
 {
 	return (ldp_vty_label_advertise(vty, no, to_acl, for_acl));
@@ -288,15 +303,13 @@ DEFPY  (ldp_label_local_advertise,
 
 DEFPY  (ldp_label_local_advertise_explicit_null,
 	ldp_label_local_advertise_explicit_null_cmd,
-	"[no] label local advertise explicit-null [for <(1-199)|(1300-2699)|WORD>$for_acl]",
+	"[no] label local advertise explicit-null [for ACCESSLIST_NAME$for_acl]",
 	NO_STR
 	"Configure label control and policies\n"
 	"Configure local label control and policies\n"
 	"Configure outbound label advertisement control\n"
 	"Configure explicit-null advertisement\n"
 	"IP access-list for destination prefixes\n"
-	"IP access-list number\n"
-	"IP access-list number (expanded range)\n"
 	"IP access-list name\n")
 {
 	return (ldp_vty_label_expnull(vty, no, for_acl));
@@ -304,15 +317,13 @@ DEFPY  (ldp_label_local_advertise_explicit_null,
 
 DEFPY  (ldp_label_local_allocate,
 	ldp_label_local_allocate_cmd,
-	"[no] label local allocate <host-routes$host_routes|for <(1-199)|(1300-2699)|WORD>$for_acl>",
+	"[no] label local allocate <host-routes$host_routes|for ACCESSLIST_NAME$for_acl>",
 	NO_STR
 	"Configure label control and policies\n"
 	"Configure local label control and policies\n"
 	"Configure label allocation control\n"
 	"allocate local label for host routes only\n"
 	"IP access-list\n"
-	"IP access-list number\n"
-	"IP access-list number (expanded range)\n"
 	"IP access-list name\n")
 {
 	return (ldp_vty_label_allocate(vty, no, host_routes, for_acl));
@@ -320,18 +331,14 @@ DEFPY  (ldp_label_local_allocate,
 
 DEFPY  (ldp_label_remote_accept,
 	ldp_label_remote_accept_cmd,
-	"[no] label remote accept {from <(1-199)|(1300-2699)|WORD>$from_acl|for <(1-199)|(1300-2699)|WORD>$for_acl}",
+	"[no] label remote accept {from ACCESSLIST_NAME$from_acl|for ACCESSLIST_NAME$for_acl}",
 	NO_STR
 	"Configure label control and policies\n"
 	"Configure remote/peer label control and policies\n"
 	"Configure inbound label acceptance control\n"
 	"Neighbor from whom to accept label advertisement\n"
-	"IP access-list number\n"
-	"IP access-list number (expanded range)\n"
 	"IP access-list name\n"
 	"IP access-list for destination prefixes\n"
-	"IP access-list number\n"
-	"IP access-list number (expanded range)\n"
 	"IP access-list name\n")
 {
 	return (ldp_vty_label_accept(vty, no, from_acl, for_acl));
@@ -547,7 +554,7 @@ DEFPY  (ldp_debug_mpls_ldp_discovery_hello,
 
 DEFPY  (ldp_debug_mpls_ldp_type,
 	ldp_debug_mpls_ldp_type_cmd,
-	"[no] debug mpls ldp <errors|event|labels|zebra>$type",
+	"[no] debug mpls ldp <errors|event|labels|sync|zebra>$type",
 	NO_STR
 	"Debugging functions\n"
 	"MPLS information\n"
@@ -555,6 +562,7 @@ DEFPY  (ldp_debug_mpls_ldp_type,
 	"Errors\n"
 	"LDP event information\n"
 	"LDP label allocation information\n"
+	"LDP sync information\n"
 	"LDP zebra information\n")
 {
 	return (ldp_vty_debug(vty, no, type, NULL, NULL));
@@ -695,6 +703,18 @@ DEFPY  (ldp_show_mpls_ldp_neighbor_capabilities,
 	return (ldp_vty_show_neighbor(vty, lsr_id_str, 1, NULL, json));
 }
 
+DEFPY  (ldp_show_mpls_ldp_igp_sync,
+	ldp_show_mpls_ldp_igp_sync_cmd,
+	"show mpls ldp igp-sync [json]$json",
+	"Show mpls ldp ldp-sync information\n"
+	"MPLS information\n"
+	"Label Distribution Protocol\n"
+	"LDP-IGP Sync information\n"
+	JSON_STR)
+{
+	return (ldp_vty_show_ldp_sync(vty, json));
+}
+
 DEFPY  (ldp_show_l2vpn_atom_binding,
 	ldp_show_l2vpn_atom_binding_cmd,
 	"show l2vpn atom binding\
@@ -819,6 +839,8 @@ ldp_vty_init (void)
 	install_element(LDP_NODE, &ldp_neighbor_ttl_security_cmd);
 	install_element(LDP_NODE, &ldp_router_id_cmd);
 	install_element(LDP_NODE, &ldp_ordered_control_cmd);
+	install_element(LDP_NODE, &ldp_wait_for_sync_cmd);
+	install_element(LDP_NODE, &ldp_allow_broken_lsps_cmd);
 
 	install_element(LDP_IPV4_NODE, &ldp_discovery_link_holdtime_cmd);
 	install_element(LDP_IPV4_NODE, &ldp_discovery_targeted_holdtime_cmd);
@@ -888,4 +910,5 @@ ldp_vty_init (void)
 	install_element(VIEW_NODE, &ldp_show_l2vpn_atom_binding_cmd);
 	install_element(VIEW_NODE, &ldp_show_l2vpn_atom_vc_cmd);
 	install_element(VIEW_NODE, &ldp_show_debugging_mpls_ldp_cmd);
+	install_element(VIEW_NODE, &ldp_show_mpls_ldp_igp_sync_cmd);
 }

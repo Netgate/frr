@@ -23,6 +23,7 @@ RUN export DEBIAN_FRONTEND=noninteractive \
         libreadline-dev \
         libc-ares-dev \
         libcap-dev \
+        libelf-dev \
         man \
         mininet \
         pkg-config \
@@ -43,12 +44,13 @@ RUN export DEBIAN_FRONTEND=noninteractive \
         xterm \
     && pip install \
         exabgp==3.4.17 \
+        "scapy>=2.4.2" \
         ipaddr \
         pytest \
     && rm -rf /var/lib/apt/lists/*
 
 RUN export DEBIAN_FRONTEND=noninteractive \
-    && apt-key adv --keyserver keyserver.ubuntu.com --recv-key 5418F291D0D4A1AA \
+    && wget -qO- https://deb.frrouting.org/frr/keys.asc | apt-key add - \
     && echo "deb https://deb.frrouting.org/frr bionic frr-stable" > /etc/apt/sources.list.d/frr.list \
     && apt-get update \
     && apt-get install -y libyang-dev \

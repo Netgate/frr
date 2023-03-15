@@ -22,6 +22,8 @@ of these buffers, pipe their contents through ``tr '\0' '\n'``.  A blank line
 marks the end of valid unwritten data (it will generally be followed by
 garbled, older log messages since the buffer is not cleared.)
 
+.. _daemons-configuration-file:
+
 Daemons Configuration File
 --------------------------
 After a fresh install, starting FRR will do nothing. This is because daemons
@@ -176,6 +178,27 @@ Operations
 
 This section covers a few common operational tasks and how to perform them.
 
+Interactive Shell
+^^^^^^^^^^^^^^^^^
+FRR offers an IOS-like interactive shell called ``vtysh`` where a user can run
+individual configuration or show commands. To get into this shell, issue the
+``vtysh`` command from either a privilege user (root, or with sudo) or a user
+account that is part of the ``frrvty`` group.
+e.g.
+
+.. code-block:: console
+
+   root@ub18:~# vtysh
+
+   Hello, this is FRRouting (version 8.1-dev).
+   Copyright 1996-2005 Kunihiro Ishiguro, et al.
+
+   ub18#
+
+.. note::
+   The default install location for vtysh is /usr/bin/vtysh
+
+
 Restarting
 ^^^^^^^^^^
 
@@ -240,3 +263,53 @@ because FRR's monitoring program cannot currently distinguish between a crashed
 The closest that can be achieved is to remove all configuration for the daemon,
 and set its line in ``/etc/frr/daemons`` to ``=no``. Once this is done, the
 daemon will be stopped the next time FRR is restarted.
+
+
+Network Namespaces
+^^^^^^^^^^^^^^^^^^
+
+It is possible to run FRR in different network namespaces so it can be
+further compartmentalized (e.g. confining to a smaller subset network).
+The network namespace configuration can be used in the default FRR
+configuration pathspace or it can be used in a different pathspace
+(`-N/--pathspace`).
+
+To use FRR network namespace in the default pathspace you should add
+or uncomment the ``watchfrr_options`` line in ``/etc/frr/daemons``:
+
+.. code-block:: diff
+
+   - #watchfrr_options="--netns"
+   + watchfrr_options="--netns=<network-namespace-name>"
+
+If you want to use a different pathspace with the network namespace
+(the recommended way) you should add/uncomment the ``watchfrr_options``
+line in ``/etc/frr/<namespace>/daemons``:
+
+.. code-block:: diff
+
+   - #watchfrr_options="--netns"
+   + #watchfrr_options="--netns=<network-namespace-name>"
+   +
+   + # `--netns` argument is optional and if not provided it will
+   + # default to the pathspace name.
+   + watchfrr_options="--netns"
+
+To start FRR in the new pathspace+network namespace the initialization script
+should be called with an extra parameter:
+
+
+.. code::
+
+   /etc/init.d/frr start <pathspace-name>
+
+
+.. note::
+
+   Some Linux distributions might not use the default init script
+   shipped with FRR, in that case you might want to try running the
+   bundled script in ``/usr/lib/frr/frrinit.sh``.
+
+   On systemd you might create different units or parameterize the
+   existing one. See the man page:
+   https://www.freedesktop.org/software/systemd/man/systemd.unit.html

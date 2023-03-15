@@ -10,8 +10,10 @@ Installing Dependencies
    sudo pacman -S \
       git autoconf automake libtool make cmake pcre readline texinfo \
       pkg-config pam json-c bison flex python-pytest \
-      c-ares python systemd python2-ipaddress python-sphinx \
-      systemd-libs net-snmp perl libcap
+      c-ares python python2-ipaddress python-sphinx \
+      net-snmp perl libcap libelf libunwind
+
+.. include:: building-libunwind-note.rst
 
 .. include:: building-libyang.rst
 

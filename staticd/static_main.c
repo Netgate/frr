@@ -44,7 +44,6 @@ char backup_config_file[256];
 
 bool mpls_enabled;
 
-
 zebra_capabilities_t _caps_p[] = {
 };
 
@@ -91,7 +90,7 @@ static void sigusr1(void)
 	zlog_rotate();
 }
 
-struct quagga_signal_t static_signals[] = {
+struct frr_signal_t static_signals[] = {
 	{
 		.signal = SIGHUP,
 		.handler = &sighup,
@@ -129,7 +128,7 @@ FRR_DAEMON_INFO(staticd, STATIC, .vty_port = STATIC_VTY_PORT,
 
 		.privs = &static_privs, .yang_modules = staticd_yang_modules,
 		.n_yang_modules = array_size(staticd_yang_modules),
-)
+);
 
 int main(int argc, char **argv, char **envp)
 {
@@ -149,7 +148,6 @@ int main(int argc, char **argv, char **envp)
 			break;
 		default:
 			frr_help_exit(1);
-			break;
 		}
 	}
 

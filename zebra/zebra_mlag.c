@@ -29,7 +29,6 @@
 #include "zebra/zebra_mlag.h"
 #include "zebra/zebra_mlag_vty.h"
 #include "zebra/zebra_router.h"
-#include "zebra/zebra_memory.h"
 #include "zebra/zapi_msg.h"
 #include "zebra/debug.h"
 
@@ -38,24 +37,23 @@
 #endif
 
 DEFINE_HOOK(zebra_mlag_private_write_data,
-	    (uint8_t *data, uint32_t len), (data, len))
-DEFINE_HOOK(zebra_mlag_private_monitor_state, (), ())
-DEFINE_HOOK(zebra_mlag_private_open_channel, (), ())
-DEFINE_HOOK(zebra_mlag_private_close_channel, (), ())
-DEFINE_HOOK(zebra_mlag_private_cleanup_data, (), ())
+	    (uint8_t *data, uint32_t len), (data, len));
+DEFINE_HOOK(zebra_mlag_private_monitor_state, (), ());
+DEFINE_HOOK(zebra_mlag_private_open_channel, (), ());
+DEFINE_HOOK(zebra_mlag_private_close_channel, (), ());
+DEFINE_HOOK(zebra_mlag_private_cleanup_data, (), ());
 
 #define ZEBRA_MLAG_METADATA_LEN 4
 #define ZEBRA_MLAG_MSG_BCAST 0xFFFFFFFF
 
 uint8_t mlag_wr_buffer[ZEBRA_MLAG_BUF_LIMIT];
 uint8_t mlag_rd_buffer[ZEBRA_MLAG_BUF_LIMIT];
-uint32_t mlag_rd_buf_offset;
 
 static bool test_mlag_in_progress;
 
 static int zebra_mlag_signal_write_thread(void);
-static int zebra_mlag_terminate_pthread(struct thread *event);
-static int zebra_mlag_post_data_from_main_thread(struct thread *thread);
+static void zebra_mlag_terminate_pthread(struct thread *event);
+static void zebra_mlag_post_data_from_main_thread(struct thread *thread);
 static void zebra_mlag_publish_process_state(struct zserv *client,
 					     zebra_message_types_t msg_type);
 
@@ -113,7 +111,7 @@ void zebra_mlag_process_mlag_data(uint8_t *data, uint32_t len)
 	struct stream *s = NULL;
 	int msg_type = 0;
 
-	s = stream_new(ZEBRA_MAX_PACKET_SIZ);
+	s = stream_new(ZEBRA_MLAG_BUF_LIMIT);
 	/*
 	 * Place holder we need the message type first
 	 */
@@ -150,7 +148,7 @@ void zebra_mlag_process_mlag_data(uint8_t *data, uint32_t len)
  * This thread reads the clients data from the Global queue and encodes with
  * protobuf and pass on to the MLAG socket.
  */
-static int zebra_mlag_client_msg_handler(struct thread *event)
+static void zebra_mlag_client_msg_handler(struct thread *event)
 {
 	struct stream *s;
 	uint32_t wr_count = 0;
@@ -211,7 +209,6 @@ static int zebra_mlag_client_msg_handler(struct thread *event)
 	 */
 	if (wr_count >= ZEBRA_MLAG_POST_LIMIT)
 		zebra_mlag_signal_write_thread();
-	return 0;
 }
 
 /*
@@ -311,7 +308,7 @@ static void zebra_mlag_publish_process_state(struct zserv *client,
  * main thread, because for that access was needed for clients list.
  * so instead of forcing the locks, messages will be posted from main thread.
  */
-static int zebra_mlag_post_data_from_main_thread(struct thread *thread)
+static void zebra_mlag_post_data_from_main_thread(struct thread *thread)
 {
 	struct stream *s = THREAD_ARG(thread);
 	struct stream *zebra_s = NULL;
@@ -321,7 +318,7 @@ static int zebra_mlag_post_data_from_main_thread(struct thread *thread)
 	uint32_t msg_len = 0;
 
 	if (!s)
-		return -1;
+		return;
 
 	STREAM_GETL(s, msg_type);
 	if (IS_ZEBRA_DEBUG_MLAG)
@@ -358,12 +355,11 @@ static int zebra_mlag_post_data_from_main_thread(struct thread *thread)
 	}
 
 	stream_free(s);
-	return 0;
+	return;
 stream_failure:
 	stream_free(s);
 	if (zebra_s)
 		stream_free(zebra_s);
-	return 0;
 }
 
 /*
@@ -396,7 +392,7 @@ static void zebra_mlag_spawn_pthread(void)
  * all clients are un-registered for MLAG Updates, terminate the
  * MLAG write thread
  */
-static int zebra_mlag_terminate_pthread(struct thread *event)
+static void zebra_mlag_terminate_pthread(struct thread *event)
 {
 	if (IS_ZEBRA_DEBUG_MLAG)
 		zlog_debug("Zebra MLAG write thread terminate called");
@@ -405,7 +401,7 @@ static int zebra_mlag_terminate_pthread(struct thread *event)
 		if (IS_ZEBRA_DEBUG_MLAG)
 			zlog_debug(
 				"Zebra MLAG: still some clients are interested");
-		return 0;
+		return;
 	}
 
 	frr_pthread_stop(zrouter.mlag_info.zebra_pth_mlag, NULL);
@@ -421,7 +417,6 @@ static int zebra_mlag_terminate_pthread(struct thread *event)
 	 * Send Notification to clean private data
 	 */
 	hook_call(zebra_mlag_private_cleanup_data);
-	return 0;
 }
 
 /*
@@ -660,7 +655,7 @@ void zebra_mlag_terminate(void)
 
 #ifdef HAVE_PROTOBUF_VERSION_3
 
-DEFINE_MTYPE_STATIC(ZEBRA, MLAG_PBUF, "ZEBRA MLAG PROTOBUF")
+DEFINE_MTYPE_STATIC(ZEBRA, MLAG_PBUF, "ZEBRA MLAG PROTOBUF");
 
 int zebra_mlag_protobuf_encode_client_data(struct stream *s, uint32_t *msg_type)
 {
@@ -1083,7 +1078,7 @@ int zebra_mlag_protobuf_decode_message(struct stream *s, uint8_t *data,
 		case ZEBRA_MLAG__HEADER__MESSAGE_TYPE__ZEBRA_MLAG_MROUTE_ADD_BULK: {
 			ZebraMlagMrouteAddBulk *Bulk_msg = NULL;
 			ZebraMlagMrouteAdd *msg = NULL;
-			size_t i;
+			size_t i, length_spot;
 
 			Bulk_msg = zebra_mlag_mroute_add_bulk__unpack(
 				NULL, hdr->data.len, hdr->data.data);
@@ -1095,10 +1090,17 @@ int zebra_mlag_protobuf_decode_message(struct stream *s, uint8_t *data,
 			stream_putw(s, (Bulk_msg->n_mroute_add
 					* sizeof(struct mlag_mroute_add)));
 			/* No. of msgs in Batch */
-			stream_putw(s, Bulk_msg->n_mroute_add);
+			length_spot = stream_putw(s, Bulk_msg->n_mroute_add);
 
 			/* Actual Data */
 			for (i = 0; i < Bulk_msg->n_mroute_add; i++) {
+				if (STREAM_SIZE(s)
+				    < VRF_NAMSIZ + 22 + INTERFACE_NAMSIZ) {
+					zlog_warn(
+						"We have received more messages than we can parse at this point in time: %zu",
+						Bulk_msg->n_mroute_add);
+					break;
+				}
 
 				msg = Bulk_msg->mroute_add[i];
 
@@ -1118,13 +1120,16 @@ int zebra_mlag_protobuf_decode_message(struct stream *s, uint8_t *data,
 				else
 					stream_put(s, NULL, INTERFACE_NAMSIZ);
 			}
+
+			stream_putw_at(s, length_spot, i + 1);
+
 			zebra_mlag_mroute_add_bulk__free_unpacked(Bulk_msg,
 								  NULL);
 		} break;
 		case ZEBRA_MLAG__HEADER__MESSAGE_TYPE__ZEBRA_MLAG_MROUTE_DEL_BULK: {
 			ZebraMlagMrouteDelBulk *Bulk_msg = NULL;
 			ZebraMlagMrouteDel *msg = NULL;
-			size_t i;
+			size_t i, length_spot;
 
 			Bulk_msg = zebra_mlag_mroute_del_bulk__unpack(
 				NULL, hdr->data.len, hdr->data.data);
@@ -1136,10 +1141,16 @@ int zebra_mlag_protobuf_decode_message(struct stream *s, uint8_t *data,
 			stream_putw(s, (Bulk_msg->n_mroute_del
 					* sizeof(struct mlag_mroute_del)));
 			/* No. of msgs in Batch */
-			stream_putw(s, Bulk_msg->n_mroute_del);
+			length_spot = stream_putw(s, Bulk_msg->n_mroute_del);
 
 			/* Actual Data */
 			for (i = 0; i < Bulk_msg->n_mroute_del; i++) {
+				if (STREAM_SIZE(s)
+				    < VRF_NAMSIZ + 16 + INTERFACE_NAMSIZ) {
+					zlog_warn(
+						"We have received more messages than we can parse at this time");
+					break;
+				}
 
 				msg = Bulk_msg->mroute_del[i];
 
@@ -1156,6 +1167,9 @@ int zebra_mlag_protobuf_decode_message(struct stream *s, uint8_t *data,
 				else
 					stream_put(s, NULL, INTERFACE_NAMSIZ);
 			}
+
+			stream_putw_at(s, length_spot, i + 1);
+
 			zebra_mlag_mroute_del_bulk__free_unpacked(Bulk_msg,
 								  NULL);
 		} break;

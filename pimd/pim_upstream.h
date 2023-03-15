@@ -24,7 +24,7 @@
 #include <prefix.h>
 #include "plist.h"
 
-#include <pimd/pim_rpf.h>
+#include "pim_rpf.h"
 #include "pim_str.h"
 #include "pim_ifchannel.h"
 
@@ -229,9 +229,9 @@ struct pim_upstream {
 	struct pim_instance *pim;
 	struct rb_pim_upstream_item upstream_rb;
 	struct pim_upstream *parent;
-	struct in_addr upstream_addr;     /* Who we are talking to */
-	struct in_addr upstream_register; /*Who we received a register from*/
-	struct prefix_sg sg;		  /* (S,G) group key */
+	pim_addr upstream_addr;		  /* Who we are talking to */
+	pim_addr upstream_register;       /*Who we received a register from*/
+	pim_sgaddr sg;			  /* (S,G) group key */
 	char sg_str[PIM_SG_LEN];
 	uint32_t flags;
 	struct channel_oil *channel_oil;
@@ -291,12 +291,11 @@ static inline bool pim_up_mlag_is_local(struct pim_upstream *up)
 }
 
 struct pim_upstream *pim_upstream_find(struct pim_instance *pim,
-				       struct prefix_sg *sg);
-struct pim_upstream *pim_upstream_find_or_add(struct prefix_sg *sg,
+				       pim_sgaddr *sg);
+struct pim_upstream *pim_upstream_find_or_add(pim_sgaddr *sg,
 					      struct interface *ifp, int flags,
 					      const char *name);
-struct pim_upstream *pim_upstream_add(struct pim_instance *pim,
-				      struct prefix_sg *sg,
+struct pim_upstream *pim_upstream_add(struct pim_instance *pim, pim_sgaddr *sg,
 				      struct interface *ifp, int flags,
 				      const char *name,
 				      struct pim_ifchannel *ch);
@@ -317,8 +316,9 @@ int pim_upstream_eval_inherit_if(struct pim_upstream *up,
 void pim_upstream_update_join_desired(struct pim_instance *pim,
 				      struct pim_upstream *up);
 
-void pim_upstream_join_suppress(struct pim_upstream *up,
-				struct in_addr rpf_addr, int holdtime);
+void pim_update_suppress_timers(uint32_t suppress_time);
+void pim_upstream_join_suppress(struct pim_upstream *up, struct prefix rpf,
+				int holdtime);
 
 void pim_upstream_join_timer_decrease_to_t_override(const char *debug_label,
 						    struct pim_upstream *up);
@@ -326,7 +326,7 @@ void pim_upstream_join_timer_decrease_to_t_override(const char *debug_label,
 void pim_upstream_join_timer_restart(struct pim_upstream *up,
 				     struct pim_rpf *old);
 void pim_upstream_rpf_genid_changed(struct pim_instance *pim,
-				    struct in_addr neigh_addr);
+				    pim_addr neigh_addr);
 void pim_upstream_rpf_interface_changed(struct pim_upstream *up,
 					struct interface *old_rpf_ifp);
 
@@ -337,7 +337,7 @@ void pim_upstream_keep_alive_timer_start(struct pim_upstream *up,
 					 uint32_t time);
 
 int pim_upstream_switch_to_spt_desired_on_rp(struct pim_instance *pim,
-				       struct prefix_sg *sg);
+					     pim_sgaddr *sg);
 #define SwitchToSptDesiredOnRp(pim, sg) pim_upstream_switch_to_spt_desired_on_rp (pim, sg)
 int pim_upstream_is_sg_rpt(struct pim_upstream *up);
 
@@ -373,7 +373,7 @@ void join_timer_start(struct pim_upstream *up);
 int pim_upstream_compare(const struct pim_upstream *up1,
 			 const struct pim_upstream *up2);
 DECLARE_RBTREE_UNIQ(rb_pim_upstream, struct pim_upstream, upstream_rb,
-		    pim_upstream_compare)
+		    pim_upstream_compare);
 
 void pim_upstream_register_reevaluate(struct pim_instance *pim);
 

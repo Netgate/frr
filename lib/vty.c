@@ -48,6 +48,7 @@
 #include "lib_errors.h"
 #include "northbound_cli.h"
 #include "printfrr.h"
+#include "json.h"
 
 #include <arpa/telnet.h>
 #include <termios.h>
@@ -56,12 +57,15 @@
 #include "lib/vty_clippy.c"
 #endif
 
-DEFINE_MTYPE_STATIC(LIB, VTY, "VTY")
-DEFINE_MTYPE_STATIC(LIB, VTY_OUT_BUF, "VTY output buffer")
-DEFINE_MTYPE_STATIC(LIB, VTY_HIST, "VTY history")
+DEFINE_MTYPE_STATIC(LIB, VTY, "VTY");
+DEFINE_MTYPE_STATIC(LIB, VTY_SERV, "VTY server");
+DEFINE_MTYPE_STATIC(LIB, VTY_OUT_BUF, "VTY output buffer");
+DEFINE_MTYPE_STATIC(LIB, VTY_HIST, "VTY history");
+
+DECLARE_DLIST(vtys, struct vty, itm);
 
 /* Vty events */
-enum event {
+enum vty_event {
 	VTY_SERV,
 	VTY_READ,
 	VTY_WRITE,
@@ -73,13 +77,31 @@ enum event {
 #endif /* VTYSH */
 };
 
-static void vty_event(enum event, int, struct vty *);
+PREDECL_DLIST(vtyservs);
+
+struct vty_serv {
+	struct vtyservs_item itm;
+
+	int sock;
+	bool vtysh;
+
+	struct thread *t_accept;
+};
+
+DECLARE_DLIST(vtyservs, struct vty_serv, itm);
+
+static void vty_event_serv(enum vty_event event, struct vty_serv *);
+static void vty_event(enum vty_event, struct vty *);
 
 /* Extern host structure from command.c */
 extern struct host host;
 
-/* Vector which store each vty structure. */
-static vector vtyvec;
+/* active listeners */
+static struct vtyservs_head vty_servs[1] = {INIT_DLIST(vty_servs[0])};
+
+/* active connections */
+static struct vtys_head vty_sessions[1] = {INIT_DLIST(vty_sessions[0])};
+static struct vtys_head vtysh_sessions[1] = {INIT_DLIST(vtysh_sessions[0])};
 
 /* Vty timeout value. */
 static unsigned long vty_timeout_val = VTY_TIMEOUT_DEFAULT;
@@ -89,9 +111,6 @@ static char *vty_accesslist_name = NULL;
 
 /* Vty access-calss for IPv6. */
 static char *vty_ipv6_accesslist_name = NULL;
-
-/* VTY server thread. */
-static vector Vvty_serv_thread;
 
 /* Current directory. */
 static char vty_cwd[MAXPATHLEN];
@@ -158,6 +177,8 @@ int vty_out(struct vty *vty, const char *format, ...)
 	char buf[1024];
 	char *p = NULL;
 	char *filtered;
+	/* format string may contain %m, keep errno intact for printfrr */
+	int saved_errno = errno;
 
 	if (vty->frame_pos) {
 		vty->frame_pos = 0;
@@ -165,6 +186,7 @@ int vty_out(struct vty *vty, const char *format, ...)
 	}
 
 	va_start(args, format);
+	errno = saved_errno;
 	p = vasnprintfrr(MTYPE_VTY_OUT_BUF, buf, sizeof(buf), format, args);
 	va_end(args);
 
@@ -259,70 +281,28 @@ done:
 	return len;
 }
 
-static int vty_log_out(struct vty *vty, const char *level,
-		       const char *proto_str, const char *msg,
-		       struct timestamp_control *ctl)
+int vty_json(struct vty *vty, struct json_object *json)
 {
-	int ret;
-	int len;
-	char buf[1024];
+	const char *text;
 
-	if (!ctl->already_rendered) {
-		ctl->len = quagga_timestamp(ctl->precision, ctl->buf,
-					    sizeof(ctl->buf));
-		ctl->already_rendered = 1;
-	}
-	if (ctl->len + 1 >= sizeof(buf))
-		return -1;
-	memcpy(buf, ctl->buf, len = ctl->len);
-	buf[len++] = ' ';
-	buf[len] = '\0';
+	if (!json)
+		return CMD_SUCCESS;
 
-	if (level)
-		ret = snprintf(buf + len, sizeof(buf) - len, "%s: %s: ", level,
-			       proto_str);
-	else
-		ret = snprintf(buf + len, sizeof(buf) - len, "%s: ", proto_str);
-	if ((ret < 0) || ((size_t)(len += ret) >= sizeof(buf)))
-		return -1;
+	text = json_object_to_json_string_ext(
+		json, JSON_C_TO_STRING_PRETTY | JSON_C_TO_STRING_NOSLASHESCAPE);
+	vty_out(vty, "%s\n", text);
+	json_object_free(json);
 
-	if (((ret = snprintf(buf + len, sizeof(buf) - len, "%s", msg)) < 0)
-	    || ((size_t)((len += ret) + 2) > sizeof(buf)))
-		return -1;
-
-	buf[len++] = '\r';
-	buf[len++] = '\n';
-
-	if (write(vty->wfd, buf, len) < 0) {
-		if (ERRNO_IO_RETRY(errno))
-			/* Kernel buffer is full, probably too much debugging
-			   output, so just
-			   drop the data and ignore. */
-			return -1;
-		/* Fatal I/O error. */
-		vty->monitor =
-			0; /* disable monitoring to avoid infinite recursion */
-		flog_err(EC_LIB_SOCKET,
-			 "%s: write failed to vty client fd %d, closing: %s",
-			 __func__, vty->fd, safe_strerror(errno));
-		buffer_reset(vty->obuf);
-		buffer_reset(vty->lbuf);
-		/* cannot call vty_close, because a parent routine may still try
-		   to access the vty struct */
-		vty->status = VTY_CLOSE;
-		shutdown(vty->fd, SHUT_RDWR);
-		return -1;
-	}
-	return 0;
+	return CMD_SUCCESS;
 }
 
 /* Output current time to the vty. */
 void vty_time_print(struct vty *vty, int cr)
 {
-	char buf[QUAGGA_TIMESTAMP_LEN];
+	char buf[FRR_TIMESTAMP_LEN];
 
-	if (quagga_timestamp(0, buf, sizeof(buf)) == 0) {
-		zlog_info("quagga_timestamp error");
+	if (frr_timestamp(0, buf, sizeof(buf)) == 0) {
+		zlog_info("frr_timestamp error");
 		return;
 	}
 	if (cr)
@@ -358,15 +338,6 @@ void vty_hello(struct vty *vty)
 			vty_out(vty, "MOTD file not found\n");
 	} else if (host.motd)
 		vty_out(vty, "%s", host.motd);
-
-#if CONFDATE > 20200901
-	CPP_NOTICE("Please remove solaris code from system as it is deprecated");
-#endif
-#ifdef SUNOS_5
-	zlog_warn("If you are using FRR on Solaris, the FRR developers would love to hear from you\n");
-	zlog_warn("Please send email to dev@lists.frrouting.org about this message\n");
-	zlog_warn("We are considering deprecating Solaris and want to find users of Solaris systems\n");
-#endif
 }
 
 /* Put out prompt and wait input from user. */
@@ -404,16 +375,6 @@ static void vty_do_window_size(struct vty *vty)
 	unsigned char cmd[] = {IAC, DO, TELOPT_NAWS, '\0'};
 	vty_out(vty, "%s", cmd);
 }
-
-#if 0  /* Currently not used. */
-/* Make don't use lflow vty interface. */
-static void
-vty_dont_lflow_ahead (struct vty *vty)
-{
-  unsigned char cmd[] = { IAC, DONT, TELOPT_LFLOW, '\0' };
-  vty_out (vty, "%s", cmd);
-}
-#endif /* 0 */
 
 /* Authentication of vty */
 static void vty_auth(struct vty *vty, char *buf)
@@ -492,19 +453,12 @@ static int vty_command(struct vty *vty, char *buf)
 			cp++;
 	}
 	if (cp != NULL && *cp != '\0') {
-		unsigned i;
 		char vty_str[VTY_BUFSIZ];
 		char prompt_str[VTY_BUFSIZ];
 
 		/* format the base vty info */
-		snprintf(vty_str, sizeof(vty_str), "vty[??]@%s", vty->address);
-
-		for (i = 0; i < vector_active(vtyvec); i++)
-			if (vty == vector_slot(vtyvec, i)) {
-				snprintf(vty_str, sizeof(vty_str), "vty[%d]@%s",
-					 i, vty->address);
-				break;
-			}
+		snprintf(vty_str, sizeof(vty_str), "vty[%d]@%s", vty->fd,
+			 vty->address);
 
 		/* format the prompt */
 		snprintf(prompt_str, sizeof(prompt_str), cmd_prompt(vty->node),
@@ -514,31 +468,37 @@ static int vty_command(struct vty *vty, char *buf)
 		zlog_notice("%s%s", prompt_str, buf);
 	}
 
-#ifdef CONSUMED_TIME_CHECK
-	{
-		RUSAGE_T before;
-		RUSAGE_T after;
-		unsigned long realtime, cputime;
+	RUSAGE_T before;
+	RUSAGE_T after;
+	unsigned long walltime, cputime;
 
-		GETRUSAGE(&before);
-#endif /* CONSUMED_TIME_CHECK */
+	/* cmd_execute() may change cputime_enabled if we're executing the
+	 * "service cputime-stats" command, which can result in nonsensical
+	 * and very confusing warnings
+	 */
+	bool cputime_enabled_here = cputime_enabled;
 
-		ret = cmd_execute(vty, buf, NULL, 0);
+	GETRUSAGE(&before);
 
-		/* Get the name of the protocol if any */
-		protocolname = frr_protoname;
+	ret = cmd_execute(vty, buf, NULL, 0);
 
-#ifdef CONSUMED_TIME_CHECK
-		GETRUSAGE(&after);
-		if ((realtime = thread_consumed_time(&after, &before, &cputime))
-		    > CONSUMED_TIME_CHECK)
-			/* Warn about CPU hog that must be fixed. */
-			flog_warn(
-				EC_LIB_SLOW_THREAD,
-				"SLOW COMMAND: command took %lums (cpu time %lums): %s",
-				realtime / 1000, cputime / 1000, buf);
-	}
-#endif /* CONSUMED_TIME_CHECK */
+	GETRUSAGE(&after);
+
+	walltime = thread_consumed_time(&after, &before, &cputime);
+
+	if (cputime_enabled_here && cputime_enabled && cputime_threshold
+	    && cputime > cputime_threshold)
+		/* Warn about CPU hog that must be fixed. */
+		flog_warn(EC_LIB_SLOW_THREAD_CPU,
+			  "CPU HOG: command took %lums (cpu time %lums): %s",
+			  walltime / 1000, cputime / 1000, buf);
+	else if (walltime_threshold && walltime > walltime_threshold)
+		flog_warn(EC_LIB_SLOW_THREAD_WALL,
+			  "STARVATION: command took %lums (cpu time %lums): %s",
+			  walltime / 1000, cputime / 1000, buf);
+
+	/* Get the name of the protocol if any */
+	protocolname = frr_protoname;
 
 	if (ret != CMD_SUCCESS)
 		switch (ret) {
@@ -782,7 +742,7 @@ static void vty_end_config(struct vty *vty)
 	vty->cp = 0;
 }
 
-/* Delete a charcter at the current point. */
+/* Delete a character at the current point. */
 static void vty_delete_char(struct vty *vty)
 {
 	int i;
@@ -1099,11 +1059,6 @@ static void vty_describe_command(struct vty *vty)
 
 				vector_free(varcomps);
 			}
-#if 0
-        vty_out (vty, "  %-*s %s\n", width
-                 desc->cmd[0] == '.' ? desc->cmd + 1 : desc->cmd,
-                 desc->str ? desc->str : "");
-#endif /* 0 */
 		}
 
 	if ((token = token_cr)) {
@@ -1308,6 +1263,7 @@ static int vty_execute(struct vty *vty)
 #define VTY_NORMAL     0
 #define VTY_PRE_ESCAPE 1
 #define VTY_ESCAPE     2
+#define VTY_CR         3
 
 /* Escape character command map. */
 static void vty_escape_map(unsigned char c, struct vty *vty)
@@ -1343,24 +1299,21 @@ static void vty_buffer_reset(struct vty *vty)
 }
 
 /* Read data via vty socket. */
-static int vty_read(struct thread *thread)
+static void vty_read(struct thread *thread)
 {
 	int i;
 	int nbytes;
 	unsigned char buf[VTY_READ_BUFSIZ];
 
-	int vty_sock = THREAD_FD(thread);
 	struct vty *vty = THREAD_ARG(thread);
 
 	/* Read raw data from socket */
 	if ((nbytes = read(vty->fd, buf, VTY_READ_BUFSIZ)) <= 0) {
 		if (nbytes < 0) {
 			if (ERRNO_IO_RETRY(errno)) {
-				vty_event(VTY_READ, vty_sock, vty);
-				return 0;
+				vty_event(VTY_READ, vty);
+				return;
 			}
-			vty->monitor = 0; /* disable monitoring to avoid
-					     infinite recursion */
 			flog_err(
 				EC_LIB_SOCKET,
 				"%s: read error on vty client fd %d, closing: %s",
@@ -1405,12 +1358,6 @@ static int vty_read(struct thread *thread)
 			case 'Q':
 				vty_buffer_reset(vty);
 				break;
-#if 0 /* More line does not work for "show ip bgp".  */
-            case '\n':
-            case '\r':
-              vty->status = VTY_MORELINE;
-              break;
-#endif
 			default:
 				break;
 			}
@@ -1451,6 +1398,17 @@ static int vty_read(struct thread *thread)
 				break;
 			}
 			continue;
+		}
+
+		if (vty->escape == VTY_CR) {
+			/* if we get CR+NL, the NL results in an extra empty
+			 * prompt line being printed without this;  just drop
+			 * the NL if it immediately follows CR.
+			 */
+			vty->escape = VTY_NORMAL;
+
+			if (buf[i] == '\n')
+				continue;
 		}
 
 		switch (buf[i]) {
@@ -1497,10 +1455,18 @@ static int vty_read(struct thread *thread)
 		case CONTROL('Z'):
 			vty_end_config(vty);
 			break;
-		case '\n':
 		case '\r':
+			vty->escape = VTY_CR;
+			/* fallthru */
+		case '\n':
 			vty_out(vty, "\n");
+			buffer_flush_available(vty->obuf, vty->wfd);
 			vty_execute(vty);
+
+			if (vty->pass_fd != -1) {
+				close(vty->pass_fd);
+				vty->pass_fd = -1;
+			}
 			break;
 		case '\t':
 			vty_complete_command(vty);
@@ -1530,18 +1496,16 @@ static int vty_read(struct thread *thread)
 	if (vty->status == VTY_CLOSE)
 		vty_close(vty);
 	else {
-		vty_event(VTY_WRITE, vty->wfd, vty);
-		vty_event(VTY_READ, vty_sock, vty);
+		vty_event(VTY_WRITE, vty);
+		vty_event(VTY_READ, vty);
 	}
-	return 0;
 }
 
 /* Flush buffer to the vty. */
-static int vty_flush(struct thread *thread)
+static void vty_flush(struct thread *thread)
 {
 	int erase;
 	buffer_status_t flushrc;
-	int vty_sock = THREAD_FD(thread);
 	struct vty *vty = THREAD_ARG(thread);
 
 	/* Tempolary disable read thread. */
@@ -1553,42 +1517,38 @@ static int vty_flush(struct thread *thread)
 
 	/* N.B. if width is 0, that means we don't know the window size. */
 	if ((vty->lines == 0) || (vty->width == 0) || (vty->height == 0))
-		flushrc = buffer_flush_available(vty->obuf, vty_sock);
+		flushrc = buffer_flush_available(vty->obuf, vty->wfd);
 	else if (vty->status == VTY_MORELINE)
-		flushrc = buffer_flush_window(vty->obuf, vty_sock, vty->width,
+		flushrc = buffer_flush_window(vty->obuf, vty->wfd, vty->width,
 					      1, erase, 0);
 	else
 		flushrc = buffer_flush_window(
-			vty->obuf, vty_sock, vty->width,
+			vty->obuf, vty->wfd, vty->width,
 			vty->lines >= 0 ? vty->lines : vty->height, erase, 0);
 	switch (flushrc) {
 	case BUFFER_ERROR:
-		vty->monitor =
-			0; /* disable monitoring to avoid infinite recursion */
-		zlog_info("buffer_flush failed on vty client fd %d, closing",
-			  vty->fd);
+		zlog_info("buffer_flush failed on vty client fd %d/%d, closing",
+			  vty->fd, vty->wfd);
 		buffer_reset(vty->lbuf);
 		buffer_reset(vty->obuf);
 		vty_close(vty);
-		return 0;
+		return;
 	case BUFFER_EMPTY:
 		if (vty->status == VTY_CLOSE)
 			vty_close(vty);
 		else {
 			vty->status = VTY_NORMAL;
 			if (vty->lines == 0)
-				vty_event(VTY_READ, vty_sock, vty);
+				vty_event(VTY_READ, vty);
 		}
 		break;
 	case BUFFER_PENDING:
 		/* There is more data waiting to be written. */
 		vty->status = VTY_MORE;
 		if (vty->lines == 0)
-			vty_event(VTY_WRITE, vty_sock, vty);
+			vty_event(VTY_WRITE, vty);
 		break;
 	}
-
-	return 0;
 }
 
 /* Allocate new vty struct. */
@@ -1602,6 +1562,7 @@ struct vty *vty_new(void)
 	new->obuf = buffer_new(0); /* Use default buffer size. */
 	new->buf = XCALLOC(MTYPE_VTY, VTY_BUFSIZ);
 	new->max = VTY_BUFSIZ;
+	new->pass_fd = -1;
 
 	return new;
 }
@@ -1628,12 +1589,13 @@ static struct vty *vty_new_init(int vty_sock)
 	memset(vty->xpath, 0, sizeof(vty->xpath));
 	vty->private_config = false;
 	vty->candidate_config = vty_shared_candidate_config;
-	vector_set_index(vtyvec, vty_sock, vty);
 	vty->status = VTY_NORMAL;
 	vty->lines = -1;
 	vty->iac = 0;
 	vty->iac_sb_in_progress = 0;
 	vty->sb_len = 0;
+
+	vtys_add_tail(vty_sessions, vty);
 
 	return vty;
 }
@@ -1687,8 +1649,8 @@ static struct vty *vty_create(int vty_sock, union sockunion *su)
 	vty_prompt(vty);
 
 	/* Add read/write thread. */
-	vty_event(VTY_WRITE, vty_sock, vty);
-	vty_event(VTY_READ, vty_sock, vty);
+	vty_event(VTY_WRITE, vty);
+	vty_event(VTY_READ, vty);
 
 	return vty;
 }
@@ -1744,7 +1706,6 @@ void vty_stdio_resume(void)
 		termios = stdio_orig_termios;
 		termios.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR
 				     | IGNCR | ICRNL | IXON);
-		termios.c_oflag &= ~OPOST;
 		termios.c_lflag &= ~(ECHO | ECHONL | ICANON | IEXTEN);
 		termios.c_cflag &= ~(CSIZE | PARENB);
 		termios.c_cflag |= CS8;
@@ -1755,8 +1716,8 @@ void vty_stdio_resume(void)
 	vty_prompt(stdio_vty);
 
 	/* Add read/write thread. */
-	vty_event(VTY_WRITE, 1, stdio_vty);
-	vty_event(VTY_READ, 0, stdio_vty);
+	vty_event(VTY_WRITE, stdio_vty);
+	vty_event(VTY_READ, stdio_vty);
 }
 
 void vty_stdio_close(void)
@@ -1791,21 +1752,19 @@ struct vty *vty_stdio(void (*atclose)(int isexit))
 }
 
 /* Accept connection from the network. */
-static int vty_accept(struct thread *thread)
+static void vty_accept(struct thread *thread)
 {
+	struct vty_serv *vtyserv = THREAD_ARG(thread);
 	int vty_sock;
 	union sockunion su;
 	int ret;
 	unsigned int on;
-	int accept_sock;
+	int accept_sock = vtyserv->sock;
 	struct prefix p;
 	struct access_list *acl = NULL;
-	char buf[SU_ADDRSTRLEN];
-
-	accept_sock = THREAD_FD(thread);
 
 	/* We continue hearing vty socket. */
-	vty_event(VTY_SERV, accept_sock, NULL);
+	vty_event_serv(VTY_SERV, vtyserv);
 
 	memset(&su, 0, sizeof(union sockunion));
 
@@ -1814,25 +1773,25 @@ static int vty_accept(struct thread *thread)
 	if (vty_sock < 0) {
 		flog_err(EC_LIB_SOCKET, "can't accept vty socket : %s",
 			 safe_strerror(errno));
-		return -1;
+		return;
 	}
 	set_nonblocking(vty_sock);
 	set_cloexec(vty_sock);
 
-	sockunion2hostprefix(&su, &p);
+	if (!sockunion2hostprefix(&su, &p)) {
+		close(vty_sock);
+		zlog_info("Vty unable to convert prefix from sockunion %pSU",
+			  &su);
+		return;
+	}
 
 	/* VTY's accesslist apply. */
 	if (p.family == AF_INET && vty_accesslist_name) {
 		if ((acl = access_list_lookup(AFI_IP, vty_accesslist_name))
 		    && (access_list_apply(acl, &p) == FILTER_DENY)) {
-			zlog_info("Vty connection refused from %s",
-				  sockunion2str(&su, buf, SU_ADDRSTRLEN));
+			zlog_info("Vty connection refused from %pSU", &su);
 			close(vty_sock);
-
-			/* continue accepting connections */
-			vty_event(VTY_SERV, accept_sock, NULL);
-
-			return 0;
+			return;
 		}
 	}
 
@@ -1841,14 +1800,9 @@ static int vty_accept(struct thread *thread)
 		if ((acl = access_list_lookup(AFI_IP6,
 					      vty_ipv6_accesslist_name))
 		    && (access_list_apply(acl, &p) == FILTER_DENY)) {
-			zlog_info("Vty connection refused from %s",
-				  sockunion2str(&su, buf, SU_ADDRSTRLEN));
+			zlog_info("Vty connection refused from %pSU", &su);
 			close(vty_sock);
-
-			/* continue accepting connections */
-			vty_event(VTY_SERV, accept_sock, NULL);
-
-			return 0;
+			return;
 		}
 	}
 
@@ -1859,12 +1813,9 @@ static int vty_accept(struct thread *thread)
 		zlog_info("can't set sockopt to vty_sock : %s",
 			  safe_strerror(errno));
 
-	zlog_info("Vty connection from %s",
-		  sockunion2str(&su, buf, SU_ADDRSTRLEN));
+	zlog_info("Vty connection from %pSU", &su);
 
 	vty_create(vty_sock, &su);
-
-	return 0;
 }
 
 static void vty_serv_sock_addrinfo(const char *hostname, unsigned short port)
@@ -1876,7 +1827,7 @@ static void vty_serv_sock_addrinfo(const char *hostname, unsigned short port)
 	int sock;
 	char port_str[BUFSIZ];
 
-	memset(&req, 0, sizeof(struct addrinfo));
+	memset(&req, 0, sizeof(req));
 	req.ai_flags = AI_PASSIVE;
 	req.ai_family = AF_UNSPEC;
 	req.ai_socktype = SOCK_STREAM;
@@ -1894,6 +1845,8 @@ static void vty_serv_sock_addrinfo(const char *hostname, unsigned short port)
 	ainfo_save = ainfo;
 
 	do {
+		struct vty_serv *vtyserv;
+
 		if (ainfo->ai_family != AF_INET && ainfo->ai_family != AF_INET6)
 			continue;
 
@@ -1919,7 +1872,11 @@ static void vty_serv_sock_addrinfo(const char *hostname, unsigned short port)
 			continue;
 		}
 
-		vty_event(VTY_SERV, sock, NULL);
+		vtyserv = XCALLOC(MTYPE_VTY_SERV, sizeof(*vtyserv));
+		vtyserv->sock = sock;
+		vtyservs_add_tail(vty_servs, vtyserv);
+
+		vty_event_serv(VTY_SERV, vtyserv);
 	} while ((ainfo = ainfo->ai_next) != NULL);
 
 	freeaddrinfo(ainfo_save);
@@ -1932,6 +1889,7 @@ static void vty_serv_sock_addrinfo(const char *hostname, unsigned short port)
 /* VTY shell UNIX domain socket. */
 static void vty_serv_un(const char *path)
 {
+	struct vty_serv *vtyserv;
 	int ret;
 	int sock, len;
 	struct sockaddr_un serv;
@@ -1954,7 +1912,7 @@ static void vty_serv_un(const char *path)
 	}
 
 	/* Make server socket. */
-	memset(&serv, 0, sizeof(struct sockaddr_un));
+	memset(&serv, 0, sizeof(serv));
 	serv.sun_family = AF_UNIX;
 	strlcpy(serv.sun_path, path, sizeof(serv.sun_path));
 #ifdef HAVE_STRUCT_SOCKADDR_UN_SUN_LEN
@@ -1997,24 +1955,28 @@ static void vty_serv_un(const char *path)
 		}
 	}
 
-	vty_event(VTYSH_SERV, sock, NULL);
+	vtyserv = XCALLOC(MTYPE_VTY_SERV, sizeof(*vtyserv));
+	vtyserv->sock = sock;
+	vtyserv->vtysh = true;
+	vtyservs_add_tail(vty_servs, vtyserv);
+
+	vty_event_serv(VTYSH_SERV, vtyserv);
 }
 
 /* #define VTYSH_DEBUG 1 */
 
-static int vtysh_accept(struct thread *thread)
+static void vtysh_accept(struct thread *thread)
 {
-	int accept_sock;
+	struct vty_serv *vtyserv = THREAD_ARG(thread);
+	int accept_sock = vtyserv->sock;
 	int sock;
 	int client_len;
 	struct sockaddr_un client;
 	struct vty *vty;
 
-	accept_sock = THREAD_FD(thread);
+	vty_event_serv(VTYSH_SERV, vtyserv);
 
-	vty_event(VTYSH_SERV, accept_sock, NULL);
-
-	memset(&client, 0, sizeof(struct sockaddr_un));
+	memset(&client, 0, sizeof(client));
 	client_len = sizeof(struct sockaddr_un);
 
 	sock = accept(accept_sock, (struct sockaddr *)&client,
@@ -2023,7 +1985,7 @@ static int vtysh_accept(struct thread *thread)
 	if (sock < 0) {
 		flog_err(EC_LIB_SOCKET, "can't accept vty socket : %s",
 			 safe_strerror(errno));
-		return -1;
+		return;
 	}
 
 	if (set_nonblocking(sock) < 0) {
@@ -2032,7 +1994,7 @@ static int vtysh_accept(struct thread *thread)
 			"vtysh_accept: could not set vty socket %d to non-blocking, %s, closing",
 			sock, safe_strerror(errno));
 		close(sock);
-		return -1;
+		return;
 	}
 	set_cloexec(sock);
 
@@ -2045,21 +2007,74 @@ static int vtysh_accept(struct thread *thread)
 	vty->wfd = sock;
 	vty->type = VTY_SHELL_SERV;
 	vty->node = VIEW_NODE;
+	vtys_add_tail(vtysh_sessions, vty);
 
-	vty_event(VTYSH_READ, sock, vty);
+	vty_event(VTYSH_READ, vty);
+}
 
-	return 0;
+static int vtysh_do_pass_fd(struct vty *vty)
+{
+	struct iovec iov[1] = {
+		{
+			.iov_base = vty->pass_fd_status,
+			.iov_len = sizeof(vty->pass_fd_status),
+		},
+	};
+	union {
+		uint8_t buf[CMSG_SPACE(sizeof(int))];
+		struct cmsghdr align;
+	} u;
+	struct msghdr mh = {
+		.msg_iov = iov,
+		.msg_iovlen = array_size(iov),
+		.msg_control = u.buf,
+		.msg_controllen = sizeof(u.buf),
+	};
+	struct cmsghdr *cmh = CMSG_FIRSTHDR(&mh);
+	ssize_t ret;
+
+	memset(&u.buf, 0, sizeof(u.buf));
+	cmh->cmsg_level = SOL_SOCKET;
+	cmh->cmsg_type = SCM_RIGHTS;
+	cmh->cmsg_len = CMSG_LEN(sizeof(int));
+	memcpy(CMSG_DATA(cmh), &vty->pass_fd, sizeof(int));
+
+	ret = sendmsg(vty->wfd, &mh, 0);
+	if (ret < 0 && ERRNO_IO_RETRY(errno))
+		return BUFFER_PENDING;
+
+	close(vty->pass_fd);
+	vty->pass_fd = -1;
+	vty->status = VTY_NORMAL;
+
+	if (ret <= 0)
+		return BUFFER_ERROR;
+
+	/* resume accepting commands (suspended in vtysh_read) */
+	vty_event(VTYSH_READ, vty);
+
+	if ((size_t)ret < sizeof(vty->pass_fd_status)) {
+		size_t remains = sizeof(vty->pass_fd_status) - ret;
+
+		buffer_put(vty->obuf, vty->pass_fd_status + ret, remains);
+		return BUFFER_PENDING;
+	}
+	return BUFFER_EMPTY;
 }
 
 static int vtysh_flush(struct vty *vty)
 {
-	switch (buffer_flush_available(vty->obuf, vty->wfd)) {
+	int ret;
+
+	ret = buffer_flush_available(vty->obuf, vty->wfd);
+	if (ret == BUFFER_EMPTY && vty->status == VTY_PASSFD)
+		ret = vtysh_do_pass_fd(vty);
+
+	switch (ret) {
 	case BUFFER_PENDING:
-		vty_event(VTYSH_WRITE, vty->wfd, vty);
+		vty_event(VTYSH_WRITE, vty);
 		break;
 	case BUFFER_ERROR:
-		vty->monitor =
-			0; /* disable monitoring to avoid infinite recursion */
 		flog_err(EC_LIB_SOCKET, "%s: write error to fd %d, closing",
 			 __func__, vty->fd);
 		buffer_reset(vty->lbuf);
@@ -2072,7 +2087,15 @@ static int vtysh_flush(struct vty *vty)
 	return 0;
 }
 
-static int vtysh_read(struct thread *thread)
+void vty_pass_fd(struct vty *vty, int fd)
+{
+	if (vty->pass_fd != -1)
+		close(vty->pass_fd);
+
+	vty->pass_fd = fd;
+}
+
+static void vtysh_read(struct thread *thread)
 {
 	int ret;
 	int sock;
@@ -2088,11 +2111,9 @@ static int vtysh_read(struct thread *thread)
 	if ((nbytes = read(sock, buf, VTY_READ_BUFSIZ)) <= 0) {
 		if (nbytes < 0) {
 			if (ERRNO_IO_RETRY(errno)) {
-				vty_event(VTYSH_READ, sock, vty);
-				return 0;
+				vty_event(VTYSH_READ, vty);
+				return;
 			}
-			vty->monitor = 0; /* disable monitoring to avoid
-					     infinite recursion */
 			flog_err(
 				EC_LIB_SOCKET,
 				"%s: read failed on vtysh client fd %d, closing: %s",
@@ -2104,7 +2125,7 @@ static int vtysh_read(struct thread *thread)
 #ifdef VTYSH_DEBUG
 		printf("close vtysh\n");
 #endif /* VTYSH_DEBUG */
-		return 0;
+		return;
 	}
 
 #ifdef VTYSH_DEBUG
@@ -2131,6 +2152,26 @@ static int vtysh_read(struct thread *thread)
 				printf("vtysh node: %d\n", vty->node);
 #endif /* VTYSH_DEBUG */
 
+				if (vty->pass_fd != -1) {
+					memset(vty->pass_fd_status, 0, 4);
+					vty->pass_fd_status[3] = ret;
+					vty->status = VTY_PASSFD;
+
+					if (!vty->t_write)
+						vty_event(VTYSH_WRITE, vty);
+
+					/* this introduces a "sequence point"
+					 * command output is written normally,
+					 * read processing is suspended until
+					 * buffer is empty
+					 * then retcode + FD is written
+					 * then normal processing resumes
+					 *
+					 * => skip vty_event(VTYSH_READ, vty)!
+					 */
+					return;
+				}
+
 				/* hack for asynchronous "write integrated"
 				 * - other commands in "buf" will be ditched
 				 * - input during pending config-write is
@@ -2146,7 +2187,7 @@ static int vtysh_read(struct thread *thread)
 				if (!vty->t_write && (vtysh_flush(vty) < 0))
 					/* Try to flush results; exit if a write
 					 * error occurs. */
-					return 0;
+					return;
 			}
 		}
 	}
@@ -2154,17 +2195,14 @@ static int vtysh_read(struct thread *thread)
 	if (vty->status == VTY_CLOSE)
 		vty_close(vty);
 	else
-		vty_event(VTYSH_READ, sock, vty);
-
-	return 0;
+		vty_event(VTYSH_READ, vty);
 }
 
-static int vtysh_write(struct thread *thread)
+static void vtysh_write(struct thread *thread)
 {
 	struct vty *vty = THREAD_ARG(thread);
 
 	vtysh_flush(vty);
-	return 0;
 }
 
 #endif /* VTYSH */
@@ -2205,6 +2243,12 @@ void vty_close(struct vty *vty)
 	THREAD_OFF(vty->t_write);
 	THREAD_OFF(vty->t_timeout);
 
+	if (vty->pass_fd != -1) {
+		close(vty->pass_fd);
+		vty->pass_fd = -1;
+	}
+	zlog_live_close(&vty->live_log);
+
 	/* Flush buffer. */
 	buffer_flush_all(vty->obuf, vty->wfd);
 
@@ -2218,8 +2262,12 @@ void vty_close(struct vty *vty)
 	}
 
 	/* Unset vector. */
-	if (vty->fd != -1)
-		vector_unset(vtyvec, vty->fd);
+	if (vty->fd != -1) {
+		if (vty->type == VTY_SHELL_SERV)
+			vtys_del(vtysh_sessions, vty);
+		else
+			vtys_del(vty_sessions, vty);
+	}
 
 	if (vty->wfd > 0 && vty->type == VTY_FILE)
 		fsync(vty->wfd);
@@ -2251,7 +2299,7 @@ void vty_close(struct vty *vty)
 }
 
 /* When time out occur output message then close connection. */
-static int vty_timeout(struct thread *thread)
+static void vty_timeout(struct thread *thread)
 {
 	struct vty *vty;
 
@@ -2266,8 +2314,6 @@ static int vty_timeout(struct thread *thread)
 	/* Close connection. */
 	vty->status = VTY_CLOSE;
 	vty_close(vty);
-
-	return 0;
 }
 
 /* Read up configuration file from file_name. */
@@ -2281,7 +2327,7 @@ static void vty_read_file(struct nb_config *config, FILE *confp)
 
 	vty = vty_new();
 	/* vty_close won't close stderr;  if some config command prints
-	 * something it'll end up there.  (not ideal; it'd be beter if output
+	 * something it'll end up there.  (not ideal; it'd be better if output
 	 * from a file-load went to logging instead.  Also note that if this
 	 * function is called after daemonizing, stderr will be /dev/null.)
 	 *
@@ -2337,7 +2383,7 @@ static void vty_read_file(struct nb_config *config, FILE *confp)
 			nl = strchr(ve->error_buf, '\n');
 			if (nl)
 				*nl = '\0';
-			flog_err(EC_LIB_VTY, "ERROR: %s on config line %u: %s",
+			flog_err(EC_LIB_VTY, "%s on config line %u: %s",
 				 message, ve->line_num, ve->error_buf);
 		}
 	}
@@ -2439,9 +2485,9 @@ bool vty_read_config(struct nb_config *config, const char *config_file,
 					__func__, errno);
 				goto tmp_free_and_out;
 			}
-			tmp = XMALLOC(MTYPE_TMP,
-				      strlen(cwd) + strlen(config_file) + 2);
-			sprintf(tmp, "%s/%s", cwd, config_file);
+			size_t tmp_len = strlen(cwd) + strlen(config_file) + 2;
+			tmp = XMALLOC(MTYPE_TMP, tmp_len);
+			snprintf(tmp, tmp_len, "%s/%s", cwd, config_file);
 			fullpath = tmp;
 		} else
 			fullpath = config_file;
@@ -2456,9 +2502,8 @@ bool vty_read_config(struct nb_config *config, const char *config_file,
 
 			confp = vty_use_backup_config(fullpath);
 			if (confp)
-				flog_warn(
-					EC_LIB_BACKUP_CONFIG,
-					"WARNING: using backup configuration file!");
+				flog_warn(EC_LIB_BACKUP_CONFIG,
+					  "using backup configuration file!");
 			else {
 				flog_err(
 					EC_LIB_VTY,
@@ -2507,9 +2552,8 @@ bool vty_read_config(struct nb_config *config, const char *config_file,
 
 			confp = vty_use_backup_config(config_default_dir);
 			if (confp) {
-				flog_warn(
-					EC_LIB_BACKUP_CONFIG,
-					"WARNING: using backup configuration file!");
+				flog_warn(EC_LIB_BACKUP_CONFIG,
+					  "using backup configuration file!");
 				fullpath = config_default_dir;
 			} else {
 				flog_err(EC_LIB_VTY,
@@ -2534,50 +2578,29 @@ tmp_free_and_out:
 	return read_success;
 }
 
-/* Small utility function which output log to the VTY. */
-void vty_log(const char *level, const char *proto_str, const char *msg,
-	     struct timestamp_control *ctl)
+static void update_xpath(struct vty *vty, const char *oldpath,
+			 const char *newpath)
 {
-	unsigned int i;
-	struct vty *vty;
+	int i;
 
-	if (!vtyvec)
-		return;
+	for (i = 0; i < vty->xpath_index; i++) {
+		if (!frrstr_startswith(vty->xpath[i], oldpath))
+			break;
 
-	for (i = 0; i < vector_active(vtyvec); i++)
-		if ((vty = vector_slot(vtyvec, i)) != NULL)
-			if (vty->monitor)
-				vty_log_out(vty, level, proto_str, msg, ctl);
+		char *tmp = frrstr_replace(vty->xpath[i], oldpath, newpath);
+		strlcpy(vty->xpath[i], tmp, sizeof(vty->xpath[0]));
+		XFREE(MTYPE_TMP, tmp);
+	}
 }
 
-/* Async-signal-safe version of vty_log for fixed strings. */
-void vty_log_fixed(char *buf, size_t len)
+void vty_update_xpath(const char *oldpath, const char *newpath)
 {
-	unsigned int i;
-	struct iovec iov[2];
-	char crlf[4] = "\r\n";
+	struct vty *vty;
 
-	/* vty may not have been initialised */
-	if (!vtyvec)
-		return;
-
-	iov[0].iov_base = buf;
-	iov[0].iov_len = len;
-	iov[1].iov_base = crlf;
-	iov[1].iov_len = 2;
-
-	for (i = 0; i < vector_active(vtyvec); i++) {
-		struct vty *vty;
-		if (((vty = vector_slot(vtyvec, i)) != NULL) && vty->monitor)
-			/* N.B. We don't care about the return code, since
-			   process is
-			   most likely just about to die anyway. */
-			if (writev(vty->wfd, iov, 2) == -1) {
-				fprintf(stderr, "Failure to writev: %d\n",
-					errno);
-				exit(-1);
-			}
-	}
+	frr_each (vtys, vtysh_sessions, vty)
+		update_xpath(vty, oldpath, newpath);
+	frr_each (vtys, vty_sessions, vty)
+		update_xpath(vty, oldpath, newpath);
 }
 
 int vty_config_enter(struct vty *vty, bool private_config, bool exclusive)
@@ -2631,13 +2654,13 @@ int vty_config_node_exit(struct vty *vty)
 {
 	vty->xpath_index = 0;
 
-	/* Perform pending commit if any. */
-	nb_cli_pending_commit_check(vty);
+	/* Perform any pending commits. */
+	(void)nb_cli_pending_commit_check(vty);
 
 	/* Check if there's a pending confirmed commit. */
 	if (vty->t_confirmed_commit_timeout) {
 		vty_out(vty,
-			"WARNING: exiting with a pending confirmed commit. Rolling back to previous configuration.\n\n");
+			"exiting with a pending confirmed commit. Rolling back to previous configuration.\n\n");
 		nb_cli_confirmed_commit_rollback(vty);
 		nb_cli_confirmed_commit_clean(vty);
 	}
@@ -2661,33 +2684,40 @@ int vty_config_node_exit(struct vty *vty)
 /* Master of the threads. */
 static struct thread_master *vty_master;
 
-static void vty_event(enum event event, int sock, struct vty *vty)
+static void vty_event_serv(enum vty_event event, struct vty_serv *vty_serv)
 {
-	struct thread *vty_serv_thread = NULL;
-
 	switch (event) {
 	case VTY_SERV:
-		vty_serv_thread = thread_add_read(vty_master, vty_accept, vty,
-						  sock, NULL);
-		vector_set_index(Vvty_serv_thread, sock, vty_serv_thread);
+		thread_add_read(vty_master, vty_accept, vty_serv,
+				vty_serv->sock, &vty_serv->t_accept);
 		break;
 #ifdef VTYSH
 	case VTYSH_SERV:
-		vty_serv_thread = thread_add_read(vty_master, vtysh_accept, vty,
-						  sock, NULL);
-		vector_set_index(Vvty_serv_thread, sock, vty_serv_thread);
+		thread_add_read(vty_master, vtysh_accept, vty_serv,
+				vty_serv->sock, &vty_serv->t_accept);
 		break;
+#endif /* VTYSH */
+	default:
+		assert(!"vty_event_serv() called incorrectly");
+	}
+}
+
+static void vty_event(enum vty_event event, struct vty *vty)
+{
+	switch (event) {
+#ifdef VTYSH
 	case VTYSH_READ:
-		thread_add_read(vty_master, vtysh_read, vty, sock,
+		thread_add_read(vty_master, vtysh_read, vty, vty->fd,
 				&vty->t_read);
 		break;
 	case VTYSH_WRITE:
-		thread_add_write(vty_master, vtysh_write, vty, sock,
+		thread_add_write(vty_master, vtysh_write, vty, vty->wfd,
 				 &vty->t_write);
 		break;
 #endif /* VTYSH */
 	case VTY_READ:
-		thread_add_read(vty_master, vty_read, vty, sock, &vty->t_read);
+		thread_add_read(vty_master, vty_read, vty, vty->fd,
+				&vty->t_read);
 
 		/* Time out treatment. */
 		if (vty->v_timeout) {
@@ -2697,7 +2727,7 @@ static void vty_event(enum event event, int sock, struct vty *vty)
 		}
 		break;
 	case VTY_WRITE:
-		thread_add_write(vty_master, vty_flush, vty, sock,
+		thread_add_write(vty_master, vty_flush, vty, vty->wfd,
 				 &vty->t_write);
 		break;
 	case VTY_TIMEOUT_RESET:
@@ -2706,6 +2736,8 @@ static void vty_event(enum event event, int sock, struct vty *vty)
 			thread_add_timer(vty_master, vty_timeout, vty,
 					 vty->v_timeout, &vty->t_timeout);
 		break;
+	default:
+		assert(!"vty_event() called incorrectly");
 	}
 }
 
@@ -2714,13 +2746,12 @@ DEFUN_NOSH (config_who,
        "who",
        "Display who is on vty\n")
 {
-	unsigned int i;
 	struct vty *v;
 
-	for (i = 0; i < vector_active(vtyvec); i++)
-		if ((v = vector_slot(vtyvec, i)) != NULL)
-			vty_out(vty, "%svty[%d] connected from %s.\n",
-				v->config ? "*" : " ", i, v->address);
+	frr_each (vtys, vty_sessions, v)
+		vty_out(vty, "%svty[%d] connected from %s%s.\n",
+			v->config ? "*" : " ", v->fd, v->address,
+			zlog_live_is_null(&v->live_log) ? "" : ", live log");
 	return CMD_SUCCESS;
 }
 
@@ -2752,7 +2783,7 @@ static int exec_timeout(struct vty *vty, const char *min_str,
 
 	vty_timeout_val = timeout;
 	vty->v_timeout = timeout;
-	vty_event(VTY_TIMEOUT_RESET, 0, vty);
+	vty_event(VTY_TIMEOUT_RESET, vty);
 
 
 	return CMD_SUCCESS;
@@ -2913,35 +2944,56 @@ DEFUN (no_service_advanced_vty,
 	return CMD_SUCCESS;
 }
 
-DEFUN_NOSH (terminal_monitor,
-       terminal_monitor_cmd,
-       "terminal monitor",
-       "Set terminal line parameters\n"
-       "Copy debug output to the current terminal line\n")
+DEFUN_NOSH(terminal_monitor,
+	   terminal_monitor_cmd,
+	   "terminal monitor [detach]",
+	   "Set terminal line parameters\n"
+	   "Copy debug output to the current terminal line\n"
+	   "Keep logging feed open independent of VTY session\n")
 {
-	vty->monitor = 1;
+	int fd_ret = -1;
+
+	if (vty->type != VTY_SHELL_SERV) {
+		vty_out(vty, "%% not supported\n");
+		return CMD_WARNING;
+	}
+
+	if (argc == 3) {
+		struct zlog_live_cfg detach_log = {};
+
+		zlog_live_open(&detach_log, LOG_DEBUG, &fd_ret);
+		zlog_live_disown(&detach_log);
+	} else
+		zlog_live_open(&vty->live_log, LOG_DEBUG, &fd_ret);
+
+	if (fd_ret == -1) {
+		vty_out(vty, "%% error opening live log: %m\n");
+		return CMD_WARNING;
+	}
+
+	vty_pass_fd(vty, fd_ret);
 	return CMD_SUCCESS;
 }
 
-DEFUN_NOSH (terminal_no_monitor,
-       terminal_no_monitor_cmd,
-       "terminal no monitor",
-       "Set terminal line parameters\n"
-       NO_STR
-       "Copy debug output to the current terminal line\n")
+DEFUN_NOSH(no_terminal_monitor,
+	   no_terminal_monitor_cmd,
+	   "no terminal monitor",
+	   NO_STR
+	   "Set terminal line parameters\n"
+	   "Copy debug output to the current terminal line\n")
 {
-	vty->monitor = 0;
+	zlog_live_close(&vty->live_log);
 	return CMD_SUCCESS;
 }
 
-DEFUN_NOSH (no_terminal_monitor,
-       no_terminal_monitor_cmd,
-       "no terminal monitor",
-       NO_STR
-       "Set terminal line parameters\n"
-       "Copy debug output to the current terminal line\n")
+DEFUN_NOSH(terminal_no_monitor,
+	   terminal_no_monitor_cmd,
+	   "terminal no monitor",
+	   "Set terminal line parameters\n"
+	   NO_STR
+	   "Copy debug output to the current terminal line\n")
 {
-	return terminal_no_monitor(self, vty, argc, argv);
+	return no_terminal_monitor(self, vty, argc, argv);
 }
 
 
@@ -2993,7 +3045,7 @@ DEFPY (log_commands,
 /* Display current configuration. */
 static int vty_config_write(struct vty *vty)
 {
-	vty_out(vty, "line vty\n");
+	vty_frame(vty, "line vty\n");
 
 	if (vty_accesslist_name)
 		vty_out(vty, " access-class %s\n", vty_accesslist_name);
@@ -3010,6 +3062,8 @@ static int vty_config_write(struct vty *vty)
 	/* login */
 	if (no_password_check)
 		vty_out(vty, " no login\n");
+
+	vty_endframe(vty, "exit\n");
 
 	if (do_log_commands)
 		vty_out(vty, "log commands\n");
@@ -3031,25 +3085,14 @@ struct cmd_node vty_node = {
 /* Reset all VTY status. */
 void vty_reset(void)
 {
-	unsigned int i;
 	struct vty *vty;
-	struct thread *vty_serv_thread;
 
-	for (i = 0; i < vector_active(vtyvec); i++)
-		if ((vty = vector_slot(vtyvec, i)) != NULL) {
-			buffer_reset(vty->lbuf);
-			buffer_reset(vty->obuf);
-			vty->status = VTY_CLOSE;
-			vty_close(vty);
-		}
-
-	for (i = 0; i < vector_active(Vvty_serv_thread); i++)
-		if ((vty_serv_thread = vector_slot(Vvty_serv_thread, i))
-		    != NULL) {
-			THREAD_OFF(vty_serv_thread);
-			vector_slot(Vvty_serv_thread, i) = NULL;
-			close(i);
-		}
+	frr_each_safe (vtys, vty_sessions, vty) {
+		buffer_reset(vty->lbuf);
+		buffer_reset(vty->obuf);
+		vty->status = VTY_CLOSE;
+		vty_close(vty);
+	}
 
 	vty_timeout_val = VTY_TIMEOUT_DEFAULT;
 
@@ -3069,7 +3112,7 @@ static void vty_save_cwd(void)
 		 * the whole world is coming down around us
 		 * Hence not worrying about it too much.
 		 */
-		if (!chdir(SYSCONFDIR)) {
+		if (chdir(SYSCONFDIR)) {
 			flog_err_sys(EC_LIB_SYSTEM_CALL,
 				     "Failure to chdir to %s, errno: %d",
 				     SYSCONFDIR, errno);
@@ -3100,7 +3143,7 @@ int vty_shell_serv(struct vty *vty)
 
 void vty_init_vtysh(void)
 {
-	vtyvec = vector_init(VECTOR_MIN_SIZE);
+	/* currently nothing to do, but likely to have future use */
 }
 
 /* Install vty's own commands like `who' command. */
@@ -3109,14 +3152,9 @@ void vty_init(struct thread_master *master_thread, bool do_command_logging)
 	/* For further configuration read, preserve current directory. */
 	vty_save_cwd();
 
-	vtyvec = vector_init(VECTOR_MIN_SIZE);
-
 	vty_master = master_thread;
 
 	atexit(vty_stdio_atexit);
-
-	/* Initilize server thread vector. */
-	Vvty_serv_thread = vector_init(VECTOR_MIN_SIZE);
 
 	/* Install bgp top node. */
 	install_node(&vty_node);
@@ -3152,13 +3190,34 @@ void vty_init(struct thread_master *master_thread, bool do_command_logging)
 
 void vty_terminate(void)
 {
+	struct vty *vty;
+	struct vty_serv *vtyserv;
+
 	memset(vty_cwd, 0x00, sizeof(vty_cwd));
 
-	if (vtyvec && Vvty_serv_thread) {
-		vty_reset();
-		vector_free(vtyvec);
-		vector_free(Vvty_serv_thread);
-		vtyvec = NULL;
-		Vvty_serv_thread = NULL;
+	vty_reset();
+
+	/* default state of vty_sessions is initialized & empty. */
+	vtys_fini(vty_sessions);
+	vtys_init(vty_sessions);
+
+	/* vty_reset() doesn't close vtysh sessions */
+	frr_each_safe (vtys, vtysh_sessions, vty) {
+		buffer_reset(vty->lbuf);
+		buffer_reset(vty->obuf);
+		vty->status = VTY_CLOSE;
+		vty_close(vty);
 	}
+
+	vtys_fini(vtysh_sessions);
+	vtys_init(vtysh_sessions);
+
+	while ((vtyserv = vtyservs_pop(vty_servs))) {
+		THREAD_OFF(vtyserv->t_accept);
+		close(vtyserv->sock);
+		XFREE(MTYPE_VTY_SERV, vtyserv);
+	}
+
+	vtyservs_fini(vty_servs);
+	vtyservs_init(vty_servs);
 }

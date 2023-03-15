@@ -38,9 +38,9 @@
 #include "zebra/zserv.h"
 #include "zebra/debug.h"
 #include "zebra/interface.h"
-#include "zebra/zebra_memory.h"
 #include "zebra/zebra_vrf.h"
 #include "zebra/rt_netlink.h"
+#include "zebra/interface.h"
 #include "zebra/zebra_l2.h"
 #include "zebra/zebra_vxlan.h"
 #include "zebra/zebra_evpn_mh.h"
@@ -50,14 +50,15 @@
 /* static function declarations */
 
 /* Private functions */
-static void map_slaves_to_bridge(struct interface *br_if, int link)
+static void map_slaves_to_bridge(struct interface *br_if, int link,
+				 bool update_slave, uint8_t chgflags)
 {
 	struct vrf *vrf;
 	struct interface *ifp;
 	struct zebra_vrf *zvrf;
 	struct zebra_ns *zns;
 
-	zvrf = zebra_vrf_lookup_by_id(br_if->vrf_id);
+	zvrf = br_if->vrf->info;
 	assert(zvrf);
 	zns = zvrf->zns;
 	assert(zns);
@@ -79,9 +80,17 @@ static void map_slaves_to_bridge(struct interface *br_if, int link)
 			br_slave = &zif->brslave_info;
 
 			if (link) {
-				if (br_slave->bridge_ifindex == br_if->ifindex &&
-				    br_slave->ns_id == zns->ns_id)
+				if (br_slave->bridge_ifindex == br_if->ifindex
+				    && br_slave->ns_id == zns->ns_id) {
 					br_slave->br_if = br_if;
+					if (update_slave) {
+						zebra_l2if_update_bridge_slave(
+							ifp,
+							br_slave->bridge_ifindex,
+							br_slave->ns_id,
+							chgflags);
+					}
+				}
 			} else {
 				if (br_slave->br_if == br_if)
 					br_slave->br_if = NULL;
@@ -109,24 +118,139 @@ void zebra_l2_unmap_slave_from_bridge(struct zebra_l2info_brslave *br_slave)
 	br_slave->br_if = NULL;
 }
 
-void zebra_l2_map_slave_to_bond(struct zebra_l2info_bondslave *bond_slave,
-				vrf_id_t vrf_id)
+/* If any of the bond members are in bypass state the bond is placed
+ * in bypass state
+ */
+static void zebra_l2_bond_lacp_bypass_eval(struct zebra_if *bond_zif)
 {
-	struct interface *bond_if;
+	struct listnode *node;
+	struct zebra_if *bond_mbr;
+	bool old_bypass = !!(bond_zif->flags & ZIF_FLAG_LACP_BYPASS);
+	bool new_bypass = false;
 
-	/* TODO: Handle change of master */
-	bond_if = if_lookup_by_index_all_vrf(bond_slave->bond_ifindex);
-	if (bond_if)
-		bond_slave->bond_if = bond_if;
+	if (bond_zif->bond_info.mbr_zifs) {
+		for (ALL_LIST_ELEMENTS_RO(bond_zif->bond_info.mbr_zifs, node,
+					  bond_mbr)) {
+			if (bond_mbr->flags & ZIF_FLAG_LACP_BYPASS) {
+				new_bypass = true;
+				break;
+			}
+		}
+	}
+
+	if (old_bypass == new_bypass)
+		return;
+
+	if (IS_ZEBRA_DEBUG_EVPN_MH_ES || IS_ZEBRA_DEBUG_EVENT)
+		zlog_debug("bond %s lacp bypass changed to %s",
+			   bond_zif->ifp->name, new_bypass ? "on" : "off");
+
+	if (new_bypass)
+		bond_zif->flags |= ZIF_FLAG_LACP_BYPASS;
 	else
-		bond_slave->bond_if = if_create_ifindex(bond_slave->bond_ifindex,
-							vrf_id);
+		bond_zif->flags &= ~ZIF_FLAG_LACP_BYPASS;
+
+	if (bond_zif->es_info.es)
+		zebra_evpn_es_bypass_update(bond_zif->es_info.es, bond_zif->ifp,
+					    new_bypass);
 }
 
-void zebra_l2_unmap_slave_from_bond(struct zebra_l2info_bondslave *bond_slave)
+/* Returns true if member was newly linked to bond */
+void zebra_l2_map_slave_to_bond(struct zebra_if *zif, vrf_id_t vrf_id)
 {
-	if (bond_slave != NULL)
-		bond_slave->bond_if = NULL;
+	struct interface *bond_if;
+	struct zebra_if *bond_zif;
+	struct zebra_l2info_bondslave *bond_slave = &zif->bondslave_info;
+
+	bond_if = if_lookup_by_index(bond_slave->bond_ifindex, vrf_id);
+	if (bond_if == bond_slave->bond_if)
+		return;
+
+	/* unlink the slave from the old master */
+	zebra_l2_unmap_slave_from_bond(zif);
+
+	/* If the bond is present and ready link the bond-member
+	 * to it
+	 */
+	if (bond_if && (bond_zif = bond_if->info)) {
+		if (bond_zif->bond_info.mbr_zifs) {
+			if (IS_ZEBRA_DEBUG_EVPN_MH_ES || IS_ZEBRA_DEBUG_EVENT)
+				zlog_debug("bond mbr %s linked to %s",
+					   zif->ifp->name, bond_if->name);
+			bond_slave->bond_if = bond_if;
+			/* link the slave to the new bond master */
+			listnode_add(bond_zif->bond_info.mbr_zifs, zif);
+			/* inherit protodown flags from the es-bond */
+			if (zebra_evpn_is_es_bond(bond_if))
+				zebra_evpn_mh_update_protodown_bond_mbr(
+					zif, false /*clear*/, __func__);
+			zebra_l2_bond_lacp_bypass_eval(bond_zif);
+		}
+	} else {
+		if (IS_ZEBRA_DEBUG_EVPN_MH_ES || IS_ZEBRA_DEBUG_EVENT)
+			zlog_debug("bond mbr %s link to bond skipped",
+				   zif->ifp->name);
+	}
+}
+
+void zebra_l2_unmap_slave_from_bond(struct zebra_if *zif)
+{
+	struct zebra_l2info_bondslave *bond_slave = &zif->bondslave_info;
+	struct zebra_if *bond_zif;
+
+	if (!bond_slave->bond_if) {
+		if (IS_ZEBRA_DEBUG_EVPN_MH_ES || IS_ZEBRA_DEBUG_EVENT)
+			zlog_debug("bond mbr %s unlink from bond skipped",
+				   zif->ifp->name);
+		return;
+	}
+
+	if (IS_ZEBRA_DEBUG_EVPN_MH_ES || IS_ZEBRA_DEBUG_EVENT)
+		zlog_debug("bond mbr %s un-linked from %s", zif->ifp->name,
+			   bond_slave->bond_if->name);
+
+	/* unlink the slave from the bond master */
+	bond_zif = bond_slave->bond_if->info;
+	/* clear protodown flags */
+	if (zebra_evpn_is_es_bond(bond_zif->ifp))
+		zebra_evpn_mh_update_protodown_bond_mbr(zif, true /*clear*/,
+							__func__);
+	listnode_delete(bond_zif->bond_info.mbr_zifs, zif);
+	bond_slave->bond_if = NULL;
+	zebra_l2_bond_lacp_bypass_eval(bond_zif);
+}
+
+void zebra_l2if_update_bond(struct interface *ifp, bool add)
+{
+	struct zebra_if *zif;
+	struct zebra_l2info_bond *bond;
+
+	zif = ifp->info;
+	assert(zif);
+	bond = &zif->bond_info;
+
+	if (add) {
+		if (!bond->mbr_zifs) {
+			if (IS_ZEBRA_DEBUG_EVPN_MH_ES || IS_ZEBRA_DEBUG_EVENT)
+				zlog_debug("bond %s mbr list create",
+					   ifp->name);
+			bond->mbr_zifs = list_new();
+		}
+	} else {
+		struct listnode *node;
+		struct listnode *nnode;
+		struct zebra_if *bond_mbr;
+
+		if (!bond->mbr_zifs)
+			return;
+
+		if (IS_ZEBRA_DEBUG_EVPN_MH_ES || IS_ZEBRA_DEBUG_EVENT)
+			zlog_debug("bond %s mbr list delete", ifp->name);
+		for (ALL_LIST_ELEMENTS(bond->mbr_zifs, node, nnode, bond_mbr))
+			zebra_l2_unmap_slave_from_bond(bond_mbr);
+
+		list_delete(&bond->mbr_zifs);
+	}
 }
 
 /*
@@ -146,7 +270,7 @@ void zebra_l2_bridge_add_update(struct interface *ifp,
 	memcpy(&zif->l2info.br, bridge_info, sizeof(*bridge_info));
 
 	/* Link all slaves to this bridge */
-	map_slaves_to_bridge(ifp, 1);
+	map_slaves_to_bridge(ifp, 1, false, ZEBRA_BRIDGE_NO_ACTION);
 }
 
 /*
@@ -155,7 +279,14 @@ void zebra_l2_bridge_add_update(struct interface *ifp,
 void zebra_l2_bridge_del(struct interface *ifp)
 {
 	/* Unlink all slaves to this bridge */
-	map_slaves_to_bridge(ifp, 0);
+	map_slaves_to_bridge(ifp, 0, false, ZEBRA_BRIDGE_NO_ACTION);
+}
+
+void zebra_l2if_update_bridge(struct interface *ifp, uint8_t chgflags)
+{
+	if (!chgflags)
+		return;
+	map_slaves_to_bridge(ifp, 1, true, chgflags);
 }
 
 /*
@@ -172,6 +303,32 @@ void zebra_l2_vlanif_update(struct interface *ifp,
 
 	/* Copy over the L2 information. */
 	memcpy(&zif->l2info.vl, vlan_info, sizeof(*vlan_info));
+}
+
+/*
+ * Update L2 info for a GRE interface. This is called upon interface
+ * addition as well as update. Upon add/update, need to inform
+ * clients about GRE information.
+ */
+void zebra_l2_greif_add_update(struct interface *ifp,
+			       struct zebra_l2info_gre *gre_info, int add)
+{
+	struct zebra_if *zif;
+	struct in_addr old_vtep_ip;
+
+	zif = ifp->info;
+	assert(zif);
+
+	if (add) {
+		memcpy(&zif->l2info.gre, gre_info, sizeof(*gre_info));
+		return;
+	}
+
+	old_vtep_ip = zif->l2info.gre.vtep_ip;
+	if (IPV4_ADDR_SAME(&old_vtep_ip, &gre_info->vtep_ip))
+		return;
+
+	zif->l2info.gre.vtep_ip = gre_info->vtep_ip;
 }
 
 /*
@@ -257,8 +414,8 @@ void zebra_l2_vxlanif_del(struct interface *ifp)
  * from a bridge before it can be mapped to another bridge.
  */
 void zebra_l2if_update_bridge_slave(struct interface *ifp,
-				    ifindex_t bridge_ifindex,
-				    ns_id_t ns_id)
+				    ifindex_t bridge_ifindex, ns_id_t ns_id,
+				    uint8_t chgflags)
 {
 	struct zebra_if *zif;
 	ifindex_t old_bridge_ifindex;
@@ -268,10 +425,18 @@ void zebra_l2if_update_bridge_slave(struct interface *ifp,
 	zif = ifp->info;
 	assert(zif);
 
-	zvrf = zebra_vrf_lookup_by_id(ifp->vrf_id);
+	zvrf = ifp->vrf->info;
 	if (!zvrf)
 		return;
 
+	if (zif->zif_type == ZEBRA_IF_VXLAN
+	    && chgflags != ZEBRA_BRIDGE_NO_ACTION) {
+		if (chgflags & ZEBRA_BRIDGE_MASTER_MAC_CHANGE)
+			zebra_vxlan_if_update(ifp,
+					      ZEBRA_VXLIF_MASTER_MAC_CHANGE);
+		if (chgflags & ZEBRA_BRIDGE_MASTER_UP)
+			zebra_vxlan_if_update(ifp, ZEBRA_VXLIF_MASTER_CHANGE);
+	}
 	old_bridge_ifindex = zif->brslave_info.bridge_ifindex;
 	old_ns_id = zif->brslave_info.ns_id;
 	if (old_bridge_ifindex == bridge_ifindex &&
@@ -286,6 +451,8 @@ void zebra_l2if_update_bridge_slave(struct interface *ifp,
 		/* In the case of VxLAN, invoke the handler for EVPN. */
 		if (zif->zif_type == ZEBRA_IF_VXLAN)
 			zebra_vxlan_if_update(ifp, ZEBRA_VXLIF_MASTER_CHANGE);
+		if (zif->es_info.es)
+			zebra_evpn_es_local_br_port_update(zif);
 	} else if (old_bridge_ifindex != IFINDEX_INTERNAL) {
 		/*
 		 * In the case of VxLAN, invoke the handler for EVPN.
@@ -294,17 +461,41 @@ void zebra_l2if_update_bridge_slave(struct interface *ifp,
 		 */
 		if (zif->zif_type == ZEBRA_IF_VXLAN)
 			zebra_vxlan_if_update(ifp, ZEBRA_VXLIF_MASTER_CHANGE);
+		if (zif->es_info.es)
+			zebra_evpn_es_local_br_port_update(zif);
 		zebra_l2_unmap_slave_from_bridge(&zif->brslave_info);
 	}
 }
 
-void zebra_l2if_update_bond_slave(struct interface *ifp, ifindex_t bond_ifindex)
+void zebra_l2if_update_bond_slave(struct interface *ifp, ifindex_t bond_ifindex,
+				  bool new_bypass)
 {
 	struct zebra_if *zif;
 	ifindex_t old_bond_ifindex;
+	bool old_bypass;
+	struct zebra_l2info_bondslave *bond_mbr;
 
 	zif = ifp->info;
 	assert(zif);
+
+	old_bypass = !!(zif->flags & ZIF_FLAG_LACP_BYPASS);
+	if (old_bypass != new_bypass) {
+		if (IS_ZEBRA_DEBUG_EVPN_MH_ES || IS_ZEBRA_DEBUG_EVENT)
+			zlog_debug("bond-mbr %s lacp bypass changed to %s",
+				   zif->ifp->name, new_bypass ? "on" : "off");
+
+		if (new_bypass)
+			zif->flags |= ZIF_FLAG_LACP_BYPASS;
+		else
+			zif->flags &= ~ZIF_FLAG_LACP_BYPASS;
+
+		bond_mbr = &zif->bondslave_info;
+		if (bond_mbr->bond_if) {
+			struct zebra_if *bond_zif = bond_mbr->bond_if->info;
+
+			zebra_l2_bond_lacp_bypass_eval(bond_zif);
+		}
+	}
 
 	old_bond_ifindex = zif->bondslave_info.bond_ifindex;
 	if (old_bond_ifindex == bond_ifindex)
@@ -314,9 +505,9 @@ void zebra_l2if_update_bond_slave(struct interface *ifp, ifindex_t bond_ifindex)
 
 	/* Set up or remove link with master */
 	if (bond_ifindex != IFINDEX_INTERNAL)
-		zebra_l2_map_slave_to_bond(&zif->bondslave_info, ifp->vrf_id);
+		zebra_l2_map_slave_to_bond(zif, ifp->vrf->vrf_id);
 	else if (old_bond_ifindex != IFINDEX_INTERNAL)
-		zebra_l2_unmap_slave_from_bond(&zif->bondslave_info);
+		zebra_l2_unmap_slave_from_bond(zif);
 }
 
 void zebra_vlan_bitmap_compute(struct interface *ifp,

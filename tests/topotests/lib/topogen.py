@@ -38,30 +38,30 @@ Basic usage instructions:
 * After running stop Mininet with: tgen.stop_topology()
 """
 
-import os
-import sys
-import logging
+import grp
+import inspect
 import json
+import logging
+import os
+import platform
+import pwd
+import re
+import subprocess
+import sys
+from collections import OrderedDict
 
 if sys.version_info[0] > 2:
     import configparser
 else:
     import ConfigParser as configparser
 
-import glob
-import grp
-import platform
-import pwd
-import subprocess
-import pytest
-
-from mininet.net import Mininet
-from mininet.log import setLogLevel
-from mininet.cli import CLI
+import lib.topolog as topolog
+from lib.micronet import Commander
+from lib.micronet_compat import Mininet
+from lib.topolog import logger
+from lib.topotest import g_extra_config
 
 from lib import topotest
-from lib.topolog import logger, logger_config
-from lib.topotest import set_sysctl
 
 CWD = os.path.dirname(os.path.realpath(__file__))
 
@@ -88,6 +88,49 @@ def set_topogen(tgen):
     global_tgen = tgen
 
 
+def is_string(value):
+    """Return True if value is a string."""
+    try:
+        return isinstance(value, basestring)  # type: ignore
+    except NameError:
+        return isinstance(value, str)
+
+
+def get_exabgp_cmd(commander=None):
+    """Return the command to use for ExaBGP version < 4."""
+
+    if commander is None:
+        commander = Commander("topogen")
+
+    def exacmd_version_ok(exacmd):
+        logger.debug("checking %s for exabgp < version 4", exacmd)
+        _, stdout, _ = commander.cmd_status(exacmd + " -v", warn=False)
+        m = re.search(r"ExaBGP\s*:\s*((\d+)\.(\d+)(?:\.(\d+))?)", stdout)
+        if not m:
+            return False
+        version = m.group(1)
+        if topotest.version_cmp(version, "4") >= 0:
+            logging.debug("found exabgp version >= 4 in %s will keep looking", exacmd)
+            return False
+        logger.info("Using ExaBGP version %s in %s", version, exacmd)
+        return True
+
+    exacmd = commander.get_exec_path("exabgp")
+    if exacmd and exacmd_version_ok(exacmd):
+        return exacmd
+    py2_path = commander.get_exec_path("python2")
+    if py2_path:
+        exacmd = py2_path + " -m exabgp"
+        if exacmd_version_ok(exacmd):
+            return exacmd
+    py2_path = commander.get_exec_path("python")
+    if py2_path:
+        exacmd = py2_path + " -m exabgp"
+        if exacmd_version_ok(exacmd):
+            return exacmd
+    return None
+
+
 #
 # Main class: topology builder
 #
@@ -96,9 +139,8 @@ def set_topogen(tgen):
 tgen_defaults = {
     "verbosity": "info",
     "frrdir": "/usr/lib/frr",
-    "quaggadir": "/usr/lib/quagga",
     "routertype": "frr",
-    "memleak_path": None,
+    "memleak_path": "",
 }
 
 
@@ -107,14 +149,15 @@ class Topogen(object):
 
     CONFIG_SECTION = "topogen"
 
-    def __init__(self, cls, modname="unnamed"):
+    def __init__(self, topodef, modname="unnamed"):
         """
         Topogen initialization function, takes the following arguments:
-        * `cls`: the topology class that is child of mininet.topo
+        * `cls`: OLD:uthe topology class that is child of mininet.topo or a build function.
+        * `topodef`: A dictionary defining the topology, a filename of a json file, or a
+          function that will do the same
         * `modname`: module name must be a unique name to identify logs later.
         """
         self.config = None
-        self.topo = None
         self.net = None
         self.gears = {}
         self.routern = 1
@@ -123,22 +166,31 @@ class Topogen(object):
         self.errorsd = {}
         self.errors = ""
         self.peern = 1
-        self._init_topo(cls)
+        self.cfg_gen = 0
+        self.exabgp_cmd = None
+        self._init_topo(topodef)
+
         logger.info("loading topology: {}".format(self.modname))
 
-    @staticmethod
-    def _mininet_reset():
-        "Reset the mininet environment"
-        # Clean up the mininet environment
-        os.system("mn -c > /dev/null 2>&1")
+    # @staticmethod
+    # def _mininet_reset():
+    #     "Reset the mininet environment"
+    #     # Clean up the mininet environment
+    #     os.system("mn -c > /dev/null 2>&1")
 
-    def _init_topo(self, cls):
+    def __str__(self):
+        return "Topogen()"
+
+    def _init_topo(self, topodef):
         """
         Initialize the topogily provided by the user. The user topology class
         must call get_topogen() during build() to get the topogen object.
         """
         # Set the global variable so the test cases can access it anywhere
         set_topogen(self)
+
+        # Increase host based limits
+        topotest.fix_host_limits()
 
         # Test for MPLS Kernel modules available
         self.hasmpls = False
@@ -148,15 +200,96 @@ class Topogen(object):
             logger.info("MPLS tests will not run (missing mpls-iptunnel kernel module)")
         else:
             self.hasmpls = True
+
         # Load the default topology configurations
         self._load_config()
 
-        # Initialize the API
-        self._mininet_reset()
-        cls()
-        self.net = Mininet(controller=None, topo=self.topo)
-        for gear in self.gears.values():
-            gear.net = self.net
+        # Create new log directory
+        self.logdir = topotest.get_logs_path(g_extra_config["rundir"])
+        subprocess.check_call(
+            "mkdir -p {0} && chmod 1777 {0}".format(self.logdir), shell=True
+        )
+        try:
+            routertype = self.config.get(self.CONFIG_SECTION, "routertype")
+            # Only allow group, if it exist.
+            gid = grp.getgrnam(routertype)[2]
+            os.chown(self.logdir, 0, gid)
+            os.chmod(self.logdir, 0o775)
+        except KeyError:
+            # Allow anyone, but set the sticky bit to avoid file deletions
+            os.chmod(self.logdir, 0o1777)
+
+        # Remove old twisty way of creating sub-classed topology object which has it's
+        # build method invoked which calls Topogen methods which then call Topo methods
+        # to create a topology within the Topo object, which is then used by
+        # Mininet(Micronet) to build the actual topology.
+        assert not inspect.isclass(topodef)
+
+        self.net = Mininet(controller=None)
+
+        # New direct way: Either a dictionary defines the topology or a build function
+        # is supplied, or a json filename all of which build the topology by calling
+        # Topogen methods which call Mininet(Micronet) methods to create the actual
+        # topology.
+        if not inspect.isclass(topodef):
+            if callable(topodef):
+                topodef(self)
+                self.net.configure_hosts()
+            elif is_string(topodef):
+                # topojson imports topogen in one function too,
+                # switch away from this use here to the topojson
+                # fixutre and remove this case
+                from lib.topojson import build_topo_from_json
+
+                with open(topodef, "r") as topof:
+                    self.json_topo = json.load(topof)
+                build_topo_from_json(self, self.json_topo)
+                self.net.configure_hosts()
+            elif topodef:
+                self.add_topology_from_dict(topodef)
+
+    def add_topology_from_dict(self, topodef):
+
+        keylist = (
+            topodef.keys()
+            if isinstance(topodef, OrderedDict)
+            else sorted(topodef.keys())
+        )
+        # ---------------------------
+        # Create all referenced hosts
+        # ---------------------------
+        for oname in keylist:
+            tup = (topodef[oname],) if is_string(topodef[oname]) else topodef[oname]
+            for e in tup:
+                desc = e.split(":")
+                name = desc[0]
+                if name not in self.gears:
+                    logging.debug("Adding router: %s", name)
+                    self.add_router(name)
+
+        # ------------------------------
+        # Create all referenced switches
+        # ------------------------------
+        for oname in keylist:
+            if oname is not None and oname not in self.gears:
+                logging.debug("Adding switch: %s", oname)
+                self.add_switch(oname)
+
+        # ----------------
+        # Create all links
+        # ----------------
+        for oname in keylist:
+            if oname is None:
+                continue
+            tup = (topodef[oname],) if is_string(topodef[oname]) else topodef[oname]
+            for e in tup:
+                desc = e.split(":")
+                name = desc[0]
+                ifname = desc[1] if len(desc) > 1 else None
+                sifname = desc[2] if len(desc) > 2 else None
+                self.add_link(self.gears[oname], self.gears[name], sifname, ifname)
+
+        self.net.configure_hosts()
 
     def _load_config(self):
         """
@@ -167,31 +300,32 @@ class Topogen(object):
         pytestini_path = os.path.join(CWD, "../pytest.ini")
         self.config.read(pytestini_path)
 
-    def add_router(self, name=None, cls=topotest.Router, **params):
+    def add_router(self, name=None, cls=None, **params):
         """
         Adds a new router to the topology. This function has the following
         options:
         * `name`: (optional) select the router name
         * `daemondir`: (optional) custom daemon binary directory
-        * `routertype`: (optional) `quagga` or `frr`
+        * `routertype`: (optional) `frr`
         Returns a TopoRouter.
         """
+        if cls is None:
+            cls = topotest.Router
         if name is None:
             name = "r{}".format(self.routern)
         if name in self.gears:
             raise KeyError("router already exists")
 
         params["frrdir"] = self.config.get(self.CONFIG_SECTION, "frrdir")
-        params["quaggadir"] = self.config.get(self.CONFIG_SECTION, "quaggadir")
         params["memleak_path"] = self.config.get(self.CONFIG_SECTION, "memleak_path")
-        if not params.has_key("routertype"):
+        if "routertype" not in params:
             params["routertype"] = self.config.get(self.CONFIG_SECTION, "routertype")
 
         self.gears[name] = TopoRouter(self, cls, name, **params)
         self.routern += 1
         return self.gears[name]
 
-    def add_switch(self, name=None, cls=topotest.LegacySwitch):
+    def add_switch(self, name=None):
         """
         Adds a new switch to the topology. This function has the following
         options:
@@ -203,7 +337,7 @@ class Topogen(object):
         if name in self.gears:
             raise KeyError("switch already exists")
 
-        self.gears[name] = TopoSwitch(self, cls, name)
+        self.gears[name] = TopoSwitch(self, name)
         self.switchn += 1
         return self.gears[name]
 
@@ -220,6 +354,22 @@ class Topogen(object):
             raise KeyError("exabgp peer already exists")
 
         self.gears[name] = TopoExaBGP(self, name, ip=ip, defaultRoute=defaultRoute)
+        self.peern += 1
+        return self.gears[name]
+
+    def add_host(self, name, ip, defaultRoute):
+        """
+        Adds a new host to the topology. This function has the following
+        parameters:
+        * `ip`: the peer address (e.g. '1.2.3.4/24')
+        * `defaultRoute`: the peer default route (e.g. 'via 1.2.3.1')
+        """
+        if name is None:
+            name = "host{}".format(self.peern)
+        if name in self.gears:
+            raise KeyError("host already exists")
+
+        self.gears[name] = TopoHost(self, name, ip=ip, defaultRoute=defaultRoute)
         self.peern += 1
         return self.gears[name]
 
@@ -243,7 +393,7 @@ class Topogen(object):
 
         node1.register_link(ifname1, node2, ifname2)
         node2.register_link(ifname2, node1, ifname1)
-        self.topo.addLink(node1.name, node2.name, intfName1=ifname1, intfName2=ifname2)
+        self.net.add_link(node1.name, node2.name, ifname1, ifname2)
 
     def get_gears(self, geartype):
         """
@@ -254,7 +404,7 @@ class Topogen(object):
         ```py
         tgen = get_topogen()
         router_dict = tgen.get_gears(TopoRouter)
-        for router_name, router in router_dict.iteritems():
+        for router_name, router in router_dict.items():
             # Do stuff
         ```
         * List iteration:
@@ -267,7 +417,7 @@ class Topogen(object):
         """
         return dict(
             (name, gear)
-            for name, gear in self.gears.iteritems()
+            for name, gear in self.gears.items()
             if isinstance(gear, geartype)
         )
 
@@ -285,38 +435,20 @@ class Topogen(object):
         """
         return self.get_gears(TopoExaBGP)
 
-    def start_topology(self, log_level=None):
-        """
-        Starts the topology class. Possible `log_level`s are:
-        'debug': all information possible
-        'info': informational messages
-        'output': default logging level defined by Mininet
-        'warning': only warning, error and critical messages
-        'error': only error and critical messages
-        'critical': only critical messages
-        """
-        # If log_level is not specified use the configuration.
-        if log_level is None:
-            log_level = self.config.get(self.CONFIG_SECTION, "verbosity")
-
-        # Set python logger level
-        logger_config.set_log_level(log_level)
-
-        # Run mininet
-        if log_level == "debug":
-            setLogLevel(log_level)
-
+    def start_topology(self):
+        """Starts the topology class."""
         logger.info("starting topology: {}".format(self.modname))
         self.net.start()
 
     def start_router(self, router=None):
         """
         Call the router startRouter method.
-        If no router is specified it is called for all registred routers.
+        If no router is specified it is called for all registered routers.
         """
         if router is None:
             # pylint: disable=r1704
-            for _, router in self.routers().iteritems():
+            # XXX should be hosts?
+            for _, router in self.routers().items():
                 router.start()
         else:
             if isinstance(router, str):
@@ -337,21 +469,25 @@ class Topogen(object):
         for gear in self.gears.values():
             errors += gear.stop()
         if len(errors) > 0:
-            assert "Errors found post shutdown - details follow:" == 0, errors
+            logger.error(
+                "Errors found post shutdown - details follow: {}".format(errors)
+            )
 
         self.net.stop()
 
-    def mininet_cli(self):
+    def get_exabgp_cmd(self):
+        if not self.exabgp_cmd:
+            self.exabgp_cmd = get_exabgp_cmd(self.net)
+        return self.exabgp_cmd
+
+    def cli(self):
         """
         Interrupt the test and call the command line interface for manual
         inspection. Should be only used on non production code.
         """
-        if not sys.stdin.isatty():
-            raise EnvironmentError(
-                "you must run pytest with '-s' in order to use mininet CLI"
-            )
+        self.net.cli()
 
-        CLI(self.net)
+    mininet_cli = cli
 
     def is_memleak_enabled(self):
         "Returns `True` if memory leak report is enable, otherwise `False`."
@@ -362,7 +498,7 @@ class Topogen(object):
         memleak_file = os.environ.get("TOPOTESTS_CHECK_MEMLEAK") or self.config.get(
             self.CONFIG_SECTION, "memleak_path"
         )
-        if memleak_file is None:
+        if memleak_file == "" or memleak_file == None:
             return False
         return True
 
@@ -421,16 +557,21 @@ class Topogen(object):
 class TopoGear(object):
     "Abstract class for type checking"
 
-    def __init__(self):
-        self.tgen = None
-        self.name = None
-        self.cls = None
+    def __init__(self, tgen, name, **params):
+        self.tgen = tgen
+        self.name = name
+        self.params = params
         self.links = {}
         self.linkn = 0
 
+        # Would be nice for this to point at the gears log directory rather than the
+        # test's.
+        self.logdir = tgen.logdir
+        self.gearlogdir = None
+
     def __str__(self):
         links = ""
-        for myif, dest in self.links.iteritems():
+        for myif, dest in self.links.items():
             _, destif = dest
             if links != "":
                 links += ","
@@ -438,21 +579,42 @@ class TopoGear(object):
 
         return 'TopoGear<name="{}",links=[{}]>'.format(self.name, links)
 
+    @property
+    def net(self):
+        return self.tgen.net[self.name]
+
     def start(self):
         "Basic start function that just reports equipment start"
         logger.info('starting "{}"'.format(self.name))
 
     def stop(self, wait=True, assertOnError=True):
-        "Basic start function that just reports equipment stop"
-        logger.info('stopping "{}"'.format(self.name))
+        "Basic stop function that just reports equipment stop"
+        logger.info('"{}" base stop called'.format(self.name))
         return ""
 
-    def run(self, command):
+    def cmd(self, command, **kwargs):
         """
         Runs the provided command string in the router and returns a string
         with the response.
         """
-        return self.tgen.net[self.name].cmd(command)
+        return self.net.cmd_legacy(command, **kwargs)
+
+    def cmd_raises(self, command, **kwargs):
+        """
+        Runs the provided command string in the router and returns a string
+        with the response. Raise an exception on any error.
+        """
+        return self.net.cmd_raises(command, **kwargs)
+
+    run = cmd
+
+    def popen(self, *params, **kwargs):
+        """
+        Creates a pipe with the given command. Same args as python Popen.
+        If `command` is a string then will be invoked with shell, otherwise
+        `command` is a list and will be invoked w/o shell. Returns a popen object.
+        """
+        return self.net.popen(*params, **kwargs)
 
     def add_link(self, node, myif=None, nodeif=None):
         """
@@ -485,6 +647,7 @@ class TopoGear(object):
         extract = ""
         if netns is not None:
             extract = "ip netns exec {} ".format(netns)
+
         return self.run("{}ip link set dev {} {}".format(extract, myif, operation))
 
     def peer_link_enable(self, myif, enabled=True, netns=None):
@@ -523,22 +686,27 @@ class TopoGear(object):
 
         self.links[myif] = (node, nodeif)
 
+    def _setup_tmpdir(self):
+        topotest.setup_node_tmpdir(self.logdir, self.name)
+        self.gearlogdir = "{}/{}".format(self.logdir, self.name)
+        return "{}/{}.log".format(self.logdir, self.name)
+
 
 class TopoRouter(TopoGear):
     """
     Router abstraction.
     """
 
-    # The default required directories by Quagga/FRR
+    # The default required directories by FRR
     PRIVATE_DIRS = [
         "/etc/frr",
-        "/etc/quagga",
+        "/etc/snmp",
         "/var/run/frr",
-        "/var/run/quagga",
         "/var/log",
     ]
 
     # Router Daemon enumeration definition.
+    RD_FRR = 0  # not a daemon, but use to setup unified configs
     RD_ZEBRA = 1
     RD_RIP = 2
     RD_RIPNG = 3
@@ -555,7 +723,10 @@ class TopoRouter(TopoGear):
     RD_SHARP = 14
     RD_BABEL = 15
     RD_PBRD = 16
+    RD_PATH = 17
+    RD_SNMP = 18
     RD = {
+        RD_FRR: "frr",
         RD_ZEBRA: "zebra",
         RD_RIP: "ripd",
         RD_RIPNG: "ripngd",
@@ -572,6 +743,8 @@ class TopoRouter(TopoGear):
         RD_SHARP: "sharpd",
         RD_BABEL: "babeld",
         RD_PBRD: "pbrd",
+        RD_PATH: "pathd",
+        RD_SNMP: "snmpd",
     }
 
     def __init__(self, tgen, cls, name, **params):
@@ -581,65 +754,33 @@ class TopoRouter(TopoGear):
         * cls: router class that will be used to instantiate
         * name: router name
         * daemondir: daemon binary directory
-        * routertype: 'quagga' or 'frr'
+        * routertype: 'frr'
         """
-        super(TopoRouter, self).__init__()
-        self.tgen = tgen
-        self.net = None
-        self.name = name
-        self.cls = cls
-        self.options = {}
+        super(TopoRouter, self).__init__(tgen, name, **params)
         self.routertype = params.get("routertype", "frr")
-        if not params.has_key("privateDirs"):
+        if "privateDirs" not in params:
             params["privateDirs"] = self.PRIVATE_DIRS
 
-        self.options["memleak_path"] = params.get("memleak_path", None)
-
-        # Create new log directory
-        self.logdir = "/tmp/topotests/{}".format(self.tgen.modname)
-        # Clean up before starting new log files: avoids removing just created
-        # log files.
-        self._prepare_tmpfiles()
         # Propagate the router log directory
+        logfile = self._setup_tmpdir()
         params["logdir"] = self.logdir
 
-        # setup the per node directory
-        dir = "{}/{}".format(self.logdir, self.name)
-        os.system("mkdir -p " + dir)
-        os.system("chmod -R go+rw /tmp/topotests")
+        self.logger = topolog.get_logger(name, log_level="debug", target=logfile)
+        params["logger"] = self.logger
+        tgen.net.add_host(self.name, cls=cls, **params)
+        topotest.fix_netns_limits(tgen.net[name])
 
-        # Open router log file
-        logfile = "{0}/{1}.log".format(self.logdir, name)
-        self.logger = logger_config.get_logger(name=name, target=logfile)
+        # Mount gear log directory on a common path
+        self.net.bind_mount(self.gearlogdir, "/tmp/gearlogdir")
 
-        self.tgen.topo.addNode(self.name, cls=self.cls, **params)
+        # Ensure pid file
+        with open(os.path.join(self.logdir, self.name + ".pid"), "w") as f:
+            f.write(str(self.net.pid) + "\n")
 
     def __str__(self):
         gear = super(TopoRouter, self).__str__()
         gear += " TopoRouter<>"
         return gear
-
-    def _prepare_tmpfiles(self):
-        # Create directories if they don't exist
-        try:
-            os.makedirs(self.logdir, 0o755)
-        except OSError:
-            pass
-
-        # Allow unprivileged daemon user (frr/quagga) to create log files
-        try:
-            # Only allow group, if it exist.
-            gid = grp.getgrnam(self.routertype)[2]
-            os.chown(self.logdir, 0, gid)
-            os.chmod(self.logdir, 0o775)
-        except KeyError:
-            # Allow anyone, but set the sticky bit to avoid file deletions
-            os.chmod(self.logdir, 0o1777)
-
-        # Try to find relevant old logfiles in /tmp and delete them
-        map(os.remove, glob.glob("{}/{}/*.log".format(self.logdir, self.name)))
-        # Remove old core files
-        map(os.remove, glob.glob("{}/{}/*.dmp".format(self.logdir, self.name)))
 
     def check_capability(self, daemon, param):
         """
@@ -648,26 +789,56 @@ class TopoRouter(TopoGear):
         """
         daemonstr = self.RD.get(daemon)
         self.logger.info('check capability {} for "{}"'.format(param, daemonstr))
-        return self.tgen.net[self.name].checkCapability(daemonstr, param)
+        return self.net.checkCapability(daemonstr, param)
+
+    def load_frr_config(self, source, daemons=None):
+        """
+        Loads the unified configuration file source
+        Start the daemons in the list
+        If daemons is None, try to infer daemons from the config file
+        """
+        self.load_config(self.RD_FRR, source)
+        if not daemons:
+            # Always add zebra
+            self.load_config(self.RD_ZEBRA)
+            for daemon in self.RD:
+                # This will not work for all daemons
+                daemonstr = self.RD.get(daemon).rstrip("d")
+                if daemonstr == "pim":
+                    grep_cmd = "grep 'ip {}' {}".format(daemonstr, source)
+                else:
+                    grep_cmd = "grep 'router {}' {}".format(daemonstr, source)
+                result = self.run(grep_cmd).strip()
+                if result:
+                    self.load_config(daemon)
+        else:
+            for daemon in daemons:
+                self.load_config(daemon)
 
     def load_config(self, daemon, source=None, param=None):
-        """
-        Loads daemon configuration from the specified source
+        """Loads daemon configuration from the specified source
         Possible daemon values are: TopoRouter.RD_ZEBRA, TopoRouter.RD_RIP,
         TopoRouter.RD_RIPNG, TopoRouter.RD_OSPF, TopoRouter.RD_OSPF6,
         TopoRouter.RD_ISIS, TopoRouter.RD_BGP, TopoRouter.RD_LDP,
-        TopoRouter.RD_PIM, TopoRouter.RD_PBR.
+        TopoRouter.RD_PIM, TopoRouter.RD_PBR, TopoRouter.RD_SNMP.
+
+        Possible `source` values are `None` for an empty config file, a path name which is
+        used directly, or a file name with no path components which is first looked for
+        directly and then looked for under a sub-directory named after router.
+
+        This API unfortunately allows for source to not exist for any and
+        all routers.
         """
         daemonstr = self.RD.get(daemon)
         self.logger.info('loading "{}" configuration: {}'.format(daemonstr, source))
-        self.tgen.net[self.name].loadConf(daemonstr, source, param)
+        self.net.loadConf(daemonstr, source, param)
 
     def check_router_running(self):
         """
         Run a series of checks and returns a status string.
         """
         self.logger.info("checking if daemons are running")
-        return self.tgen.net[self.name].checkRouterRunning()
+        return self.net.checkRouterRunning()
 
     def start(self):
         """
@@ -675,72 +846,83 @@ class TopoRouter(TopoGear):
         * Load modules
         * Clean up files
         * Configure interfaces
-        * Start daemons (e.g. FRR/Quagga)
+        * Start daemons (e.g. FRR)
         * Configure daemon logging files
         """
-        self.logger.debug("starting")
-        nrouter = self.tgen.net[self.name]
+
+        nrouter = self.net
         result = nrouter.startRouter(self.tgen)
+
+        # Enable command logging
 
         # Enable all daemon command logging, logging files
         # and set them to the start dir.
-        for daemon, enabled in nrouter.daemons.iteritems():
-            if enabled == 0:
-                continue
-            self.vtysh_cmd(
-                "configure terminal\nlog commands\nlog file {}.log".format(daemon),
-                daemon=daemon,
-            )
+        for daemon, enabled in nrouter.daemons.items():
+            if enabled and daemon != "snmpd":
+                self.vtysh_cmd(
+                    "\n".join(
+                        [
+                            "clear log cmdline-targets",
+                            "conf t",
+                            "log file {}.log debug".format(daemon),
+                            "log commands",
+                            "log timestamp precision 3",
+                        ]
+                    ),
+                    daemon=daemon,
+                )
 
         if result != "":
             self.tgen.set_error(result)
-        else:
+        elif nrouter.daemons["ldpd"] == 1 or nrouter.daemons["pathd"] == 1:
             # Enable MPLS processing on all interfaces.
-            for interface in self.links.keys():
-                set_sysctl(nrouter, "net.mpls.conf.{}.input".format(interface), 1)
+            for interface in self.links:
+                topotest.sysctl_assure(
+                    nrouter, "net.mpls.conf.{}.input".format(interface), 1
+                )
 
         return result
-
-    def __stop_internal(self, wait=True, assertOnError=True):
-        """
-        Stop router, private internal version
-        * Kill daemons
-        """
-        self.logger.debug("stopping: wait {}, assert {}".format(
-            wait, assertOnError))
-        return self.tgen.net[self.name].stopRouter(wait, assertOnError)
-
 
     def stop(self):
         """
         Stop router cleanly:
-        * Signal daemons twice, once without waiting, and then a second time
-          with a wait to ensure the daemons exit cleanly
+        * Signal daemons twice, once with SIGTERM, then with SIGKILL.
         """
-        self.logger.debug("stopping")
-        self.__stop_internal(False, False)
-        return self.__stop_internal()
+        self.logger.debug("stopping (no assert)")
+        return self.net.stopRouter(False)
 
     def startDaemons(self, daemons):
         """
         Start Daemons: to start specific daemon(user defined daemon only)
-        * Start daemons (e.g. FRR/Quagga)
+        * Start daemons (e.g. FRR)
         * Configure daemon logging files
         """
-        self.logger.debug('starting')
-        nrouter = self.tgen.net[self.name]
+        self.logger.debug("starting")
+        nrouter = self.net
         result = nrouter.startRouterDaemons(daemons)
+
+        if daemons is None:
+            daemons = nrouter.daemons.keys()
 
         # Enable all daemon command logging, logging files
         # and set them to the start dir.
-        for daemon, enabled in nrouter.daemons.iteritems():
-            for d in daemons:
-                if enabled == 0:
-                    continue
-                self.vtysh_cmd('configure terminal\nlog commands\nlog file {}.log'.\
-                    format(daemon), daemon=daemon)
+        for daemon in daemons:
+            enabled = nrouter.daemons[daemon]
+            if enabled and daemon != "snmpd":
+                self.vtysh_cmd(
+                    "\n".join(
+                        [
+                            "clear log cmdline-targets",
+                            "conf t",
+                            "log file {}.log debug".format(daemon),
+                            "log commands",
+                            "log timestamp precision 3",
+                        ]
+                    ),
+                    daemon=daemon,
+                )
 
-        if result != '':
+        if result != "":
             self.tgen.set_error(result)
 
         return result
@@ -750,8 +932,8 @@ class TopoRouter(TopoGear):
         Kill specific daemon(user defined daemon only)
         forcefully using SIGKILL
         """
-        self.logger.debug('Killing daemons using SIGKILL..')
-        return self.tgen.net[self.name].killRouterDaemons(daemons, wait, assertOnError)
+        self.logger.debug("Killing daemons using SIGKILL..")
+        return self.net.killRouterDaemons(daemons, wait, assertOnError)
 
     def vtysh_cmd(self, command, isjson=False, daemon=None):
         """
@@ -771,17 +953,29 @@ class TopoRouter(TopoGear):
 
         vtysh_command = 'vtysh {} -c "{}" 2>/dev/null'.format(dparam, command)
 
+        self.logger.info('vtysh command => "{}"'.format(command))
         output = self.run(vtysh_command)
-        self.logger.info(
-            "\nvtysh command => {}\nvtysh output <= {}".format(command, output)
-        )
+
+        dbgout = output.strip()
+        if dbgout:
+            if "\n" in dbgout:
+                dbgout = dbgout.replace("\n", "\n\t")
+                self.logger.info("vtysh result:\n\t{}".format(dbgout))
+            else:
+                self.logger.info('vtysh result: "{}"'.format(dbgout))
+
         if isjson is False:
             return output
 
         try:
             return json.loads(output)
-        except ValueError:
-            logger.warning("vtysh_cmd: failed to convert json output")
+        except ValueError as error:
+            logger.warning(
+                "vtysh_cmd: %s: failed to convert json output: %s: %s",
+                self.name,
+                str(output),
+                str(error),
+            )
             return {}
 
     def vtysh_multicmd(self, commands, pretty_output=True, daemon=None):
@@ -806,13 +1000,20 @@ class TopoRouter(TopoGear):
         else:
             vtysh_command = "vtysh {} -f {}".format(dparam, fname)
 
+        dbgcmds = commands if is_string(commands) else "\n".join(commands)
+        dbgcmds = "\t" + dbgcmds.replace("\n", "\n\t")
+        self.logger.info("vtysh command => FILE:\n{}".format(dbgcmds))
+
         res = self.run(vtysh_command)
         os.unlink(fname)
 
-        self.logger.info(
-            '\nvtysh command => "{}"\nvtysh output <= "{}"'.format(vtysh_command, res)
-        )
-
+        dbgres = res.strip()
+        if dbgres:
+            if "\n" in dbgres:
+                dbgres = dbgres.replace("\n", "\n\t")
+                self.logger.info("vtysh result:\n\t{}".format(dbgres))
+            else:
+                self.logger.info('vtysh result: "{}"'.format(dbgres))
         return res
 
     def report_memory_leaks(self, testname):
@@ -824,15 +1025,15 @@ class TopoRouter(TopoGear):
         TOPOTESTS_CHECK_MEMLEAK set or memleak_path configured in `pytest.ini`.
         """
         memleak_file = (
-            os.environ.get("TOPOTESTS_CHECK_MEMLEAK") or self.options["memleak_path"]
+            os.environ.get("TOPOTESTS_CHECK_MEMLEAK") or self.params["memleak_path"]
         )
-        if memleak_file is None:
+        if memleak_file == "" or memleak_file == None:
             return
 
         self.stop()
 
         self.logger.info("running memory leak report")
-        self.tgen.net[self.name].report_memory_leaks(memleak_file, testname)
+        self.net.report_memory_leaks(memleak_file, testname)
 
     def version_info(self):
         "Get equipment information from 'show version'."
@@ -861,7 +1062,7 @@ class TopoRouter(TopoGear):
 
         Usage example: router.has_version('>', '1.0')
         """
-        return self.tgen.net[self.name].checkRouterVersion(cmpop, version)
+        return self.net.checkRouterVersion(cmpop, version)
 
     def has_type(self, rtype):
         """
@@ -872,8 +1073,7 @@ class TopoRouter(TopoGear):
         return rtype == curtype
 
     def has_mpls(self):
-        nrouter = self.tgen.net[self.name]
-        return nrouter.hasmpls
+        return self.net.hasmpls
 
 
 class TopoSwitch(TopoGear):
@@ -885,13 +1085,9 @@ class TopoSwitch(TopoGear):
 
     # pylint: disable=too-few-public-methods
 
-    def __init__(self, tgen, cls, name):
-        super(TopoSwitch, self).__init__()
-        self.tgen = tgen
-        self.net = None
-        self.name = name
-        self.cls = cls
-        self.tgen.topo.addSwitch(name, cls=self.cls)
+    def __init__(self, tgen, name, **params):
+        super(TopoSwitch, self).__init__(tgen, name, **params)
+        tgen.net.add_switch(name)
 
     def __str__(self):
         gear = super(TopoSwitch, self).__str__()
@@ -912,19 +1108,27 @@ class TopoHost(TopoGear):
         * `privateDirs`: directories that will be mounted on a different domain
           (e.g. '/etc/important_dir').
         """
-        super(TopoHost, self).__init__()
-        self.tgen = tgen
-        self.net = None
-        self.name = name
-        self.options = params
-        self.tgen.topo.addHost(name, **params)
+        super(TopoHost, self).__init__(tgen, name, **params)
+
+        # Propagate the router log directory
+        logfile = self._setup_tmpdir()
+        params["logdir"] = self.logdir
+
+        # Odd to have 2 logfiles for each host
+        self.logger = topolog.get_logger(name, log_level="debug", target=logfile)
+        params["logger"] = self.logger
+        tgen.net.add_host(name, **params)
+        topotest.fix_netns_limits(tgen.net[name])
+
+        # Mount gear log directory on a common path
+        self.net.bind_mount(self.gearlogdir, "/tmp/gearlogdir")
 
     def __str__(self):
         gear = super(TopoHost, self).__str__()
         gear += ' TopoHost<ip="{}",defaultRoute="{}",privateDirs="{}">'.format(
-            self.options["ip"],
-            self.options["defaultRoute"],
-            str(self.options["privateDirs"]),
+            self.params["ip"],
+            self.params["defaultRoute"],
+            str(self.params["privateDirs"]),
         )
         return gear
 
@@ -952,7 +1156,6 @@ class TopoExaBGP(TopoHost):
         """
         params["privateDirs"] = self.PRIVATE_DIRS
         super(TopoExaBGP, self).__init__(tgen, name, **params)
-        self.tgen.topo.addHost(name, **params)
 
     def __str__(self):
         gear = super(TopoExaBGP, self).__str__()
@@ -967,17 +1170,23 @@ class TopoExaBGP(TopoHost):
         * Make all python files runnable
         * Run ExaBGP with env file `env_file` and configuration peer*/exabgp.cfg
         """
-        self.run("mkdir /etc/exabgp")
+        exacmd = self.tgen.get_exabgp_cmd()
+        assert exacmd, "Can't find a usabel ExaBGP (must be < version 4)"
+
+        self.run("mkdir -p /etc/exabgp")
         self.run("chmod 755 /etc/exabgp")
+        self.run("cp {}/exa-* /etc/exabgp/".format(CWD))
         self.run("cp {}/* /etc/exabgp/".format(peer_dir))
         if env_file is not None:
             self.run("cp {} /etc/exabgp/exabgp.env".format(env_file))
         self.run("chmod 644 /etc/exabgp/*")
         self.run("chmod a+x /etc/exabgp/*.py")
         self.run("chown -R exabgp:exabgp /etc/exabgp")
-        output = self.run("exabgp -e /etc/exabgp/exabgp.env /etc/exabgp/exabgp.cfg")
+
+        output = self.run(exacmd + " -e /etc/exabgp/exabgp.env /etc/exabgp/exabgp.cfg")
         if output == None or len(output) == 0:
             output = "<none>"
+
         logger.info("{} exabgp started, output={}".format(self.name, output))
 
     def stop(self, wait=True, assertOnError=True):
@@ -992,32 +1201,27 @@ class TopoExaBGP(TopoHost):
 
 # Disable linter branch warning. It is expected to have these here.
 # pylint: disable=R0912
-def diagnose_env_linux():
+def diagnose_env_linux(rundir):
     """
     Run diagnostics in the running environment. Returns `True` when everything
     is ok, otherwise `False`.
     """
     ret = True
 
-    # Test log path exists before installing handler.
-    if not os.path.isdir("/tmp"):
-        logger.warning("could not find /tmp for logs")
-    else:
-        os.system("mkdir /tmp/topotests")
-        # Log diagnostics to file so it can be examined later.
-        fhandler = logging.FileHandler(filename="/tmp/topotests/diagnostics.txt")
-        fhandler.setLevel(logging.DEBUG)
-        fhandler.setFormatter(
-            logging.Formatter(fmt="%(asctime)s %(levelname)s: %(message)s")
-        )
-        logger.addHandler(fhandler)
-
-    logger.info("Running environment diagnostics")
-
     # Load configuration
-    config = configparser.ConfigParser(tgen_defaults)
+    config = configparser.ConfigParser(defaults=tgen_defaults)
     pytestini_path = os.path.join(CWD, "../pytest.ini")
     config.read(pytestini_path)
+
+    # Test log path exists before installing handler.
+    os.system("mkdir -p " + rundir)
+    # Log diagnostics to file so it can be examined later.
+    fhandler = logging.FileHandler(filename="{}/diagnostics.txt".format(rundir))
+    fhandler.setLevel(logging.DEBUG)
+    fhandler.setFormatter(logging.Formatter(fmt=topolog.FORMAT))
+    logger.addHandler(fhandler)
+
+    logger.info("Running environment diagnostics")
 
     # Assert that we are running as root
     if os.getuid() != 0:
@@ -1025,9 +1229,9 @@ def diagnose_env_linux():
         ret = False
 
     # Assert that we have mininet
-    if os.system("which mn >/dev/null 2>/dev/null") != 0:
-        logger.error("could not find mininet binary (mininet is not installed)")
-        ret = False
+    # if os.system("which mn >/dev/null 2>/dev/null") != 0:
+    #     logger.error("could not find mininet binary (mininet is not installed)")
+    #     ret = False
 
     # Assert that we have iproute installed
     if os.system("which ip >/dev/null 2>/dev/null") != 0:
@@ -1041,12 +1245,10 @@ def diagnose_env_linux():
 
     # Assert that FRR utilities exist
     frrdir = config.get("topogen", "frrdir")
-    hasfrr = False
     if not os.path.isdir(frrdir):
         logger.error("could not find {} directory".format(frrdir))
         ret = False
     else:
-        hasfrr = True
         try:
             pwd.getpwnam("frr")[2]
         except KeyError:
@@ -1075,7 +1277,7 @@ def diagnose_env_linux():
             "isisd",
             "pimd",
             "ldpd",
-            "pbrd"
+            "pbrd",
         ]:
             path = os.path.join(frrdir, fname)
             if not os.path.isfile(path):
@@ -1093,57 +1295,7 @@ def diagnose_env_linux():
                 if fname != "zebra":
                     continue
 
-                os.system("{} -v 2>&1 >/tmp/topotests/frr_zebra.txt".format(path))
-
-    # Assert that Quagga utilities exist
-    quaggadir = config.get("topogen", "quaggadir")
-    if hasfrr:
-        # if we have frr, don't check for quagga
-        pass
-    elif not os.path.isdir(quaggadir):
-        logger.info(
-            "could not find {} directory (quagga tests will not run)".format(quaggadir)
-        )
-    else:
-        ret = True
-        try:
-            pwd.getpwnam("quagga")[2]
-        except KeyError:
-            logger.info('could not find "quagga" user')
-
-        try:
-            grp.getgrnam("quagga")[2]
-        except KeyError:
-            logger.info('could not find "quagga" group')
-
-        try:
-            if "quagga" not in grp.getgrnam("quaggavty").gr_mem:
-                logger.error(
-                    '"quagga" user and group exist, but user is not under "quaggavty"'
-                )
-        except KeyError:
-            logger.warning('could not find "quaggavty" group')
-
-        for fname in [
-            "zebra",
-            "ospfd",
-            "ospf6d",
-            "bgpd",
-            "ripd",
-            "ripngd",
-            "isisd",
-            "pimd",
-            "pbrd"
-        ]:
-            path = os.path.join(quaggadir, fname)
-            if not os.path.isfile(path):
-                logger.warning("could not find {} in {}".format(fname, quaggadir))
-                ret = False
-            else:
-                if fname != "zebra":
-                    continue
-
-                os.system("{} -v 2>&1 >/tmp/topotests/quagga_zebra.txt".format(path))
+                os.system("{} -v 2>&1 >{}/frr_zebra.txt".format(path, rundir))
 
     # Test MPLS availability
     krel = platform.release()
@@ -1160,23 +1312,11 @@ def diagnose_env_linux():
     if not topotest.module_present("mpls-iptunnel", load=False) != 0:
         logger.info("LDPd tests will not run (missing mpls-iptunnel kernel module)")
 
-    # TODO remove me when we start supporting exabgp >= 4
-    try:
-        output = subprocess.check_output(["exabgp", "-v"])
-        line = output.split("\n")[0]
-        version = line.split(" ")[2]
-        if topotest.version_cmp(version, "4") >= 0:
-            logger.warning(
-                "BGP topologies are still using exabgp version 3, expect failures"
-            )
+    if not get_exabgp_cmd():
+        logger.warning("Failed to find exabgp < 4")
 
-    # We want to catch all exceptions
-    # pylint: disable=W0702
-    except:
-        logger.warning("failed to find exabgp or returned error")
-
-    # After we logged the output to file, remove the handler.
     logger.removeHandler(fhandler)
+    fhandler.close()
 
     return ret
 
@@ -1185,9 +1325,9 @@ def diagnose_env_freebsd():
     return True
 
 
-def diagnose_env():
+def diagnose_env(rundir):
     if sys.platform.startswith("linux"):
-        return diagnose_env_linux()
+        return diagnose_env_linux(rundir)
     elif sys.platform.startswith("freebsd"):
         return diagnose_env_freebsd()
 

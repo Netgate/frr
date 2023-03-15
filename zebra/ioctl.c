@@ -36,8 +36,6 @@
 #include "zebra/zebra_errors.h"
 #include "zebra/debug.h"
 
-#ifndef SUNOS_5
-
 #ifdef HAVE_BSD_LINK_DETECT
 #include <net/if_media.h>
 #endif /* HAVE_BSD_LINK_DETECT*/
@@ -50,6 +48,7 @@ void ifreq_set_name(struct ifreq *ifreq, struct interface *ifp)
 	strlcpy(ifreq->ifr_name, ifp->name, sizeof(ifreq->ifr_name));
 }
 
+#ifndef HAVE_NETLINK
 /* call ioctl system call */
 int if_ioctl(unsigned long request, caddr_t buffer)
 {
@@ -75,6 +74,7 @@ int if_ioctl(unsigned long request, caddr_t buffer)
 	}
 	return 0;
 }
+#endif
 
 /* call ioctl system call */
 int vrf_if_ioctl(unsigned long request, caddr_t buffer, vrf_id_t vrf_id)
@@ -129,7 +129,6 @@ static int if_ioctl_ipv6(unsigned long request, caddr_t buffer)
 	}
 	return 0;
 }
-#endif /* ! HAVE_NETLINK */
 
 /*
  * get interface metric
@@ -138,11 +137,11 @@ static int if_ioctl_ipv6(unsigned long request, caddr_t buffer)
 void if_get_metric(struct interface *ifp)
 {
 #ifdef SIOCGIFMETRIC
-	struct ifreq ifreq;
+	struct ifreq ifreq = {};
 
 	ifreq_set_name(&ifreq, ifp);
 
-	if (vrf_if_ioctl(SIOCGIFMETRIC, (caddr_t)&ifreq, ifp->vrf_id) < 0)
+	if (vrf_if_ioctl(SIOCGIFMETRIC, (caddr_t)&ifreq, ifp->vrf->vrf_id) < 0)
 		return;
 	ifp->metric = ifreq.ifr_metric;
 	if (ifp->metric == 0)
@@ -155,22 +154,18 @@ void if_get_metric(struct interface *ifp)
 /* get interface MTU */
 void if_get_mtu(struct interface *ifp)
 {
-	struct ifreq ifreq;
+	struct ifreq ifreq = {};
 
 	ifreq_set_name(&ifreq, ifp);
 
 #if defined(SIOCGIFMTU)
-	if (vrf_if_ioctl(SIOCGIFMTU, (caddr_t)&ifreq, ifp->vrf_id) < 0) {
+	if (vrf_if_ioctl(SIOCGIFMTU, (caddr_t)&ifreq, ifp->vrf->vrf_id) < 0) {
 		zlog_info("Can't lookup mtu by ioctl(SIOCGIFMTU)");
 		ifp->mtu6 = ifp->mtu = -1;
 		return;
 	}
 
-#ifdef SUNOS_5
-	ifp->mtu6 = ifp->mtu = ifreq.ifr_metric;
-#else
 	ifp->mtu6 = ifp->mtu = ifreq.ifr_mtu;
-#endif /* SUNOS_5 */
 
 	/* propogate */
 	zebra_interface_up_update(ifp);
@@ -180,6 +175,7 @@ void if_get_mtu(struct interface *ifp)
 	ifp->mtu6 = ifp->mtu = -1;
 #endif
 }
+#endif /* ! HAVE_NETLINK */
 
 /*
  * Handler for interface address programming via the zebra dplane,
@@ -223,13 +219,6 @@ enum zebra_dplane_result kernel_address_update_ctx(
 		ZEBRA_DPLANE_REQUEST_SUCCESS : ZEBRA_DPLANE_REQUEST_FAILURE);
 }
 
-#endif	/* !HAVE_NETLINK */
-
-#ifdef HAVE_NETLINK
-
-/* TODO -- remove; no use of these apis with netlink any longer */
-
-#else /* ! HAVE_NETLINK */
 #ifdef HAVE_STRUCT_IFALIASREQ
 
 /*
@@ -248,7 +237,7 @@ static int if_set_prefix_ctx(const struct zebra_dplane_ctx *ctx)
 	strlcpy((char *)&addreq.ifra_name, dplane_ctx_get_ifname(ctx),
 		sizeof(addreq.ifra_name));
 
-	memset(&addr, 0, sizeof(struct sockaddr_in));
+	memset(&addr, 0, sizeof(addr));
 	addr.sin_addr = p->prefix;
 	addr.sin_family = p->family;
 #ifdef HAVE_STRUCT_SOCKADDR_IN_SIN_LEN
@@ -258,7 +247,7 @@ static int if_set_prefix_ctx(const struct zebra_dplane_ctx *ctx)
 
 	if (dplane_ctx_intf_is_connected(ctx)) {
 		p = (struct prefix_ipv4 *)dplane_ctx_get_intf_dest(ctx);
-		memset(&mask, 0, sizeof(struct sockaddr_in));
+		memset(&mask, 0, sizeof(mask));
 		peer.sin_addr = p->prefix;
 		peer.sin_family = p->family;
 #ifdef HAVE_STRUCT_SOCKADDR_IN_SIN_LEN
@@ -268,7 +257,7 @@ static int if_set_prefix_ctx(const struct zebra_dplane_ctx *ctx)
 		       sizeof(struct sockaddr_in));
 	}
 
-	memset(&mask, 0, sizeof(struct sockaddr_in));
+	memset(&mask, 0, sizeof(mask));
 	masklen2ip(p->prefixlen, &mask.sin_addr);
 	mask.sin_family = p->family;
 #ifdef HAVE_STRUCT_SOCKADDR_IN_SIN_LEN
@@ -299,7 +288,7 @@ static int if_unset_prefix_ctx(const struct zebra_dplane_ctx *ctx)
 	strlcpy((char *)&addreq.ifra_name, dplane_ctx_get_ifname(ctx),
 		sizeof(addreq.ifra_name));
 
-	memset(&addr, 0, sizeof(struct sockaddr_in));
+	memset(&addr, 0, sizeof(addr));
 	addr.sin_addr = p->prefix;
 	addr.sin_family = p->family;
 #ifdef HAVE_STRUCT_SOCKADDR_IN_SIN_LEN
@@ -309,7 +298,7 @@ static int if_unset_prefix_ctx(const struct zebra_dplane_ctx *ctx)
 
 	if (dplane_ctx_intf_is_connected(ctx)) {
 		p = (struct prefix_ipv4 *)dplane_ctx_get_intf_dest(ctx);
-		memset(&mask, 0, sizeof(struct sockaddr_in));
+		memset(&mask, 0, sizeof(mask));
 		peer.sin_addr = p->prefix;
 		peer.sin_family = p->family;
 #ifdef HAVE_STRUCT_SOCKADDR_IN_SIN_LEN
@@ -319,7 +308,7 @@ static int if_unset_prefix_ctx(const struct zebra_dplane_ctx *ctx)
 		       sizeof(struct sockaddr_in));
 	}
 
-	memset(&mask, 0, sizeof(struct sockaddr_in));
+	memset(&mask, 0, sizeof(mask));
 	masklen2ip(p->prefixlen, &mask.sin_addr);
 	mask.sin_family = p->family;
 #ifdef HAVE_STRUCT_SOCKADDR_IN_SIN_LEN
@@ -378,11 +367,7 @@ int if_set_prefix_ctx(const struct zebra_dplane_ctx *ctx)
 	}
 
 	mask.sin_family = p->family;
-#ifdef SUNOS_5
-	memcpy(&mask, &ifreq.ifr_addr, sizeof(mask));
-#else
 	memcpy(&ifreq.ifr_addr, &mask, sizeof(struct sockaddr_in));
-#endif /* SUNOS5 */
 	ret = if_ioctl(SIOCSIFNETMASK, (caddr_t)&ifreq);
 	if (ret < 0)
 		return ret;
@@ -404,7 +389,7 @@ int if_unset_prefix_ctx(const struct zebra_dplane_ctx *ctx)
 	strlcpy(ifreq.ifr_name, dplane_ctx_get_ifname(ctx),
 		sizeof(ifreq.ifr_name));
 
-	memset(&addr, 0, sizeof(struct sockaddr_in));
+	memset(&addr, 0, sizeof(addr));
 	addr.sin_family = p->family;
 	memcpy(&ifreq.ifr_addr, &addr, sizeof(struct sockaddr_in));
 	ret = if_ioctl(SIOCSIFADDR, (caddr_t)&ifreq);
@@ -420,49 +405,96 @@ int if_unset_prefix_ctx(const struct zebra_dplane_ctx *ctx)
 void if_get_flags(struct interface *ifp)
 {
 	int ret;
-	struct ifreq ifreq;
-#ifdef HAVE_BSD_LINK_DETECT
-	struct ifmediareq ifmr;
-#endif /* HAVE_BSD_LINK_DETECT */
+	struct ifreq ifreqflags = {};
+	struct ifreq ifreqdata = {};
 
-	ifreq_set_name(&ifreq, ifp);
+	ifreq_set_name(&ifreqflags, ifp);
+	ifreq_set_name(&ifreqdata, ifp);
 
-	ret = vrf_if_ioctl(SIOCGIFFLAGS, (caddr_t)&ifreq, ifp->vrf_id);
+	ret = vrf_if_ioctl(SIOCGIFFLAGS, (caddr_t)&ifreqflags,
+			   ifp->vrf->vrf_id);
 	if (ret < 0) {
 		flog_err_sys(EC_LIB_SYSTEM_CALL,
-			     "vrf_if_ioctl(SIOCGIFFLAGS) failed: %s",
-			     safe_strerror(errno));
+			     "vrf_if_ioctl(SIOCGIFFLAGS %s) failed: %s",
+			     ifp->name, safe_strerror(errno));
 		return;
 	}
-#ifdef HAVE_BSD_LINK_DETECT /* Detect BSD link-state at start-up */
 
-	/* Per-default, IFF_RUNNING is held high, unless link-detect says
-	 * otherwise - we abuse IFF_RUNNING inside zebra as a link-state flag,
-	 * following practice on Linux and Solaris kernels
+	if (!CHECK_FLAG(ifp->status, ZEBRA_INTERFACE_LINKDETECTION))
+		goto out;
+
+	/* Per-default, IFF_RUNNING is held high, unless link-detect
+	 * says otherwise - we abuse IFF_RUNNING inside zebra as a
+	 * link-state flag, following practice on Linux and Solaris
+	 * kernels
 	 */
-	SET_FLAG(ifreq.ifr_flags, IFF_RUNNING);
 
-	if (CHECK_FLAG(ifp->status, ZEBRA_INTERFACE_LINKDETECTION)) {
-		(void)memset(&ifmr, 0, sizeof(ifmr));
-		strlcpy(ifmr.ifm_name, ifp->name, sizeof(ifmr.ifm_name));
+#ifdef SIOCGIFDATA
+	/*
+	 * BSD gets link state from ifi_link_link in struct if_data.
+	 * All BSD's have this in getifaddrs(3) ifa_data for AF_LINK
+	 * addresses. We can also access it via SIOCGIFDATA.
+	 */
 
-		/* Seems not all interfaces implement this ioctl */
-		if (if_ioctl(SIOCGIFMEDIA, (caddr_t)&ifmr) == -1 &&
-		    errno != EINVAL)
+#ifdef __NetBSD__
+	struct ifdatareq ifdr = {.ifdr_data.ifi_link_state = 0};
+	struct if_data *ifdata = &ifdr.ifdr_data;
+
+	strlcpy(ifdr.ifdr_name, ifp->name, sizeof(ifdr.ifdr_name));
+	ret = vrf_if_ioctl(SIOCGIFDATA, (caddr_t)&ifdr, ifp->vrf->vrf_id);
+#else
+	struct if_data ifd = {.ifi_link_state = 0};
+	struct if_data *ifdata = &ifd;
+
+	ifreqdata.ifr_data = (caddr_t)ifdata;
+	ret = vrf_if_ioctl(SIOCGIFDATA, (caddr_t)&ifreqdata, ifp->vrf->vrf_id);
+#endif
+
+	if (ret == -1)
+		/* Very unlikely. Did the interface disappear? */
+		flog_err_sys(EC_LIB_SYSTEM_CALL,
+			     "if_ioctl(SIOCGIFDATA %s) failed: %s", ifp->name,
+			     safe_strerror(errno));
+	else {
+		if (ifdata->ifi_link_state >= LINK_STATE_UP)
+			SET_FLAG(ifreqflags.ifr_flags, IFF_RUNNING);
+		else if (ifdata->ifi_link_state == LINK_STATE_UNKNOWN)
+			/* BSD traditionally treats UNKNOWN as UP */
+			SET_FLAG(ifreqflags.ifr_flags, IFF_RUNNING);
+		else
+			UNSET_FLAG(ifreqflags.ifr_flags, IFF_RUNNING);
+	}
+
+#elif defined(HAVE_BSD_LINK_DETECT)
+	/*
+	 * This is only needed for FreeBSD older than FreeBSD-13.
+	 * Valid and active media generally means the link state is
+	 * up, but this is not always the case.
+	 * For example, some BSD's with a net80211 interface in MONITOR
+	 * mode will treat the media as valid and active but the
+	 * link state is down - because we cannot send anything.
+	 * Also, virtual interfaces such as PPP, VLAN, etc generally
+	 * don't support media at all, so the ioctl will just fail.
+	 */
+	struct ifmediareq ifmr = {.ifm_status = 0};
+
+	strlcpy(ifmr.ifm_name, ifp->name, sizeof(ifmr.ifm_name));
+
+	if (if_ioctl(SIOCGIFMEDIA, (caddr_t)&ifmr) == -1) {
+		if (errno != EINVAL)
 			flog_err_sys(EC_LIB_SYSTEM_CALL,
-				     "if_ioctl(SIOCGIFMEDIA) failed: %s",
-				     safe_strerror(errno));
-		else if (ifmr.ifm_status & IFM_AVALID) /* Link state is valid */
-		{
-			if (ifmr.ifm_status & IFM_ACTIVE)
-				SET_FLAG(ifreq.ifr_flags, IFF_RUNNING);
-			else
-				UNSET_FLAG(ifreq.ifr_flags, IFF_RUNNING);
-		}
+				     "if_ioctl(SIOCGIFMEDIA %s) failed: %s",
+				     ifp->name, safe_strerror(errno));
+	} else if (ifmr.ifm_status & IFM_AVALID) { /* media state is valid */
+		if (ifmr.ifm_status & IFM_ACTIVE)  /* media is active */
+			SET_FLAG(ifreqflags.ifr_flags, IFF_RUNNING);
+		else
+			UNSET_FLAG(ifreqflags.ifr_flags, IFF_RUNNING);
 	}
 #endif /* HAVE_BSD_LINK_DETECT */
 
-	if_flags_update(ifp, (ifreq.ifr_flags & 0x0000ffff));
+out:
+	if_flags_update(ifp, (ifreqflags.ifr_flags & 0x0000ffff));
 }
 
 /* Set interface flags */
@@ -471,13 +503,13 @@ int if_set_flags(struct interface *ifp, uint64_t flags)
 	int ret;
 	struct ifreq ifreq;
 
-	memset(&ifreq, 0, sizeof(struct ifreq));
+	memset(&ifreq, 0, sizeof(ifreq));
 	ifreq_set_name(&ifreq, ifp);
 
 	ifreq.ifr_flags = ifp->flags;
 	ifreq.ifr_flags |= flags;
 
-	ret = vrf_if_ioctl(SIOCSIFFLAGS, (caddr_t)&ifreq, ifp->vrf_id);
+	ret = vrf_if_ioctl(SIOCSIFFLAGS, (caddr_t)&ifreq, ifp->vrf->vrf_id);
 
 	if (ret < 0) {
 		zlog_info("can't set interface flags");
@@ -492,13 +524,13 @@ int if_unset_flags(struct interface *ifp, uint64_t flags)
 	int ret;
 	struct ifreq ifreq;
 
-	memset(&ifreq, 0, sizeof(struct ifreq));
+	memset(&ifreq, 0, sizeof(ifreq));
 	ifreq_set_name(&ifreq, ifp);
 
 	ifreq.ifr_flags = ifp->flags;
 	ifreq.ifr_flags &= ~flags;
 
-	ret = vrf_if_ioctl(SIOCSIFFLAGS, (caddr_t)&ifreq, ifp->vrf_id);
+	ret = vrf_if_ioctl(SIOCSIFFLAGS, (caddr_t)&ifreq, ifp->vrf->vrf_id);
 
 	if (ret < 0) {
 		zlog_info("can't unset interface flags");
@@ -531,7 +563,7 @@ static int if_set_prefix6_ctx(const struct zebra_dplane_ctx *ctx)
 	strlcpy((char *)&addreq.ifra_name,
 		dplane_ctx_get_ifname(ctx), sizeof(addreq.ifra_name));
 
-	memset(&addr, 0, sizeof(struct sockaddr_in6));
+	memset(&addr, 0, sizeof(addr));
 	addr.sin6_addr = p->prefix;
 	addr.sin6_family = p->family;
 #ifdef HAVE_STRUCT_SOCKADDR_IN_SIN_LEN
@@ -539,7 +571,7 @@ static int if_set_prefix6_ctx(const struct zebra_dplane_ctx *ctx)
 #endif
 	memcpy(&addreq.ifra_addr, &addr, sizeof(struct sockaddr_in6));
 
-	memset(&mask, 0, sizeof(struct sockaddr_in6));
+	memset(&mask, 0, sizeof(mask));
 	masklen2ip6(p->prefixlen, &mask.sin6_addr);
 	mask.sin6_family = p->family;
 #ifdef HAVE_STRUCT_SOCKADDR_IN_SIN_LEN
@@ -578,7 +610,7 @@ static int if_unset_prefix6_ctx(const struct zebra_dplane_ctx *ctx)
 	strlcpy((char *)&addreq.ifra_name,
 		dplane_ctx_get_ifname(ctx), sizeof(addreq.ifra_name));
 
-	memset(&addr, 0, sizeof(struct sockaddr_in6));
+	memset(&addr, 0, sizeof(addr));
 	addr.sin6_addr = p->prefix;
 	addr.sin6_family = p->family;
 #ifdef HAVE_STRUCT_SOCKADDR_IN_SIN_LEN
@@ -586,7 +618,7 @@ static int if_unset_prefix6_ctx(const struct zebra_dplane_ctx *ctx)
 #endif
 	memcpy(&addreq.ifra_addr, &addr, sizeof(struct sockaddr_in6));
 
-	memset(&mask, 0, sizeof(struct sockaddr_in6));
+	memset(&mask, 0, sizeof(mask));
 	masklen2ip6(p->prefixlen, &mask.sin6_addr);
 	mask.sin6_family = p->family;
 #ifdef HAVE_STRUCT_SOCKADDR_IN_SIN_LEN
@@ -620,5 +652,3 @@ static int if_unset_prefix6_ctx(const struct zebra_dplane_ctx *ctx)
 #endif /* HAVE_STRUCT_IN6_ALIASREQ */
 
 #endif /* LINUX_IPV6 */
-
-#endif /* !SUNOS_5 */

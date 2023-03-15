@@ -24,8 +24,8 @@
 #include "lib/stream.h"
 #include "zebra/debug.h"
 #include "zebra/zserv.h"
-#include "zebra/zebra_memory.h"
 #include "zebra/zebra_opaque.h"
+#include "zebra/rib.h"
 
 /* Mem type */
 DEFINE_MTYPE_STATIC(ZEBRA, OPQ, "ZAPI Opaque Information");
@@ -107,7 +107,7 @@ static const char LOG_NAME[] = "Zebra Opaque";
 /* Prototypes */
 
 /* Main event loop, processing incoming message queue */
-static int process_messages(struct thread *event);
+static void process_messages(struct thread *event);
 static int handle_opq_registration(const struct zmsghdr *hdr,
 				   struct stream *msg);
 static int handle_opq_unregistration(const struct zmsghdr *hdr,
@@ -258,7 +258,7 @@ uint32_t zebra_opaque_enqueue_batch(struct stream_fifo *batch)
 
 	/* Schedule module pthread to process the batch */
 	if (counter > 0) {
-		if (IS_ZEBRA_DEBUG_RECV)
+		if (IS_ZEBRA_DEBUG_RECV && IS_ZEBRA_DEBUG_DETAIL)
 			zlog_debug("%s: received %u messages",
 				   __func__, counter);
 		thread_add_event(zo_info.master, process_messages, NULL, 0,
@@ -271,7 +271,7 @@ uint32_t zebra_opaque_enqueue_batch(struct stream_fifo *batch)
 /*
  * Pthread event loop, process the incoming message queue.
  */
-static int process_messages(struct thread *event)
+static void process_messages(struct thread *event)
 {
 	struct stream_fifo fifo;
 	struct stream *msg;
@@ -315,7 +315,7 @@ static int process_messages(struct thread *event)
 		goto done;
 	}
 
-	if (IS_ZEBRA_DEBUG_RECV)
+	if (IS_ZEBRA_DEBUG_RECV && IS_ZEBRA_DEBUG_DETAIL)
 		zlog_debug("%s: processing %u messages", __func__, i);
 
 	/*
@@ -336,8 +336,6 @@ done:
 
 	/* This will also free any leftover messages, in the shutdown case */
 	stream_fifo_deinit(&fifo);
-
-	return 0;
 }
 
 /*
@@ -381,7 +379,7 @@ static int dispatch_opq_messages(struct stream_fifo *msg_fifo)
 		/* Look up registered ZAPI client(s) */
 		reg = opq_reg_lookup(info.type);
 		if (reg == NULL) {
-			if (IS_ZEBRA_DEBUG_RECV)
+			if (IS_ZEBRA_DEBUG_RECV && IS_ZEBRA_DEBUG_DETAIL)
 				zlog_debug("%s: no registrations for opaque type %u, flags %#x",
 					   __func__, info.type, info.flags);
 			goto drop_it;
@@ -401,7 +399,8 @@ static int dispatch_opq_messages(struct stream_fifo *msg_fifo)
 				    client->session_id != info.session_id)
 					continue;
 
-				if (IS_ZEBRA_DEBUG_RECV)
+				if (IS_ZEBRA_DEBUG_RECV &&
+				    IS_ZEBRA_DEBUG_DETAIL)
 					zlog_debug("%s: found matching unicast client %s",
 						   __func__,
 						   opq_client2str(buf,
@@ -423,7 +422,8 @@ static int dispatch_opq_messages(struct stream_fifo *msg_fifo)
 						       client->instance,
 						       client->session_id);
 			if (zclient) {
-				if (IS_ZEBRA_DEBUG_RECV)
+				if (IS_ZEBRA_DEBUG_SEND &&
+				    IS_ZEBRA_DEBUG_DETAIL)
 					zlog_debug("%s: sending %s to client %s",
 						   __func__,
 						   (dup ? "dup" : "msg"),
@@ -444,7 +444,8 @@ static int dispatch_opq_messages(struct stream_fifo *msg_fifo)
 
 				zserv_release_client(zclient);
 			} else {
-				if (IS_ZEBRA_DEBUG_RECV)
+				if (IS_ZEBRA_DEBUG_RECV &&
+				    IS_ZEBRA_DEBUG_DETAIL)
 					zlog_debug("%s: type %u: no zclient for %s",
 						   __func__, info.type,
 						   opq_client2str(buf,
@@ -615,10 +616,6 @@ static int handle_opq_unregistration(const struct zmsghdr *hdr,
 
 	/* Is registration empty now? */
 	if (reg->clients == NULL) {
-		if (IS_ZEBRA_DEBUG_RECV)
-			zlog_debug("%s: free empty reg %u", __func__,
-				   reg->type);
-
 		opq_regh_del(&opq_reg_hash, reg);
 		opq_reg_free(&reg);
 	}

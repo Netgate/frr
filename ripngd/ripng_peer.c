@@ -34,7 +34,7 @@
 #include "ripngd/ripngd.h"
 #include "ripngd/ripng_nexthop.h"
 
-DEFINE_MTYPE_STATIC(RIPNGD, RIPNG_PEER, "RIPng peer")
+DEFINE_MTYPE_STATIC(RIPNGD, RIPNG_PEER, "RIPng peer");
 
 static struct ripng_peer *ripng_peer_new(void)
 {
@@ -75,15 +75,13 @@ struct ripng_peer *ripng_peer_lookup_next(struct ripng *ripng,
 /* RIPng peer is timeout.
  * Garbage collector.
  **/
-static int ripng_peer_timeout(struct thread *t)
+static void ripng_peer_timeout(struct thread *t)
 {
 	struct ripng_peer *peer;
 
 	peer = THREAD_ARG(t);
 	listnode_delete(peer->ripng->peer_list, peer);
 	ripng_peer_free(peer);
-
-	return 0;
 }
 
 /* Get RIPng peer.  At the same time update timeout thread. */
@@ -95,8 +93,7 @@ static struct ripng_peer *ripng_peer_get(struct ripng *ripng,
 	peer = ripng_peer_lookup(ripng, addr);
 
 	if (peer) {
-		if (peer->t_timeout)
-			thread_cancel(peer->t_timeout);
+		thread_cancel(&peer->t_timeout);
 	} else {
 		peer = ripng_peer_new();
 		peer->ripng = ripng;
@@ -105,7 +102,6 @@ static struct ripng_peer *ripng_peer_get(struct ripng *ripng,
 	}
 
 	/* Update timeout thread. */
-	peer->t_timeout = NULL;
 	thread_add_timer(master, ripng_peer_timeout, peer,
 			 RIPNG_PEER_TIMER_DEFAULT, &peer->t_timeout);
 
@@ -165,8 +161,8 @@ void ripng_peer_display(struct vty *vty, struct ripng *ripng)
 	char timebuf[RIPNG_UPTIME_LEN];
 
 	for (ALL_LIST_ELEMENTS(ripng->peer_list, node, nnode, peer)) {
-		vty_out(vty, "    %s \n%14s %10d %10d %10d      %s\n",
-			inet6_ntoa(peer->addr), " ", peer->recv_badpackets,
+		vty_out(vty, "    %pI6 \n%14s %10d %10d %10d      %s\n",
+			&peer->addr, " ", peer->recv_badpackets,
 			peer->recv_badroutes, ZEBRA_RIPNG_DISTANCE_DEFAULT,
 			ripng_peer_uptime(peer, timebuf, RIPNG_UPTIME_LEN));
 	}

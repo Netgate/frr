@@ -13,7 +13,7 @@
  *
  */
 
-#define ZEBRA_BFD_DEST_UPD_PACK_SIZE 128
+#define ZEBRA_BFD_DEST_UPD_PACK_SIZE 256
 
 void zebra_ptm_vpp_init(void);
 void zebra_ptm_vpp_finish(void);

@@ -35,16 +35,17 @@
 #include "pbrd/pbr_memory.h"
 #include "pbrd/pbr_debug.h"
 
-DEFINE_MTYPE_STATIC(PBRD, PBR_NHG, "PBR Nexthop Groups")
+DEFINE_MTYPE_STATIC(PBRD, PBR_NHG, "PBR Nexthop Groups");
 
 struct hash *pbr_nhg_hash;
 static struct hash *pbr_nhrc_hash;
+static struct hash *pbr_nhg_allocated_id_hash;
 
 static uint32_t pbr_nhg_low_table;
 static uint32_t pbr_nhg_high_table;
+static uint32_t pbr_next_unallocated_table_id;
 static uint32_t pbr_nhg_low_rule;
 static uint32_t pbr_nhg_high_rule;
-static bool nhg_tableid[65535];
 
 static void pbr_nht_install_nexthop_group(struct pbr_nexthop_group_cache *pnhgc,
 					  struct nexthop_group nhg);
@@ -194,7 +195,7 @@ static void *pbr_nhgc_alloc(void *p)
 	new = XCALLOC(MTYPE_PBR_NHG, sizeof(*new));
 
 	strlcpy(new->name, pnhgc->name, sizeof(pnhgc->name));
-	new->table_id = pbr_nht_get_next_tableid(false);
+	pbr_nht_reserve_next_table_id(new);
 
 	DEBUGD(&pbr_dbg_nht, "%s: NHT: %s assigned Table ID: %u", __func__,
 	       new->name, new->table_id);
@@ -213,7 +214,7 @@ void pbr_nhgroup_add_cb(const char *name)
 	nhgc = nhgc_find(name);
 
 	if (!nhgc) {
-		DEBUGD(&pbr_dbg_nht, "%s: Could not find nhgc with name: %s\n",
+		DEBUGD(&pbr_dbg_nht, "%s: Could not find nhgc with name: %s",
 		       __func__, name);
 		return;
 	}
@@ -237,16 +238,22 @@ void pbr_nhgroup_add_nexthop_cb(const struct nexthop_group_cmd *nhgc,
 	struct pbr_nexthop_cache pnhc_find = {};
 	struct pbr_nexthop_cache *pnhc;
 
-	if (!pbr_nht_get_next_tableid(true)) {
-		zlog_warn(
-			"%s: Exhausted all table identifiers; cannot create nexthop-group cache for nexthop-group '%s'",
-			__func__, nhgc->name);
-		return;
-	}
-
 	/* find pnhgc by name */
 	strlcpy(pnhgc_find.name, nhgc->name, sizeof(pnhgc_find.name));
-	pnhgc = hash_get(pbr_nhg_hash, &pnhgc_find, pbr_nhgc_alloc);
+	pnhgc = hash_lookup(pbr_nhg_hash, &pnhgc_find);
+
+	if (!pnhgc) {
+		/* Check if configured table range is exhausted */
+		if (!pbr_nht_has_unallocated_table()) {
+			zlog_warn(
+				"%s: Exhausted all table identifiers; cannot create nexthop-group cache for nexthop-group '%s'",
+				__func__, nhgc->name);
+			return;
+		}
+
+		/* No nhgc but range not exhausted? Then alloc it */
+		pnhgc = hash_get(pbr_nhg_hash, &pnhgc_find, pbr_nhgc_alloc);
+	}
 
 	/* create & insert new pnhc into pnhgc->nhh */
 	pnhc_find.nexthop = *nhop;
@@ -289,6 +296,13 @@ void pbr_nhgroup_del_nexthop_cb(const struct nexthop_group_cmd *nhgc,
 	strlcpy(pnhgc_find.name, nhgc->name, sizeof(pnhgc_find.name));
 	pnhgc = hash_lookup(pbr_nhg_hash, &pnhgc_find);
 
+	/*
+	 * Ignore deletions of nhg we did not / could not allocate nhgc for
+	 * Occurs when PBR table range is full but new nhg keep coming in
+	 */
+	if (!pnhgc)
+		return;
+
 	/* delete pnhc from pnhgc->nhh */
 	pnhc_find.nexthop = *nhop;
 	pnhc = hash_release(pnhgc->nhh, &pnhc_find);
@@ -319,13 +333,6 @@ void pbr_nhgroup_delete_cb(const char *name)
 
 	pbr_map_check_nh_group_change(name);
 }
-
-#if 0
-static struct pbr_nexthop_cache *pbr_nht_lookup_nexthop(struct nexthop *nexthop)
-{
-	return NULL;
-}
-#endif
 
 static void
 pbr_nht_find_nhg_from_table_update(struct pbr_nexthop_group_cache *pnhgc,
@@ -515,6 +522,49 @@ char *pbr_nht_nexthop_make_name(char *name, size_t l,
 	return buffer;
 }
 
+/* Set data derived from nhg in pbrms */
+void pbr_nht_set_seq_nhg_data(struct pbr_map_sequence *pbrms,
+			      const struct nexthop_group_cmd *nhgc)
+{
+	const struct nexthop_group *nhg;
+
+	if (!nhgc)
+		return;
+
+	nhg = &nhgc->nhg;
+	if (!nhg->nexthop)
+		return;
+
+	switch (nhg->nexthop->type) {
+	case NEXTHOP_TYPE_IPV6:
+	case NEXTHOP_TYPE_IPV6_IFINDEX:
+		pbrms->family = AF_INET6;
+		break;
+	case NEXTHOP_TYPE_IPV4:
+	case NEXTHOP_TYPE_IPV4_IFINDEX:
+		pbrms->family = AF_INET;
+	default:
+		break;
+	}
+}
+
+/* Configure a routemap sequence to use a given nexthop group */
+void pbr_nht_set_seq_nhg(struct pbr_map_sequence *pbrms, const char *name)
+{
+	struct nexthop_group_cmd *nhgc;
+
+	if (!name)
+		return;
+
+	pbrms->nhgrp_name = XSTRDUP(MTYPE_TMP, name);
+
+	nhgc = nhgc_find(name);
+	if (!nhgc)
+		return;
+
+	pbr_nht_set_seq_nhg_data(pbrms, nhgc);
+}
+
 void pbr_nht_add_individual_nexthop(struct pbr_map_sequence *pbrms,
 				    const struct nexthop *nhop)
 {
@@ -540,7 +590,7 @@ void pbr_nht_add_individual_nexthop(struct pbr_map_sequence *pbrms,
 	pbr_nht_nexthop_make_name(pbrms->parent->name, PBR_NHC_NAMELEN,
 				  pbrms->seqno, find.name);
 
-	if (!pbr_nht_get_next_tableid(true)) {
+	if (!pbr_nht_has_unallocated_table()) {
 		zlog_warn(
 			"%s: Exhausted all table identifiers; cannot create nexthop-group cache for nexthop-group '%s'",
 			__func__, find.name);
@@ -617,7 +667,7 @@ struct pbr_nexthop_group_cache *pbr_nht_add_group(const char *name)
 	struct pbr_nexthop_group_cache *pnhgc;
 	struct pbr_nexthop_group_cache lookup;
 
-	if (!pbr_nht_get_next_tableid(true)) {
+	if (!pbr_nht_has_unallocated_table()) {
 		zlog_warn(
 			"%s: Exhausted all table identifiers; cannot create nexthop-group cache for nexthop-group '%s'",
 			__func__, name);
@@ -627,7 +677,7 @@ struct pbr_nexthop_group_cache *pbr_nht_add_group(const char *name)
 	nhgc = nhgc_find(name);
 
 	if (!nhgc) {
-		DEBUGD(&pbr_dbg_nht, "%s: Could not find nhgc with name: %s\n",
+		DEBUGD(&pbr_dbg_nht, "%s: Could not find nhgc with name: %s",
 		       __func__, name);
 		return NULL;
 	}
@@ -673,6 +723,18 @@ void pbr_nht_delete_group(const char *name)
 
 	strlcpy(pnhgc_find.name, name, sizeof(pnhgc_find.name));
 	pnhgc = hash_release(pbr_nhg_hash, &pnhgc_find);
+
+	/*
+	 * Ignore deletions of nh we did not / could not allocate nhgc for
+	 * Occurs when PBR table range is full but new nhg keep coming in
+	 */
+	if (!pnhgc)
+		return;
+
+	/* Remove and recalculate the next table id */
+	hash_release(pbr_nhg_allocated_id_hash, pnhgc);
+	pbr_nht_update_next_unallocated_table_id();
+
 	pbr_nhgc_delete(pnhgc);
 }
 
@@ -693,7 +755,7 @@ bool pbr_nht_nexthop_group_valid(const char *name)
 	pnhgc = hash_get(pbr_nhg_hash, &lookup, NULL);
 	if (!pnhgc)
 		return false;
-	DEBUGD(&pbr_dbg_nht, "%s: \t%d %d", __func__, pnhgc->valid,
+	DEBUGD(&pbr_dbg_nht, "%s:    %d %d", __func__, pnhgc->valid,
 	       pnhgc->installed);
 	if (pnhgc->valid && pnhgc->installed)
 		return true;
@@ -719,8 +781,31 @@ pbr_nht_individual_nexthop_gw_update(struct pbr_nexthop_cache *pnhc,
 {
 	bool is_valid = pnhc->valid;
 
-	if (!pnhi->nhr) /* It doesn't care about non-nexthop updates */
+	/*
+	 * If we have an interface down event, let's note that
+	 * it is happening and find all the nexthops that depend
+	 * on that interface.  As that if we have an interface
+	 * flapping fast enough it means that zebra might turn
+	 * those nexthop tracking events into a no-update
+	 * So let's search and do the right thing on the
+	 * interface event.
+	 */
+	if (!pnhi->nhr) {
+		switch (pnhc->nexthop.type) {
+		case NEXTHOP_TYPE_BLACKHOLE:
+		case NEXTHOP_TYPE_IPV4:
+		case NEXTHOP_TYPE_IPV6:
+			goto done;
+		case NEXTHOP_TYPE_IFINDEX:
+		case NEXTHOP_TYPE_IPV4_IFINDEX:
+		case NEXTHOP_TYPE_IPV6_IFINDEX:
+			if (pnhc->nexthop.ifindex == pnhi->ifp->ifindex)
+				is_valid = if_is_up(pnhi->ifp);
+			goto done;
+		}
+
 		goto done;
+	}
 
 	switch (pnhi->nhr->prefix.family) {
 	case AF_INET:
@@ -827,16 +912,14 @@ static void pbr_nht_individual_nexthop_update_lookup(struct hash_bucket *b,
 {
 	struct pbr_nexthop_cache *pnhc = b->data;
 	struct pbr_nht_individual *pnhi = data;
-	char buf[PREFIX_STRLEN];
 	bool old_valid;
 
 	old_valid = pnhc->valid;
 
 	pbr_nht_individual_nexthop_update(pnhc, pnhi);
 
-	DEBUGD(&pbr_dbg_nht, "\tFound %s: old: %d new: %d",
-	       prefix2str(&pnhi->nhr->prefix, buf, sizeof(buf)), old_valid,
-	       pnhc->valid);
+	DEBUGD(&pbr_dbg_nht, "    Found %pFX: old: %d new: %d",
+	       &pnhi->nhr->prefix, old_valid, pnhc->valid);
 
 	if (pnhc->valid)
 		pnhi->valid = true;
@@ -958,8 +1041,9 @@ static int pbr_nht_individual_nexthop_vrf_handle(struct hash_bucket *b,
 						     nhrcvi.nhrc);
 					nhrcvi.nhrc->nexthop.vrf_id =
 						pbr_vrf_id(pnhi->pbr_vrf);
-					hash_get(pbr_nhrc_hash, nhrcvi.nhrc,
-						 hash_alloc_intern);
+					(void)hash_get(pbr_nhrc_hash,
+						       nhrcvi.nhrc,
+						       hash_alloc_intern);
 					pbr_send_rnh(&nhrcvi.nhrc->nexthop, true);
 				}
 			} while (nhrcvi.nhrc);
@@ -985,7 +1069,6 @@ static void pbr_nht_nexthop_vrf_handle(struct hash_bucket *b, void *data)
 	struct pbr_vrf *pbr_vrf = data;
 	struct pbr_nht_individual pnhi = {};
 
-	zlog_debug("pnhgc iterating");
 	hash_iterate(pnhgc->nhh, pbr_nht_clear_looked_at, NULL);
 	memset(&pnhi, 0, sizeof(pnhi));
 	pnhi.pbr_vrf = pbr_vrf;
@@ -1005,7 +1088,8 @@ static void pbr_nht_nexthop_vrf_handle(struct hash_bucket *b, void *data)
 		if (pnhi.pnhc) {
 			pnhi.pnhc->nexthop.vrf_id = pbr_vrf_id(pbr_vrf);
 
-			hash_get(pnhgc->nhh, pnhi.pnhc, hash_alloc_intern);
+			(void)hash_get(pnhgc->nhh, pnhi.pnhc,
+				       hash_alloc_intern);
 		} else
 			pnhc->nexthop.vrf_id = pbr_vrf_id(pbr_vrf);
 
@@ -1059,11 +1143,11 @@ static void pbr_nht_nexthop_interface_handle(struct hash_bucket *b, void *data)
 		if (nhrc) {
 			hash_release(pbr_nhrc_hash, nhrc);
 			nhrc->nexthop.ifindex = ifp->ifindex;
-			hash_get(pbr_nhrc_hash, nhrc, hash_alloc_intern);
+			(void)hash_get(pbr_nhrc_hash, nhrc, hash_alloc_intern);
 		}
 		pnhi.pnhc->nexthop.ifindex = ifp->ifindex;
 
-		hash_get(pnhgc->nhh, pnhi.pnhc, hash_alloc_intern);
+		(void)hash_get(pnhgc->nhh, pnhi.pnhc, hash_alloc_intern);
 
 		pbr_map_check_interface_nh_group_change(pnhgc->name, ifp,
 							old_ifindex);
@@ -1087,7 +1171,7 @@ pbr_nht_individual_nexthop_interface_update_lookup(struct hash_bucket *b,
 
 	pbr_nht_individual_nexthop_update(pnhc, pnhi);
 
-	DEBUGD(&pbr_dbg_nht, "\tFound %s: old: %d new: %d", pnhi->ifp->name,
+	DEBUGD(&pbr_dbg_nht, "    Found %s: old: %d new: %d", pnhi->ifp->name,
 	       old_valid, pnhc->valid);
 
 	if (pnhc->valid)
@@ -1099,6 +1183,7 @@ static void pbr_nht_nexthop_interface_update_lookup(struct hash_bucket *b,
 {
 	struct pbr_nexthop_group_cache *pnhgc = b->data;
 	struct pbr_nht_individual pnhi = {};
+	struct nexthop_group nhg = {};
 	bool old_valid;
 
 	old_valid = pnhgc->valid;
@@ -1113,6 +1198,15 @@ static void pbr_nht_nexthop_interface_update_lookup(struct hash_bucket *b,
 	 */
 	pnhgc->valid = pnhi.valid;
 
+	pbr_nexthop_group_cache_to_nexthop_group(&nhg, pnhgc);
+
+	if (pnhgc->valid)
+		pbr_nht_install_nexthop_group(pnhgc, nhg);
+	else
+		pbr_nht_uninstall_nexthop_group(pnhgc, nhg, 0);
+
+	nexthops_free(nhg.nexthop);
+
 	if (old_valid != pnhgc->valid)
 		pbr_map_check_nh_group_change(pnhgc->name);
 }
@@ -1121,6 +1215,24 @@ void pbr_nht_nexthop_interface_update(struct interface *ifp)
 {
 	hash_iterate(pbr_nhg_hash, pbr_nht_nexthop_interface_update_lookup,
 		     ifp);
+}
+
+static bool pbr_nhg_allocated_id_hash_equal(const void *arg1, const void *arg2)
+{
+	const struct pbr_nexthop_group_cache *left, *right;
+
+	left = (const struct pbr_nexthop_group_cache *)arg1;
+	right = (const struct pbr_nexthop_group_cache *)arg2;
+
+	return left->table_id == right->table_id;
+}
+
+static uint32_t pbr_nhg_allocated_id_hash_key(const void *arg)
+{
+	const struct pbr_nexthop_group_cache *nhgc = arg;
+
+	/* table_id makes elements in this hash unique */
+	return nhgc->table_id;
 }
 
 static uint32_t pbr_nhg_hash_key(const void *arg)
@@ -1140,29 +1252,62 @@ static bool pbr_nhg_hash_equal(const void *arg1, const void *arg2)
 	return !strcmp(nhgc1->name, nhgc2->name);
 }
 
-uint32_t pbr_nht_get_next_tableid(bool peek)
+uint32_t pbr_nht_find_next_unallocated_table_id(void)
 {
-	uint32_t i;
-	bool found = false;
+	struct pbr_nexthop_group_cache iter;
 
-	for (i = pbr_nhg_low_table; i <= pbr_nhg_high_table; i++) {
-		if (!nhg_tableid[i]) {
-			found = true;
-			break;
-		}
-	}
+	/*
+	 * Find the smallest unallocated table id
+	 * This can be non-trivial considering nhg removals / shifting upper &
+	 * lower bounds, so start at the lowest in the range and continue until
+	 * an unallocated space is found
+	 */
+	for (iter.table_id = pbr_nhg_low_table;
+	     iter.table_id < pbr_nhg_high_table; ++iter.table_id)
+		if (!hash_lookup(pbr_nhg_allocated_id_hash, &iter))
+			return iter.table_id;
 
-	if (found) {
-		nhg_tableid[i] = !peek;
-		return i;
-	} else
+	/* Configured range is full, cannot install anywhere */
+	return 0;
+}
+
+bool pbr_nht_has_unallocated_table(void)
+{
+	return !!pbr_next_unallocated_table_id;
+}
+
+void pbr_nht_update_next_unallocated_table_id(void)
+{
+	pbr_next_unallocated_table_id =
+		pbr_nht_find_next_unallocated_table_id();
+}
+
+uint32_t pbr_nht_reserve_next_table_id(struct pbr_nexthop_group_cache *nhgc)
+{
+	/* Nothing to reserve if all tables in range already used */
+	if (!pbr_next_unallocated_table_id)
 		return 0;
+
+	/* Reserve this table id */
+	nhgc->table_id = pbr_next_unallocated_table_id;
+
+	/* Mark table id as allocated in id-indexed hash */
+	(void)hash_get(pbr_nhg_allocated_id_hash, nhgc, hash_alloc_intern);
+
+	/* Pre-compute the next unallocated table id */
+	pbr_nht_update_next_unallocated_table_id();
+
+	/* Present caller with reserved table id */
+	return nhgc->table_id;
 }
 
 void pbr_nht_set_tableid_range(uint32_t low, uint32_t high)
 {
 	pbr_nhg_low_table = low;
 	pbr_nhg_high_table = high;
+
+	/* Re-compute next unallocated id within new range */
+	pbr_nht_update_next_unallocated_table_id();
 }
 
 void pbr_nht_write_table_range(struct vty *vty)
@@ -1329,10 +1474,15 @@ void pbr_nht_init(void)
 	pbr_nhrc_hash =
 		hash_create_size(16, (unsigned int (*)(const void *))nexthop_hash,
 				 pbr_nhrc_hash_equal, "PBR NH Hash");
+	pbr_nhg_allocated_id_hash = hash_create_size(
+		16, pbr_nhg_allocated_id_hash_key,
+		pbr_nhg_allocated_id_hash_equal, "PBR Allocated Table Hash");
 
 	pbr_nhg_low_table = PBR_NHT_DEFAULT_LOW_TABLEID;
 	pbr_nhg_high_table = PBR_NHT_DEFAULT_HIGH_TABLEID;
 	pbr_nhg_low_rule = PBR_NHT_DEFAULT_LOW_RULE;
 	pbr_nhg_high_rule = PBR_NHT_DEFAULT_HIGH_RULE;
-	memset(&nhg_tableid, 0, 65535 * sizeof(uint8_t));
+
+	/* First unallocated table is lowest in range on init */
+	pbr_next_unallocated_table_id = PBR_NHT_DEFAULT_LOW_TABLEID;
 }

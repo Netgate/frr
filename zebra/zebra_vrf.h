@@ -26,6 +26,7 @@
 
 #include <zebra/zebra_ns.h>
 #include <zebra/zebra_pw.h>
+#include <zebra/rtadv.h>
 #include <lib/vxlan.h>
 
 #ifdef __cplusplus
@@ -78,9 +79,7 @@ struct zebra_vrf {
 
 	/* Recursive Nexthop table */
 	struct route_table *rnh_table[AFI_MAX];
-
-	/* Import check table (used mostly by BGP */
-	struct route_table *import_check_table[AFI_MAX];
+	struct route_table *rnh_table_multicast[AFI_MAX];
 
 	struct otable_head other_tables;
 
@@ -105,6 +104,7 @@ struct zebra_vrf {
 
 	/* MPLS Label to handle L3VPN <-> vrf popping */
 	mpls_label_t label[AFI_MAX];
+	uint8_t label_proto[AFI_MAX];
 
 	/* MPLS static LSP config table */
 	struct hash *slsp_table;
@@ -176,12 +176,12 @@ struct zebra_vrf {
 	uint64_t lsp_installs;
 	uint64_t lsp_removals;
 
-#if defined(HAVE_RTADV)
-	struct rtadv rtadv;
-#endif /* HAVE_RTADV */
+	struct table_manager *tbl_mgr;
 
-	int zebra_rnh_ip_default_route;
-	int zebra_rnh_ipv6_default_route;
+	struct rtadv rtadv;
+
+	bool zebra_rnh_ip_default_route;
+	bool zebra_rnh_ipv6_default_route;
 };
 #define PROTO_RM_NAME(zvrf, afi, rtype) zvrf->proto_rm[afi][rtype].name
 #define NHT_RM_NAME(zvrf, afi, rtype) zvrf->nht_rm[afi][rtype].name
@@ -191,9 +191,10 @@ struct zebra_vrf {
 /*
  * special macro to allow us to get the correct zebra_vrf
  */
-#define ZEBRA_DECLVAR_CONTEXT(A, B)                                            \
-	struct vrf *A = VTY_GET_CONTEXT(vrf);                                  \
-	struct zebra_vrf *B = (A) ? A->info : vrf_info_lookup(VRF_DEFAULT)
+#define ZEBRA_DECLVAR_CONTEXT_VRF(vrfptr, zvrfptr)                             \
+	VTY_DECLVAR_CONTEXT_VRF(vrfptr);                                       \
+	struct zebra_vrf *zvrfptr = vrfptr->info;                              \
+	MACRO_REQUIRE_SEMICOLON() /* end */
 
 static inline vrf_id_t zvrf_id(struct zebra_vrf *zvrf)
 {
@@ -238,7 +239,7 @@ zvrf_other_table_compare_func(const struct other_route_table *a,
 }
 
 DECLARE_RBTREE_UNIQ(otable, struct other_route_table, next,
-		    zvrf_other_table_compare_func)
+		    zvrf_other_table_compare_func);
 
 extern struct route_table *
 zebra_vrf_lookup_table_with_table_id(afi_t afi, safi_t safi, vrf_id_t vrf_id,
@@ -251,10 +252,17 @@ extern struct route_table *zebra_vrf_get_table_with_table_id(afi_t afi,
 extern void zebra_vrf_update_all(struct zserv *client);
 extern struct zebra_vrf *zebra_vrf_lookup_by_id(vrf_id_t vrf_id);
 extern struct zebra_vrf *zebra_vrf_lookup_by_name(const char *);
-extern struct zebra_vrf *zebra_vrf_alloc(void);
+extern struct zebra_vrf *zebra_vrf_alloc(struct vrf *vrf);
 extern struct route_table *zebra_vrf_table(afi_t, safi_t, vrf_id_t);
 
-extern int zebra_vrf_has_config(struct zebra_vrf *zvrf);
+/*
+ * API to associate a VRF with a NETNS.
+ * Called either from vty or through discovery.
+ */
+extern int zebra_vrf_netns_handler_create(struct vty *vty, struct vrf *vrf,
+					  char *pathname, ns_id_t ext_ns_id,
+					  ns_id_t ns_id, ns_id_t rel_def_ns_id);
+
 extern void zebra_vrf_init(void);
 
 extern void zebra_rtable_node_cleanup(struct route_table *table,

@@ -22,8 +22,6 @@
 #ifndef _ZEBRA_LOG_H
 #define _ZEBRA_LOG_H
 
-#include "zassert.h"
-
 #include <syslog.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -61,16 +59,6 @@ struct message {
 	int key;
 	const char *str;
 };
-
-/* For logs which have error codes associated with them */
-#define flog_err(ferr_id, format, ...)                                        \
-	zlog_err("[EC %u] " format, ferr_id, ##__VA_ARGS__)
-#define flog_err_sys(ferr_id, format, ...)                                     \
-	flog_err(ferr_id, format, ##__VA_ARGS__)
-#define flog_warn(ferr_id, format, ...)                                        \
-	zlog_warn("[EC %u] " format, ferr_id, ##__VA_ARGS__)
-#define flog(priority, ferr_id, format, ...)                                   \
-	zlog(priority, "[EC %u] " format, ferr_id, ##__VA_ARGS__)
 
 extern void zlog_thread_info(int log_level);
 
@@ -114,9 +102,9 @@ extern void zlog_backtrace_sigsafe(int priority, void *program_counter);
    It caches the most recent localtime result and can therefore
    avoid multiple calls within the same second.  If buflen is too small,
    *buf will be set to '\0', and 0 will be returned. */
-#define QUAGGA_TIMESTAMP_LEN 40
-extern size_t quagga_timestamp(int timestamp_precision /* # subsecond digits */,
-			       char *buf, size_t buflen);
+#define FRR_TIMESTAMP_LEN 40
+extern size_t frr_timestamp(int timestamp_precision /* # subsecond digits */,
+			    char *buf, size_t buflen);
 
 extern void zlog_hexdump(const void *mem, size_t len);
 extern const char *zlog_sanitize(char *buf, size_t bufsz, const void *in,
@@ -147,8 +135,8 @@ struct timestamp_control {
 	size_t len;			/* length of rendered timestamp */
 	int precision;			/* configuration parameter */
 	int already_rendered;		/* should be initialized to 0 */
-	char buf[QUAGGA_TIMESTAMP_LEN]; /* will contain the rendered timestamp
-					   */
+	char buf[FRR_TIMESTAMP_LEN];	/* will contain the rendered timestamp
+					 */
 };
 
 /* Defines for use in command construction: */

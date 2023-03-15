@@ -22,8 +22,8 @@
 #include "sigevent.h"
 #include "frr_zmq.h"
 
-DEFINE_MTYPE_STATIC(LIB, TESTBUF, "zmq test buffer")
-DEFINE_MTYPE_STATIC(LIB, ZMQMSG, "zmq message")
+DEFINE_MTYPE_STATIC(LIB, TESTBUF, "zmq test buffer");
+DEFINE_MTYPE_STATIC(LIB, ZMQMSG, "zmq message");
 
 static struct thread_master *master;
 
@@ -266,7 +266,7 @@ static void sigchld(void)
 	frrzmq_thread_cancel(&cb, &cb->write);
 }
 
-static struct quagga_signal_t sigs[] = {
+static struct frr_signal_t sigs[] = {
 	{
 		.signal = SIGCHLD,
 		.handler = sigchld,

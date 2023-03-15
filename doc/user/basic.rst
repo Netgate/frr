@@ -11,13 +11,9 @@ The following sections discuss commands common to all the routing daemons.
 Config Commands
 ===============
 
-.. index:: Configuration files for running the software
 
-.. index:: Files for running configurations
 
-.. index:: Modifying the herd's behavior
 
-.. index:: Getting the herd running
 
 In a config file, you can write the debugging options, a vty's password,
 routing daemon configurations, a log file name, and so forth. This information
@@ -60,34 +56,60 @@ If desired, you can specify a config file using the :option:`-f` or
 Basic Config Commands
 ---------------------
 
-.. index:: hostname HOSTNAME
 .. clicmd:: hostname HOSTNAME
 
-   Set hostname of the router.
+   Set hostname of the router. It is only for current ``vtysh``, it will not be
+   saved to any configuration file even with ``write file``.
 
-.. index::
-   single: no password PASSWORD
-   single: password PASSWORD
+.. clicmd:: domainname DOMAINNAME
 
-.. clicmd:: [no] password PASSWORD
+   Set domainname of the router. It is only for current ``vtysh``, it will not
+   be saved to any configuration file even with ``write file``.
+
+.. clicmd:: password PASSWORD
 
    Set password for vty interface. The ``no`` form of the command deletes the
    password. If there is no password, a vty won't accept connections.
 
-.. index::
-   single: no enable password PASSWORD
-   single: enable password PASSWORD
-
-.. clicmd:: [no] enable password PASSWORD
+.. clicmd:: enable password PASSWORD
 
    Set enable password. The ``no`` form of the command deletes the enable
    password.
 
-.. index::
-   single: no log trap [LEVEL]
-   single: log trap LEVEL
+.. clicmd:: service cputime-stats
 
-.. clicmd:: [no] log trap LEVEL
+   Collect CPU usage statistics for individual FRR event handlers and CLI
+   commands.  This is enabled by default and can be disabled if the extra
+   overhead causes a noticeable slowdown on your system.
+
+   Disabling these statistics will also make the
+   :clicmd:`service cputime-warning (1-4294967295)` limit non-functional.
+
+.. clicmd:: service cputime-warning (1-4294967295)
+
+   Warn if the CPU usage of an event handler or CLI command exceeds the
+   specified limit (in milliseconds.)  Such warnings are generally indicative
+   of some routine in FRR mistakenly blocking/hogging the processing loop and
+   should be reported as a FRR bug.
+
+   The default limit is 5 seconds (i.e. 5000), but this can be changed by the
+   deprecated ``--enable-time-check=...`` compile-time option.
+
+   This command has no effect if :clicmd:`service cputime-stats` is disabled.
+
+.. clicmd:: service walltime-warning (1-4294967295)
+
+   Warn if the total wallclock time spent handling an event or executing a CLI
+   command exceeds the specified limit (in milliseconds.)  This includes time
+   spent waiting for I/O or other tasks executing and may produce excessive
+   warnings if the system is overloaded.  (This may still be useful to
+   provide an immediate sign that FRR is not operating correctly due to
+   externally caused starvation.)
+
+   The default limit is 5 seconds as above, including the same deprecated
+   ``--enable-time-check=...`` compile-time option.
+
+.. clicmd:: log trap LEVEL
 
    These commands are deprecated and are present only for historical
    compatibility. The log trap command sets the current logging level for all
@@ -97,11 +119,8 @@ Basic Config Commands
    future logging commands to debugging, but it does not change the logging
    level of existing logging destinations.
 
-.. index::
-   single: no log stdout [LEVEL]
-   single: log stdout [LEVEL]
 
-.. clicmd:: [no] log stdout LEVEL
+.. clicmd:: log stdout LEVEL
 
    Enable logging output to stdout. If the optional second argument specifying
    the logging level is not present, the default logging level (typically
@@ -110,6 +129,11 @@ Basic Config Commands
    alerts, critical, errors, warnings, notifications, informational, or
    debugging. Note that the existing code logs its most important messages with
    severity ``errors``.
+
+   .. note::
+
+      If ``systemd`` is in use and stdout is connected to systemd, FRR will
+      automatically switch to ``journald`` extended logging for this target.
 
    .. warning::
 
@@ -120,11 +144,7 @@ Basic Config Commands
       terminal output.  Use a log file and ``tail -f`` if this rare chance is
       inacceptable to your setup.
 
-.. index::
-   single: no log file [FILENAME [LEVEL]]
-   single: log file FILENAME [LEVEL]
-
-.. clicmd:: [no] log file [FILENAME [LEVEL]]
+.. clicmd:: log file [FILENAME [LEVEL]]
 
    If you want to log into a file, please specify ``filename`` as
    in this example:
@@ -138,60 +158,49 @@ Basic Config Commands
    deprecated ``log trap`` command) will be used. The ``no`` form of the command
    disables logging to a file.
 
-.. index::
-   single: no log syslog [LEVEL]
-   single: log syslog [LEVEL]
-
-.. clicmd:: [no] log syslog [LEVEL]
+.. clicmd:: log syslog [LEVEL]
 
    Enable logging output to syslog. If the optional second argument specifying
    the logging level is not present, the default logging level (typically
    debugging, but can be changed using the deprecated ``log trap`` command) will
    be used. The ``no`` form of the command disables logging to syslog.
 
-.. index::
-   single: no log monitor [LEVEL]
-   single: log monitor [LEVEL]
+   .. note::
 
-.. clicmd:: [no] log monitor [LEVEL]
+      This uses the system's ``syslog()`` API, which does not support message
+      batching or structured key/value data pairs.  If possible, use
+      :clicmd:`log extended EXTLOGNAME` with
+      :clicmd:`destination syslog [supports-rfc5424]` instead of this.
 
-   Enable logging output to vty terminals that have enabled logging using the
-   ``terminal monitor`` command. By default, monitor logging is enabled at the
-   debugging level, but this command (or the deprecated ``log trap`` command)
-   can be used to change the monitor logging level. If the optional second
-   argument specifying the logging level is not present, the default logging
-   level (typically debugging) will be used. The ``no`` form of the command
-   disables logging to terminal monitors.
+.. clicmd:: log extended EXTLOGNAME
 
-.. index::
-   single: no log facility [FACILITY]
-   single: log facility [FACILITY]
+   Create an extended logging target with the specified name.  The name has
+   no further meaning and is only used to identify the target.  Multiple
+   targets can be created and deleted with the ``no`` form.
 
-.. clicmd:: [no] log facility [FACILITY]
+   Refer to :ref:`ext-log-target` for further details and suboptions.
+
+.. clicmd:: log monitor [LEVEL]
+
+   This command is deprecated and does nothing.
+
+.. clicmd:: log facility [FACILITY]
 
    This command changes the facility used in syslog messages. The default
    facility is ``daemon``. The ``no`` form of the command resets the facility
    to the default ``daemon`` facility.
 
-.. index::
-   single: no log record-priority
-   single: log record-priority
-
-.. clicmd:: [no] log record-priority
+.. clicmd:: log record-priority
 
    To include the severity in all messages logged to a file, to stdout, or to
    a terminal monitor (i.e. anything except syslog),
    use the ``log record-priority`` global configuration command.
    To disable this option, use the ``no`` form of the command. By default,
    the severity level is not included in logged messages. Note: some
-   versions of syslogd (including Solaris) can be configured to include
-   the facility and level in the messages emitted.
+   versions of syslogd can be configured to include the facility and
+   level in the messages emitted.
 
-.. index::
-   single: log timestamp precision (0-6)
-   single: [no] log timestamp precision (0-6)
-
-.. clicmd:: [no] log timestamp precision [(0-6)]
+.. clicmd:: log timestamp precision [(0-6)]
 
    This command sets the precision of log message timestamps to the given
    number of digits after the decimal point. Currently, the value must be in
@@ -206,8 +215,7 @@ Basic Config Commands
    In this example, the precision is set to provide timestamps with
    millisecond accuracy.
 
-.. index:: [no] log commands
-.. clicmd:: [no] log commands
+.. clicmd:: log commands
 
    This command enables the logging of all commands typed by a user to all
    enabled log destinations. The note that logging includes full command lines,
@@ -215,15 +223,17 @@ Basic Config Commands
    is used to start the daemon then this command is turned on by default
    and cannot be turned off and the [no] form of the command is dissallowed.
 
-.. index::
-   single: no log-filter WORD [DAEMON]
-   single: log-filter WORD [DAEMON]
+.. clicmd:: log filtered-file [FILENAME [LEVEL]]
 
-.. clicmd:: [no] log-filter WORD [DAEMON]
+   Configure a destination file for filtered logs with the
+   :clicmd:`log filter-text WORD` command.
+
+.. clicmd:: log filter-text WORD
 
    This command forces logs to be filtered on a specific string. A log message
    will only be printed if it matches on one of the filters in the log-filter
-   table. Can be daemon independent.
+   table.  The filter only applies to file logging targets configured with
+   :clicmd:`log filtered-file [FILENAME [LEVEL]]`.
 
    .. note::
 
@@ -232,55 +242,88 @@ Basic Config Commands
       Log filters prevent this but you should still expect a small performance
       hit due to filtering each of all those logs.
 
-.. index:: log-filter clear [DAEMON]
-.. clicmd:: log-filter clear [DAEMON]
+   .. note::
 
-   This command clears all current filters in the log-filter table. Can be
-   daemon independent.
+      This setting is not saved to ``frr.conf`` and not shown in
+      :clicmd:`show running-config`.  It is intended for ephemeral debugging
+      purposes only.
 
-.. index:: service password-encryption
+.. clicmd:: clear log filter-text
+
+   This command clears all current filters in the log-filter table.
+
+
+.. clicmd:: log immediate-mode
+
+   Use unbuffered output for log and debug messages; normally there is
+   some internal buffering.
+
+.. clicmd:: log unique-id
+
+   Include ``[XXXXX-XXXXX]`` log message unique identifier in the textual part
+   of log messages.  This is enabled by default, but can be disabled with
+   ``no log unique-id``.  Please make sure the IDs are enabled when including
+   logs for FRR bug reports.
+
+   The unique identifiers are automatically generated based on source code
+   file name, format string (before filling out) and severity.  They do not
+   change "randomly", but some cleanup work may cause large chunks of ID
+   changes between releases.  The IDs always start with a letter, consist of
+   letters and numbers (and a dash for readability), are case insensitive, and
+   ``I``, ``L``, ``O`` & ``U`` are excluded.
+
+   This option will not affect future logging targets which allow putting the
+   unique identifier in auxiliary metadata outside the log message text
+   content.  (No such logging target exists currently, but RFC5424 syslog and
+   systemd's journald both support it.)
+
+.. clicmd:: debug unique-id XXXXX-XXXXX backtrace
+
+   Print backtraces (call stack) for specific log messages, identified by
+   their unique ID (see above.)  Includes source code location and current
+   event handler being executed.  On some systems you may need to install a
+   `debug symbols` package to get proper function names rather than raw code
+   pointers.
+
+   This command can be issued inside and outside configuration mode, and is
+   saved to configuration only if it was given in configuration mode.
+
+   .. warning::
+
+      Printing backtraces can significantly slow down logging calls and cause
+      log files to quickly balloon in size.  Remember to disable backtraces
+      when they're no longer needed.
+
 .. clicmd:: service password-encryption
 
    Encrypt password.
 
-.. index:: service advanced-vty
 .. clicmd:: service advanced-vty
 
    Enable advanced mode VTY.
 
-.. index:: service terminal-length (0-512)
 .. clicmd:: service terminal-length (0-512)
 
    Set system wide line configuration. This configuration command applies to
    all VTY interfaces.
 
-.. index:: line vty
 .. clicmd:: line vty
 
    Enter vty configuration mode.
 
-.. index:: banner motd default
 .. clicmd:: banner motd default
 
    Set default motd string.
 
-.. index:: banner motd file FILE
 .. clicmd:: banner motd file FILE
 
    Set motd string from file. The file must be in directory specified
    under ``--sysconfdir``.
 
-.. index:: banner motd line LINE
 .. clicmd:: banner motd line LINE
 
    Set motd string from an input.
 
-.. index:: no banner motd
-.. clicmd:: no banner motd
-
-   No motd banner string will be printed.
-
-.. index:: exec-timeout MINUTE [SECOND]
 .. clicmd:: exec-timeout MINUTE [SECOND]
 
    Set VTY connection timeout value. When only one argument is specified
@@ -288,13 +331,9 @@ Basic Config Commands
    used for timeout value in seconds. Default timeout value is 10 minutes.
    When timeout value is zero, it means no timeout.
 
-.. index:: no exec-timeout
-.. clicmd:: no exec-timeout
+   Not setting this, or setting the values to 0 0, means a timeout will not be
+   enabled.
 
-   Do not perform timeout at all. This command is as same as
-   ``exec-timeout 0 0``.
-
-.. index:: access-class ACCESS-LIST
 .. clicmd:: access-class ACCESS-LIST
 
    Restrict vty connections with an access list.
@@ -432,7 +471,7 @@ recommendations apply in regards to upgrades:
    for differences against your old configuration.  If any defaults changed
    that affect your setup, lines may appear or disappear.  If a new line
    appears, it was previously the default (or not supported) and is now
-   neccessary to retain previous behavior.  If a line disappears, it
+   necessary to retain previous behavior.  If a line disappears, it
    previously wasn't the default, but now is, so it is no longer necessary.
 
 3. Check the log files for deprecation warnings by using ``grep -i deprecat``.
@@ -472,56 +511,46 @@ Puppet, etc.), upgrade considerations differ somewhat:
 Terminal Mode Commands
 ======================
 
-.. index:: write terminal
 .. clicmd:: write terminal
 
    Displays the current configuration to the vty interface.
 
-.. index:: write file
 .. clicmd:: write file
 
    Write current configuration to configuration file.
 
-.. index:: configure [terminal]
 .. clicmd:: configure [terminal]
 
    Change to configuration mode. This command is the first step to
    configuration.
 
-.. index:: terminal length (0-512)
 .. clicmd:: terminal length (0-512)
 
    Set terminal display length to ``(0-512)``. If length is 0, no display
    control is performed.
 
-.. index:: who
 .. clicmd:: who
 
    Show a list of currently connected vty sessions.
 
-.. index:: list
 .. clicmd:: list
 
    List all available commands.
 
-.. index:: show version
 .. clicmd:: show version
 
    Show the current version of |PACKAGE_NAME| and its build host information.
 
-.. index:: show logging
 .. clicmd:: show logging
 
    Shows the current configuration of the logging system. This includes the
    status of all logging destinations.
 
-.. index:: show log-filter
 .. clicmd:: show log-filter
 
    Shows the current log filters applied to each daemon.
 
-.. index:: show memory
-.. clicmd:: show memory
+.. clicmd:: show memory [DAEMON]
 
    Show information on how much memory is used for which specific things in
    |PACKAGE_NAME|.  Output may vary depending on system capabilities but will
@@ -579,44 +608,57 @@ Terminal Mode Commands
      the column may be missing if system support is not available.
 
    When executing this command from ``vtysh``, each of the daemons' memory
-   usage is printed sequentially.
+   usage is printed sequentially. You can specify the daemon's name to print
+   only its memory usage.
 
-.. index:: logmsg LEVEL MESSAGE
+.. clicmd:: show history
+
+   Dump the vtysh cli history.
+
 .. clicmd:: logmsg LEVEL MESSAGE
 
    Send a message to all logging destinations that are enabled for messages of
    the given severity.
 
-.. index:: find COMMAND...
-.. clicmd:: find COMMAND...
+.. clicmd:: find REGEX...
 
-   This command performs a simple substring search across all defined commands
-   in all modes. As an example, suppose you're in enable mode and can't
-   remember where the command to turn OSPF segment routing on is:
+   This command performs a regex search across all defined commands in all
+   modes. As an example, suppose you're in enable mode and can't remember where
+   the command to turn OSPF segment routing on is:
 
    ::
 
       frr# find segment-routing on
         (ospf)  segment-routing on
+        (isis)  segment-routing on
+
 
    The CLI mode is displayed next to each command. In this example,
    :clicmd:`segment-routing on` is under the `router ospf` mode.
 
-   Similarly, suppose you want a listing of all commands that contain "l2vpn":
+   Similarly, suppose you want a listing of all commands that contain "l2vpn"
+   and "neighbor":
 
    ::
 
-      frr# find l2vpn
-        (view)  show [ip] bgp l2vpn evpn [json]
-        (view)  show [ip] bgp l2vpn evpn all <A.B.C.D|A.B.C.D/M> [json]
-        (view)  show [ip] bgp l2vpn evpn all neighbors A.B.C.D advertised-routes [json]
-        (view)  show [ip] bgp l2vpn evpn all neighbors A.B.C.D routes [json]
-        (view)  show [ip] bgp l2vpn evpn all overlay
+      frr# find l2vpn.*neighbor
+        (view)  show [ip] bgp l2vpn evpn neighbors <A.B.C.D|X:X::X:X|WORD> advertised-routes [json]
+        (view)  show [ip] bgp l2vpn evpn neighbors <A.B.C.D|X:X::X:X|WORD> routes [json]
+        (view)  show [ip] bgp l2vpn evpn rd ASN:NN_OR_IP-ADDRESS:NN neighbors <A.B.C.D|X:X::X:X|WORD> advertised-routes [json]
+        (view)  show [ip] bgp l2vpn evpn rd ASN:NN_OR_IP-ADDRESS:NN neighbors <A.B.C.D|X:X::X:X|WORD> routes [json]
         ...
+
+
+   Note that when entering spaces as part of a regex specification, repeated
+   spaces will be compressed into a single space for matching purposes. This is
+   a consequence of spaces being used to delimit CLI tokens. If you need to
+   match more than one space, use the ``\s`` escape.
+
+   POSIX Extended Regular Expressions are supported.
+
 
 .. _common-show-commands:
 
-.. index:: show thread cpu
 .. clicmd:: show thread cpu [r|w|t|e|x]
 
    This command displays system run statistics for all the different event
@@ -625,12 +667,30 @@ Terminal Mode Commands
    (e)vent and e(x)ecute thread event types.  If you have compiled with
    disable-cpu-time then this command will not show up.
 
-.. index:: show thread poll
 .. clicmd:: show thread poll
 
    This command displays FRR's poll data.  It allows a glimpse into how
    we are setting each individual fd for the poll command at that point
    in time.
+
+.. clicmd:: show thread timers
+
+   This command displays FRR's timer data for timers that will pop in
+   the future.
+
+.. clicmd:: show yang operational-data XPATH [{format <json|xml>|translate TRANSLATOR|with-config}] DAEMON
+
+   Display the YANG operational data starting from XPATH. The default
+   format is JSON, but can be displayed in XML as well.
+
+   Normally YANG operational data are located inside containers marked
+   as `read-only`.
+
+   Optionally it is also possible to display configuration leaves in
+   addition to operational data with the option `with-config`. This
+   option enables the display of configuration leaves with their
+   currently configured value (if the leaf is optional it will only show
+   if it was created or has a default value).
 
 .. _common-invocation-options:
 
@@ -685,6 +745,14 @@ These options apply to all |PACKAGE_NAME| daemons.
    be added to all files that use the statedir.  If you have "/var/run/frr"
    as the default statedir then it will become "/var/run/frr/<namespace>".
 
+.. option:: -o, --vrfdefaultname <name>
+
+   Set the name used for the *Default VRF* in CLI commands and YANG models.
+   This option must be the same for all running daemons. By default, the name
+   is "default".
+
+   .. seealso:: :ref:`zebra-vrf`
+
 .. option:: -v, --version
 
    Print program version.
@@ -711,6 +779,12 @@ These options apply to all |PACKAGE_NAME| daemons.
 .. option:: --tcli
 
    Enable the transactional CLI mode.
+
+.. option:: --limit-fds <number>
+
+   Limit the number of file descriptors that will be used internally
+   by the FRR daemons. By default, the daemons use the system ulimit
+   value.
 
 .. _loadable-module-support:
 

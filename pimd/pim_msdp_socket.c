@@ -29,11 +29,14 @@
 #include <lib/lib_errors.h>
 
 #include "pimd.h"
+#include "pim_instance.h"
 #include "pim_sock.h"
 #include "pim_errors.h"
 
 #include "pim_msdp.h"
 #include "pim_msdp_socket.h"
+
+#include "sockopt.h"
 
 /* increase socket send buffer size */
 static void pim_msdp_update_sock_send_buffer_size(int fd)
@@ -44,7 +47,7 @@ static void pim_msdp_update_sock_send_buffer_size(int fd)
 
 	if (getsockopt(fd, SOL_SOCKET, SO_SNDBUF, &optval, &optlen) < 0) {
 		flog_err_sys(EC_LIB_SOCKET,
-			     "getsockopt of SO_SNDBUF failed %s\n",
+			     "getsockopt of SO_SNDBUF failed %s",
 			     safe_strerror(errno));
 		return;
 	}
@@ -53,21 +56,20 @@ static void pim_msdp_update_sock_send_buffer_size(int fd)
 		if (setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &size, sizeof(size))
 		    < 0) {
 			flog_err_sys(EC_LIB_SOCKET,
-				     "Couldn't increase send buffer: %s\n",
+				     "Couldn't increase send buffer: %s",
 				     safe_strerror(errno));
 		}
 	}
 }
 
 /* passive peer socket accept */
-static int pim_msdp_sock_accept(struct thread *thread)
+static void pim_msdp_sock_accept(struct thread *thread)
 {
 	union sockunion su;
 	struct pim_instance *pim = THREAD_ARG(thread);
 	int accept_sock;
 	int msdp_sock;
 	struct pim_msdp_peer *mp;
-	char buf[SU_ADDRSTRLEN];
 
 	sockunion_init(&su);
 
@@ -76,7 +78,7 @@ static int pim_msdp_sock_accept(struct thread *thread)
 	if (accept_sock < 0) {
 		flog_err(EC_LIB_DEVELOPMENT, "accept_sock is negative value %d",
 			 accept_sock);
-		return -1;
+		return;
 	}
 	pim->msdp.listener.thread = NULL;
 	thread_add_read(router->master, pim_msdp_sock_accept, pim, accept_sock,
@@ -87,7 +89,7 @@ static int pim_msdp_sock_accept(struct thread *thread)
 	if (msdp_sock < 0) {
 		flog_err_sys(EC_LIB_SOCKET, "pim_msdp_sock_accept failed (%s)",
 			     safe_strerror(errno));
-		return -1;
+		return;
 	}
 
 	/* see if have peer config for this */
@@ -96,11 +98,10 @@ static int pim_msdp_sock_accept(struct thread *thread)
 		++pim->msdp.rejected_accepts;
 		if (PIM_DEBUG_MSDP_EVENTS) {
 			flog_err(EC_PIM_MSDP_PACKET,
-				 "msdp peer connection refused from %s",
-				 sockunion2str(&su, buf, SU_ADDRSTRLEN));
+				 "msdp peer connection refused from %pSU", &su);
 		}
 		close(msdp_sock);
-		return -1;
+		return;
 	}
 
 	if (PIM_DEBUG_MSDP_INTERNAL) {
@@ -113,8 +114,8 @@ static int pim_msdp_sock_accept(struct thread *thread)
 	if (mp->fd >= 0) {
 		if (PIM_DEBUG_MSDP_EVENTS) {
 			zlog_notice(
-				"msdp peer new connection from %s stop old connection",
-				sockunion2str(&su, buf, SU_ADDRSTRLEN));
+				"msdp peer new connection from %pSU stop old connection",
+				&su);
 		}
 		pim_msdp_peer_stop_tcp_conn(mp, true /* chg_state */);
 	}
@@ -122,7 +123,6 @@ static int pim_msdp_sock_accept(struct thread *thread)
 	set_nonblocking(mp->fd);
 	pim_msdp_update_sock_send_buffer_size(mp->fd);
 	pim_msdp_peer_established(mp);
-	return 0;
 }
 
 /* global listener for the MSDP well know TCP port */
@@ -156,9 +156,9 @@ int pim_msdp_sock_listen(struct pim_instance *pim)
 	sockopt_reuseaddr(sock);
 	sockopt_reuseport(sock);
 
-	if (pim->vrf_id != VRF_DEFAULT) {
+	if (pim->vrf->vrf_id != VRF_DEFAULT) {
 		struct interface *ifp =
-			if_lookup_by_name(pim->vrf->name, pim->vrf_id);
+			if_lookup_by_name(pim->vrf->name, pim->vrf->vrf_id);
 		if (!ifp) {
 			flog_err(EC_LIB_INTERFACE,
 				 "%s: Unable to lookup vrf interface: %s",
@@ -196,10 +196,15 @@ int pim_msdp_sock_listen(struct pim_instance *pim)
 		return rc;
 	}
 
+	/* Set socket DSCP byte */
+	if (setsockopt_ipv4_tos(sock, IPTOS_PREC_INTERNETCONTROL)) {
+		zlog_warn("can't set sockopt IP_TOS to MSDP socket %d: %s",
+				sock, safe_strerror(errno));
+	}
+
 	/* add accept thread */
 	listener->fd = sock;
 	memcpy(&listener->su, &sin, socklen);
-	listener->thread = NULL;
 	thread_add_read(pim->msdp.master, pim_msdp_sock_accept, pim, sock,
 			&listener->thread);
 
@@ -237,9 +242,9 @@ int pim_msdp_sock_connect(struct pim_msdp_peer *mp)
 		return -1;
 	}
 
-	if (mp->pim->vrf_id != VRF_DEFAULT) {
-		struct interface *ifp =
-			if_lookup_by_name(mp->pim->vrf->name, mp->pim->vrf_id);
+	if (mp->pim->vrf->vrf_id != VRF_DEFAULT) {
+		struct interface *ifp = if_lookup_by_name(mp->pim->vrf->name,
+							  mp->pim->vrf->vrf_id);
 		if (!ifp) {
 			flog_err(EC_LIB_INTERFACE,
 				 "%s: Unable to lookup vrf interface: %s",
@@ -272,6 +277,12 @@ int pim_msdp_sock_connect(struct pim_msdp_peer *mp)
 		close(mp->fd);
 		mp->fd = -1;
 		return rc;
+	}
+
+	/* Set socket DSCP byte */
+	if (setsockopt_ipv4_tos(mp->fd, IPTOS_PREC_INTERNETCONTROL)) {
+		zlog_warn("can't set sockopt IP_TOS to MSDP socket %d: %s",
+				mp->fd, safe_strerror(errno));
 	}
 
 	/* Connect to the remote mp. */

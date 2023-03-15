@@ -9,6 +9,10 @@ submodule frr-bgp-common-structure {
     prefix inet;
   }
 
+  import frr-route-map {
+    prefix frr-route-map;
+  }
+
   import frr-interface {
     prefix frr-interface;
   }
@@ -21,7 +25,7 @@ submodule frr-bgp-common-structure {
     prefix frr-bt;
   }
 
-  include frr-bgp-common;
+  include "frr-bgp-common";
 
   organization
     "FRRouting";
@@ -106,7 +110,6 @@ submodule frr-bgp-common-structure {
     container local-as {
       leaf local-as {
         type inet:as-number;
-        mandatory true;
         description
           "The local autonomous system number that is to be used when
            establishing sessions with the remote peer or peer group, if
@@ -115,7 +118,6 @@ submodule frr-bgp-common-structure {
       }
 
       leaf no-prepend {
-        when "../local-as != 0";
         type boolean;
         default "false";
         description
@@ -124,7 +126,7 @@ submodule frr-bgp-common-structure {
            set to 'false' it will prepend local-as to updates.";
       }
 
-      leaf no-replace-as {
+      leaf replace-as {
         type boolean;
         default "false";
         description
@@ -157,7 +159,7 @@ submodule frr-bgp-common-structure {
         type uint16 {
           range "50..60000";
         }
-        units "miliseconds";
+        units "milliseconds";
         default "300";
         description
           "Required min receive interval.";
@@ -168,7 +170,7 @@ submodule frr-bgp-common-structure {
         type uint16 {
           range "50..60000";
         }
-        units "miliseconds";
+        units "milliseconds";
         default "300";
         description
           "Desired min transmit interval.";
@@ -196,7 +198,6 @@ submodule frr-bgp-common-structure {
     container neighbor-remote-as {
       leaf remote-as-type {
         type frr-bt:as-type;
-        mandatory true;
         description
           "Remote AS type.";
       }
@@ -342,7 +343,7 @@ submodule frr-bgp-common-structure {
         default "true";
         description
           "When set to 'true' sending Capability Negotiation in the open
-           message is supressed to this peer.";
+           message is suppressed to this peer.";
       }
 
       leaf override-capability {
@@ -359,19 +360,19 @@ submodule frr-bgp-common-structure {
     description
       "Structural grouping used to include default-originate
        configuration for both BGP neighbors and peer groups.";
-    container default-originate-options {
+    container default-originate {
       description
         "default originate parameters for the BGP neighbor or
          group.";
-      leaf send-default-route {
+      leaf originate {
         type boolean;
         default "false";
         description
           "If set to 'true', send the default-route to the neighbour(s).";
       }
 
-      leaf rmap-policy-export {
-        type frr-bt:rmap-ref;
+      leaf route-map {
+        type frr-route-map:route-map-ref;
         description
           "Route-map to specify criteria to originate default.";
       }
@@ -398,7 +399,14 @@ submodule frr-bgp-common-structure {
              neighbour.";
         }
 
-        container prefix-limit-options {
+        leaf force-check {
+          type boolean;
+          default false;
+          description
+            "Force check all received routes.";
+        }
+
+        container options {
           when "../direction = 'in'";
           choice options {
             case warning {
@@ -442,7 +450,7 @@ submodule frr-bgp-common-structure {
               }
 
               leaf tr-restart-timer {
-                type uint32;
+                type uint16;
                 units "minutes";
                 description
                   "Time interval in seconds after which the BGP session is
@@ -594,7 +602,7 @@ submodule frr-bgp-common-structure {
 
       leaf send-large-community {
         type boolean;
-        default "false";
+        default "true";
         description
           "Send large community attribute to this neighbor.";
       }
@@ -610,7 +618,6 @@ submodule frr-bgp-common-structure {
         "BGP Administrative Shutdown Communication.";
       leaf enable {
         type boolean;
-        mandatory true;
         description
           "When set to 'true', BGP shutdown communication is enabled.";
       }
@@ -799,9 +806,9 @@ submodule frr-bgp-common-structure {
 
       uses as-path-filter-list-policy-export;
 
-      uses unsupress-map-policy-import;
+      uses unsuppress-map-policy-import;
 
-      uses unsupress-map-policy-export;
+      uses unsuppress-map-policy-export;
     }
   }
 }

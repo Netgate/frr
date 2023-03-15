@@ -106,7 +106,7 @@ int pim_time_mmss(char *buf, int buf_size, long sec)
 	long mm;
 	int wr;
 
-	zassert(buf_size >= 5);
+	assert(buf_size >= 5);
 
 	mm = sec / 60;
 	sec %= 60;
@@ -122,7 +122,7 @@ static int pim_time_hhmmss(char *buf, int buf_size, long sec)
 	long mm;
 	int wr;
 
-	zassert(buf_size >= 8);
+	assert(buf_size >= 8);
 
 	hh = sec / 3600;
 	sec %= 3600;
@@ -156,7 +156,7 @@ void pim_time_timer_to_hhmmss(char *buf, int buf_size, struct thread *t_timer)
 
 void pim_time_uptime(char *buf, int buf_size, int64_t uptime_sec)
 {
-	zassert(buf_size >= 8);
+	assert(buf_size >= 8);
 
 	pim_time_hhmmss(buf, buf_size, uptime_sec);
 }
@@ -171,9 +171,7 @@ void pim_time_uptime_begin(char *buf, int buf_size, int64_t now, int64_t begin)
 
 long pim_time_timer_remain_msec(struct thread *t_timer)
 {
-	/* FIXME: Actually fetch msec resolution from thread */
-
 	/* no timer thread running means timer has expired: return 0 */
 
-	return t_timer ? 1000 * thread_timer_remain_second(t_timer) : 0;
+	return t_timer ? thread_timer_remain_msec(t_timer) : 0;
 }

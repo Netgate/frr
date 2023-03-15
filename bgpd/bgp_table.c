@@ -26,10 +26,12 @@
 #include "queue.h"
 #include "filter.h"
 #include "command.h"
+#include "printfrr.h"
 
 #include "bgpd/bgpd.h"
 #include "bgpd/bgp_table.h"
 #include "bgp_addpath.h"
+#include "bgp_trace.h"
 
 void bgp_table_lock(struct bgp_table *rt)
 {
@@ -57,6 +59,42 @@ void bgp_table_finish(struct bgp_table **rt)
 		bgp_table_unlock(*rt);
 		*rt = NULL;
 	}
+}
+
+/*
+ * bgp_dest_unlock_node
+ */
+void bgp_dest_unlock_node(struct bgp_dest *dest)
+{
+	frrtrace(1, frr_bgp, bgp_dest_unlock, dest);
+	bgp_delete_listnode(dest);
+	route_unlock_node(bgp_dest_to_rnode(dest));
+}
+
+/*
+ * bgp_dest_lock_node
+ */
+struct bgp_dest *bgp_dest_lock_node(struct bgp_dest *dest)
+{
+	frrtrace(1, frr_bgp, bgp_dest_lock, dest);
+	struct route_node *rn = route_lock_node(bgp_dest_to_rnode(dest));
+
+	return bgp_dest_from_rnode(rn);
+}
+
+/*
+ * bgp_dest_get_prefix_str
+ */
+const char *bgp_dest_get_prefix_str(struct bgp_dest *dest)
+{
+	const struct prefix *p = NULL;
+	static char str[PREFIX_STRLEN] = {0};
+
+	p = bgp_dest_get_prefix(dest);
+	if (p)
+		return prefix2str(p, str, sizeof(str));
+
+	return NULL;
 }
 
 /*
@@ -153,13 +191,8 @@ void bgp_delete_listnode(struct bgp_node *node)
 
 		if (bgp && rn && rn->lock == 1) {
 			/* Delete the route from the selection pending list */
-			if ((node->rt_node)
-			    && (bgp->gr_info[afi][safi].route_list)) {
-				list_delete_node(
-					bgp->gr_info[afi][safi].route_list,
-					node->rt_node);
-				node->rt_node = NULL;
-			}
+			bgp->gr_info[afi][safi].gr_deferred--;
+			UNSET_FLAG(node->flags, BGP_NODE_SELECT_DEFER);
 		}
 	}
 }
@@ -202,4 +235,20 @@ struct bgp_node *bgp_table_subtree_lookup(const struct bgp_table *table,
 
 	bgp_dest_lock_node(matched);
 	return matched;
+}
+
+printfrr_ext_autoreg_p("BD", printfrr_bd);
+static ssize_t printfrr_bd(struct fbuf *buf, struct printfrr_eargs *ea,
+			   const void *ptr)
+{
+	const struct bgp_dest *dest = ptr;
+	const struct prefix *p = bgp_dest_get_prefix(dest);
+	char cbuf[PREFIX_STRLEN];
+
+	if (!dest)
+		return bputs(buf, "(null)");
+
+	/* need to get the real length even if buffer too small */
+	prefix2str(p, cbuf, sizeof(cbuf));
+	return bputs(buf, cbuf);
 }

@@ -362,11 +362,8 @@ void del_vnc_route(struct rfapi_descriptor *rfd,
 	afi_t afi; /* of the VN address */
 	struct bgp_dest *bn;
 	struct bgp_path_info *bpi;
-	char buf[PREFIX_STRLEN];
 	char buf2[RD_ADDRSTRLEN];
 	struct prefix_rd prd0;
-
-	prefix2str(p, buf, sizeof(buf));
 
 	afi = family2afi(p->family);
 	assert(afi == AFI_IP || afi == AFI_IP6);
@@ -380,9 +377,9 @@ void del_vnc_route(struct rfapi_descriptor *rfd,
 	bn = bgp_afi_node_get(bgp->rib[afi][safi], afi, safi, p, prd);
 
 	vnc_zlog_debug_verbose(
-		"%s: peer=%p, prefix=%s, prd=%s afi=%d, safi=%d bn=%p, bn->info=%p",
-		__func__, peer, buf, prefix_rd2str(prd, buf2, sizeof(buf2)),
-		afi, safi, bn, (bn ? bgp_dest_get_bgp_path_info(bn) : NULL));
+		"%s: peer=%p, prefix=%pFX, prd=%s afi=%d, safi=%d bn=%p, bn->info=%p",
+		__func__, peer, p, prefix_rd2str(prd, buf2, sizeof(buf2)), afi,
+		safi, bn, (bn ? bgp_dest_get_bgp_path_info(bn) : NULL));
 
 	for (bpi = (bn ? bgp_dest_get_bgp_path_info(bn) : NULL); bpi;
 	     bpi = bpi->next) {
@@ -418,8 +415,8 @@ void del_vnc_route(struct rfapi_descriptor *rfd,
 			 * no local nexthops
 			 */
 			vnc_zlog_debug_verbose(
-				"%s: lnh list already empty at prefix %s",
-				__func__, buf);
+				"%s: lnh list already empty at prefix %pFX",
+				__func__, p);
 			goto done;
 		}
 
@@ -445,8 +442,8 @@ void del_vnc_route(struct rfapi_descriptor *rfd,
 			 * list->del on data */
 			rfapi_nexthop_free(pLnh);
 		} else {
-			vnc_zlog_debug_verbose("%s: desired lnh not found %s",
-					       __func__, buf);
+			vnc_zlog_debug_verbose("%s: desired lnh not found %pFX",
+					       __func__, p);
 		}
 		goto done;
 	}
@@ -459,10 +456,9 @@ void del_vnc_route(struct rfapi_descriptor *rfd,
 	rfapiProcessWithdraw(peer, rfd, p, prd, NULL, afi, safi, type, kill);
 
 	if (bpi) {
-		prefix2str(p, buf, sizeof(buf));
 		vnc_zlog_debug_verbose(
-			"%s: Found route (safi=%d) to delete at prefix %s",
-			__func__, safi, buf);
+			"%s: Found route (safi=%d) to delete at prefix %pFX",
+			__func__, safi, p);
 
 		if (safi == SAFI_MPLS_VPN) {
 			struct bgp_dest *pdest = NULL;
@@ -488,8 +484,8 @@ void del_vnc_route(struct rfapi_descriptor *rfd,
 		bgp_process(bgp, bn, afi, safi);
 	} else {
 		vnc_zlog_debug_verbose(
-			"%s: Couldn't find route (safi=%d) at prefix %s",
-			__func__, safi, buf);
+			"%s: Couldn't find route (safi=%d) at prefix %pFX",
+			__func__, safi, p);
 	}
 done:
 	bgp_dest_unlock_node(bn);
@@ -582,9 +578,6 @@ void add_vnc_route(struct rfapi_descriptor *rfd, /* cookie, VPN UN addr, peer */
 	struct bgp_attr_encap_subtlv *encaptlv;
 	char buf[PREFIX_STRLEN];
 	char buf2[RD_ADDRSTRLEN];
-#if 0 /* unused? */
-  struct prefix pfx_buf;
-#endif
 
 	struct rfapi_nexthop *lnh = NULL; /* local nexthop */
 	struct rfapi_vn_option *vo;
@@ -607,20 +600,6 @@ void add_vnc_route(struct rfapi_descriptor *rfd, /* cookie, VPN UN addr, peer */
 		return;
 	}
 
-#if 0 /* unused? */
-  if ((safi == SAFI_MPLS_VPN) && (flags & RFAPI_AHR_SET_PFX_TO_NEXTHOP))
-    {
-
-      if (rfapiRaddr2Qprefix (nexthop, &pfx_buf))
-        {
-          vnc_zlog_debug_verbose
-            ("%s: can't set pfx to vn addr, not adding SAFI_MPLS_VPN route",
-             __func__);
-          return;
-        }
-      p = &pfx_buf;
-    }
-#endif
 	for (vo = options_vn; vo; vo = vo->next) {
 		if (RFAPI_VN_OPTION_TYPE_L2ADDR == vo->type) {
 			l2o = &vo->v.l2addr;
@@ -648,7 +627,7 @@ void add_vnc_route(struct rfapi_descriptor *rfd, /* cookie, VPN UN addr, peer */
 	/* Make default attribute. Produces already-interned attr.aspath */
 	/* Cripes, the memory management of attributes is byzantine */
 
-	bgp_attr_default_set(&attr, BGP_ORIGIN_INCOMPLETE);
+	bgp_attr_default_set(&attr, bgp, BGP_ORIGIN_INCOMPLETE);
 
 	/*
 	 * At this point:
@@ -748,7 +727,7 @@ void add_vnc_route(struct rfapi_descriptor *rfd, /* cookie, VPN UN addr, peer */
 		encaptlv->length = 4;
 		lt = htonl(*lifetime);
 		memcpy(encaptlv->value, &lt, 4);
-		attr.vnc_subtlvs = encaptlv;
+		bgp_attr_set_vnc_subtlvs(&attr, encaptlv);
 		vnc_zlog_debug_verbose(
 			"%s: set Encap Attr Prefix Lifetime to %d", __func__,
 			*lifetime);
@@ -758,7 +737,8 @@ void add_vnc_route(struct rfapi_descriptor *rfd, /* cookie, VPN UN addr, peer */
 	if (rfp_options) {
 
 		if (flags & RFAPI_AHR_RFPOPT_IS_VNCTLV) {
-
+			struct bgp_attr_encap_subtlv *vnc_subtlvs =
+				bgp_attr_get_vnc_subtlvs(&attr);
 			/*
 			 * this flag means we're passing a pointer to an
 			 * existing encap tlv chain which we should copy.
@@ -767,16 +747,15 @@ void add_vnc_route(struct rfapi_descriptor *rfd, /* cookie, VPN UN addr, peer */
 			 */
 			encaptlv = encap_tlv_dup(
 				(struct bgp_attr_encap_subtlv *)rfp_options);
-			if (attr.vnc_subtlvs) {
-				attr.vnc_subtlvs->next = encaptlv;
-			} else {
-				attr.vnc_subtlvs = encaptlv;
-			}
-
+			if (vnc_subtlvs)
+				vnc_subtlvs->next = encaptlv;
+			else
+				bgp_attr_set_vnc_subtlvs(&attr, encaptlv);
 		} else {
 			struct bgp_tea_options *hop;
 			/* XXX max of one tlv present so far from above code */
-			struct bgp_attr_encap_subtlv *tail = attr.vnc_subtlvs;
+			struct bgp_attr_encap_subtlv *tail =
+				bgp_attr_get_vnc_subtlvs(&attr);
 
 			for (hop = rfp_options; hop; hop = hop->next) {
 
@@ -802,11 +781,11 @@ void add_vnc_route(struct rfapi_descriptor *rfd, /* cookie, VPN UN addr, peer */
 				/*
 				 * add to end of subtlv chain
 				 */
-				if (tail) {
+				if (tail)
 					tail->next = encaptlv;
-				} else {
-					attr.vnc_subtlvs = encaptlv;
-				}
+				else
+					bgp_attr_set_vnc_subtlvs(&attr,
+								 encaptlv);
 				tail = encaptlv;
 			}
 		}
@@ -821,8 +800,8 @@ void add_vnc_route(struct rfapi_descriptor *rfd, /* cookie, VPN UN addr, peer */
 	 */
 
 
-	attr.ecommunity = ecommunity_new();
-	assert(attr.ecommunity);
+	bgp_attr_set_ecommunity(&attr, ecommunity_new());
+	assert(bgp_attr_get_ecommunity(&attr));
 
 	if (TunnelType != BGP_ENCAP_TYPE_MPLS
 	    && TunnelType != BGP_ENCAP_TYPE_RESERVED) {
@@ -838,25 +817,26 @@ void add_vnc_route(struct rfapi_descriptor *rfd, /* cookie, VPN UN addr, peer */
 		beec.val[1] = ECOMMUNITY_OPAQUE_SUBTYPE_ENCAP;
 		beec.val[6] = ((TunnelType) >> 8) & 0xff;
 		beec.val[7] = (TunnelType)&0xff;
-		ecommunity_add_val(attr.ecommunity, &beec, false, false);
+		ecommunity_add_val(bgp_attr_get_ecommunity(&attr), &beec, false,
+				   false);
 	}
 
 	/*
 	 * Add extended community attributes to match rt export list
 	 */
 	if (rt_export_list) {
-		attr.ecommunity =
-			ecommunity_merge(attr.ecommunity, rt_export_list);
+		bgp_attr_set_ecommunity(
+			&attr, ecommunity_merge(bgp_attr_get_ecommunity(&attr),
+						rt_export_list));
 	}
 
-	if (attr.ecommunity->size) {
-		attr.flag |= ATTR_FLAG_BIT(BGP_ATTR_EXT_COMMUNITIES);
-	} else {
-		ecommunity_free(&attr.ecommunity);
-		attr.ecommunity = NULL;
+	struct ecommunity *ecomm = bgp_attr_get_ecommunity(&attr);
+
+	if (!ecomm->size) {
+		ecommunity_free(&ecomm);
+		bgp_attr_set_ecommunity(&attr, NULL);
 	}
-	vnc_zlog_debug_verbose("%s: attr.ecommunity=%p", __func__,
-			       attr.ecommunity);
+	vnc_zlog_debug_verbose("%s: attr.ecommunity=%p", __func__, ecomm);
 
 
 	/*
@@ -1577,12 +1557,10 @@ rfapi_query_inner(void *handle, struct rfapi_ip_addr *target,
 	}
 
 	{
-		char buf[PREFIX_STRLEN];
 		char *s;
 
-		prefix2str(&p, buf, sizeof(buf));
-		vnc_zlog_debug_verbose("%s(rfd=%p, target=%s, ppNextHop=%p)",
-				       __func__, rfd, buf, ppNextHopEntry);
+		vnc_zlog_debug_verbose("%s(rfd=%p, target=%pFX, ppNextHop=%p)",
+				       __func__, rfd, &p, ppNextHopEntry);
 
 		s = ecommunity_ecom2str(rfd->import_table->rt_import_list,
 					ECOMMUNITY_FORMAT_ROUTE_MAP, 0);
@@ -1636,9 +1614,9 @@ rfapi_query_inner(void *handle, struct rfapi_ip_addr *target,
 			memset(&rprefix, 0, sizeof(rprefix));
 			rprefix.prefix.addr_family = target->addr_family;
 			if (target->addr_family == AF_INET) {
-				rprefix.length = 32;
+				rprefix.length = IPV4_MAX_BITLEN;
 			} else {
-				rprefix.length = 128;
+				rprefix.length = IPV6_MAX_BITLEN;
 			}
 
 			pNHE = rfapiEthRouteTable2NextHopList(
@@ -1713,9 +1691,9 @@ rfapi_query_inner(void *handle, struct rfapi_ip_addr *target,
 		memset(&rprefix, 0, sizeof(rprefix));
 		rprefix.prefix.addr_family = target->addr_family;
 		if (target->addr_family == AF_INET) {
-			rprefix.length = 32;
+			rprefix.length = IPV4_MAX_BITLEN;
 		} else {
-			rprefix.length = 128;
+			rprefix.length = IPV6_MAX_BITLEN;
 		}
 
 		pNHE = rfapiEthRouteNode2NextHopList(
@@ -2202,7 +2180,7 @@ int rfapi_close(void *handle)
 		vnc_zlog_debug_verbose("%s administrative close rfd=%p",
 				       __func__, rfd);
 
-		if (h && h->rfp_methods.close_cb) {
+		if (h->rfp_methods.close_cb) {
 			vnc_zlog_debug_verbose(
 				"%s calling close callback rfd=%p", __func__,
 				rfd);
@@ -2397,16 +2375,10 @@ int rfapi_register(void *handle, struct rfapi_ip_prefix *prefix,
 	afi = family2afi(prefix->prefix.addr_family);
 	assert(afi);
 
-
-	{
-		char buf[PREFIX_STRLEN];
-
-		prefix2str(&p, buf, sizeof(buf));
-		vnc_zlog_debug_verbose(
-			"%s(rfd=%p, pfx=%s, lifetime=%d, opts_un=%p, opts_vn=%p, action=%s)",
-			__func__, rfd, buf, lifetime, options_un, options_vn,
-			action_str);
-	}
+	vnc_zlog_debug_verbose(
+		"%s(rfd=%p, pfx=%pFX, lifetime=%d, opts_un=%p, opts_vn=%p, action=%s)",
+		__func__, rfd, &p, lifetime, options_un, options_vn,
+		action_str);
 
 	/*
 	 * These tests come after the prefix conversion so that we can
@@ -3700,20 +3672,16 @@ static void rfapi_print_exported(struct bgp *bgp)
 		if (!table)
 			continue;
 		fprintf(stderr, "%s: encap destn=%p\n", __func__, destn);
-		for (dest = bgp_table_top(table))
-			;
-		dest;
-		     dest = bgp_route_next(dest))
-		     {
-			     bpi = bgp_dest_get_bgp_path_info(dest);
-			     if (!bpi)
-				     continue;
-			     fprintf(stderr, "%s: dest=%p\n", __func__, dest);
-			     for (; bpi; bpi = bpi->next) {
-				     rfapiPrintBi((void *)2,
-						  bpi); /* 2 => stderr */
-			     }
-		     }
+		for (dest = bgp_table_top(table); dest;
+		     dest = bgp_route_next(dest)) {
+			bpi = bgp_dest_get_bgp_path_info(dest);
+			if (!bpi)
+				continue;
+			fprintf(stderr, "%s: dest=%p\n", __func__, dest);
+			for (; bpi; bpi = bpi->next) {
+				rfapiPrintBi((void *)2, bpi); /* 2 => stderr */
+			}
+		}
 	}
 }
 #endif /* defined(DEBUG_RFAPI) */
@@ -4010,7 +3978,7 @@ rfapi_rfp_get_group_config_name_l2(struct rfapi_cfg *rfc, const char *name,
  *    rfp_start_val     value returned by rfp_start
  *    type              group type
  *    name              group name
- *    criteria          RFAPI caller provided serach criteria
+ *    criteria          RFAPI caller provided search criteria
  *    search_cb         optional rfp_group_config_search_cb_t
  *
  * output:
@@ -4067,7 +4035,7 @@ void *rfapi_rfp_get_group_config_ptr_name(
  *    rfp_start_val     value returned by rfp_start
  *    type              group type
  *    logical_net_id    group logical network identifier
- *    criteria          RFAPI caller provided serach criteria
+ *    criteria          RFAPI caller provided search criteria
  *    search_cb         optional rfp_group_config_search_cb_t
  *
  * output:

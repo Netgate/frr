@@ -34,7 +34,7 @@ extern "C" {
 /* return type when this error indication stuff is used.
  *
  * guaranteed to have boolean evaluation to "false" when OK, "true" when error
- * (i.e. can be changed to pointer in the future if neccessary)
+ * (i.e. can be changed to pointer in the future if necessary)
  *
  * For checking, always use "if (value)", nothing else.
  * Do _NOT_ use any integer constant (!= 0), or sign check (< 0).
@@ -132,6 +132,8 @@ struct ferr {
 #define VTYSH_FRR_END       0x0FFFFFFF
 #define WATCHFRR_FERR_START 0x10000001
 #define WATCHFRR_FERR_END   0x10FFFFFF
+#define PATH_FERR_START     0x11000001
+#define PATH_FERR_END       0x11FFFFFF
 #define ZEBRA_FERR_START    0xF1000001
 #define ZEBRA_FERR_END      0xF1FFFFFF
 #define END_FERR            0xFFFFFFFF

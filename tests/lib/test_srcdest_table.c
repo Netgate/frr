@@ -34,12 +34,7 @@
  * should be added by autoconf if not present?
  */
 #ifndef s6_addr32
-#if defined(SUNOS_5)
-/* Some SunOS define s6_addr32 only to kernel */
-#define s6_addr32 _S6_un._S6_u32
-#else
 #define s6_addr32 __u6_addr.__u6_addr32
-#endif /* SUNOS_5 */
 #endif /*s6_addr32*/
 
 struct thread_master *master;
@@ -165,7 +160,7 @@ static void test_state_add_route(struct test_state *test,
 	}
 
 	rn->info = (void *)0xdeadbeef;
-	hash_get(test->log, hash_entry, log_alloc);
+	(void)hash_get(test->log, hash_entry, log_alloc);
 };
 
 static void test_state_del_route(struct test_state *test,
@@ -276,7 +271,7 @@ static void test_state_verify(struct test_state *test)
 						       associated with rn */
 				expected_lock++;
 
-			if (rn->lock != expected_lock)
+			if (route_node_get_lock_count(rn) != expected_lock)
 				test_failed(
 					test,
 					"Dest rnode lock count doesn't match expected count!",
@@ -288,7 +283,7 @@ static void test_state_verify(struct test_state *test)
 			    != NULL) /* The route node is not internal */
 				expected_lock++;
 
-			if (rn->lock != expected_lock) {
+			if (route_node_get_lock_count(rn) != expected_lock) {
 				srcdest_rnode_prefixes(
 					rn, (const struct prefix **)&dst_p,
 					(const struct prefix **)&src_p);
@@ -333,7 +328,7 @@ static void get_rand_prefix(struct prng *prng, struct prefix_ipv6 *p)
 	p->prefixlen = prng_rand(prng) % 129;
 	p->family = AF_INET6;
 
-	apply_mask((struct prefix *)p);
+	apply_mask(p);
 }
 
 static void get_rand_prefix_pair(struct prng *prng, struct prefix_ipv6 *dst_p,

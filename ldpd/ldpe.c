@@ -27,17 +27,19 @@
 #include "control.h"
 #include "log.h"
 #include "ldp_debug.h"
+#include "rlfa.h"
 
 #include <lib/log.h>
 #include "memory.h"
 #include "privs.h"
 #include "sigevent.h"
+#include "libfrr.h"
 
 static void	 ldpe_shutdown(void);
-static int	 ldpe_dispatch_main(struct thread *);
-static int	 ldpe_dispatch_lde(struct thread *);
+static void ldpe_dispatch_main(struct thread *thread);
+static void ldpe_dispatch_lde(struct thread *thread);
 #ifdef __OpenBSD__
-static int	 ldpe_dispatch_pfkey(struct thread *);
+static void ldpe_dispatch_pfkey(struct thread *thread);
 #endif
 static void	 ldpe_setup_sockets(int, int, int, int);
 static void	 ldpe_close_sockets(int);
@@ -80,7 +82,7 @@ sigint(void)
 	ldpe_shutdown();
 }
 
-static struct quagga_signal_t ldpe_signals[] =
+static struct frr_signal_t ldpe_signals[] =
 {
 	{
 		.signal = SIGHUP,
@@ -102,15 +104,15 @@ char *pkt_ptr; /* packet buffer */
 void
 ldpe(void)
 {
-	struct thread		 thread;
-
 #ifdef HAVE_SETPROCTITLE
 	setproctitle("ldp engine");
 #endif
 	ldpd_process = PROC_LDP_ENGINE;
 	log_procname = log_procnames[ldpd_process];
 
-	master = thread_master_create(NULL);
+	master = frr_init();
+	/* no frr_config_fork() here, allow frr_pthread to create threads */
+	frr_is_after_fork = true;
 
 	/* setup signal handler */
 	signal_init(master, array_size(ldpe_signals), ldpe_signals);
@@ -120,7 +122,6 @@ ldpe(void)
 		fatal(NULL);
 	imsg_init(&iev_main->ibuf, LDPD_FD_ASYNC);
 	iev_main->handler_read = ldpe_dispatch_main;
-	iev_main->ev_read = NULL;
 	thread_add_read(master, iev_main->handler_read, iev_main, iev_main->ibuf.fd,
 		        &iev_main->ev_read);
 	iev_main->handler_write = ldp_write_handler;
@@ -132,9 +133,12 @@ ldpe(void)
 	/* create base configuration */
 	leconf = config_new_empty();
 
-	/* Fetch next active thread. */
+	struct thread thread;
 	while (thread_fetch(master, &thread))
 		thread_call(&thread);
+
+	/* NOTREACHED */
+	return;
 }
 
 void
@@ -144,7 +148,6 @@ ldpe_init(struct ldpd_init *init)
 	/* This socket must be open before dropping privileges. */
 	global.pfkeysock = pfkey_init();
 	if (sysdep.no_pfkey == 0) {
-		pfkey_ev = NULL;
 		thread_add_read(master, ldpe_dispatch_pfkey, NULL, global.pfkeysock,
 				&pfkey_ev);
 	}
@@ -209,7 +212,7 @@ ldpe_shutdown(void)
 
 #ifdef __OpenBSD__
 	if (sysdep.no_pfkey == 0) {
-		THREAD_READ_OFF(pfkey_ev);
+		thread_cancel(&pfkey_ev);
 		close(global.pfkeysock);
 	}
 #endif
@@ -270,8 +273,7 @@ ldpe_imsg_compose_lde(int type, uint32_t peerid, pid_t pid, void *data,
 }
 
 /* ARGSUSED */
-static int
-ldpe_dispatch_main(struct thread *thread)
+static void ldpe_dispatch_main(struct thread *thread)
 {
 	static struct ldpd_conf	*nconf;
 	struct iface		*niface;
@@ -297,7 +299,12 @@ ldpe_dispatch_main(struct thread *thread)
 #endif
 	int			 n, shut = 0;
 	struct ldp_access       *laccess;
-	
+	struct ldp_igp_sync_if_state_req *ldp_sync_if_state_req;
+	struct ldp_rlfa_node	 *rnode, *rntmp;
+	struct ldp_rlfa_client	 *rclient;
+	struct zapi_rlfa_request *rlfa_req;
+	struct zapi_rlfa_igp	 *rlfa_igp;
+
 	iev->ev_read = NULL;
 
 	if ((n = imsg_read(ibuf)) == -1 && errno != EAGAIN)
@@ -367,7 +374,6 @@ ldpe_dispatch_main(struct thread *thread)
 				fatal(NULL);
 			imsg_init(&iev_lde->ibuf, fd);
 			iev_lde->handler_read = ldpe_dispatch_lde;
-			iev_lde->ev_read = NULL;
 			thread_add_read(master, iev_lde->handler_read, iev_lde, iev_lde->ibuf.fd,
 					&iev_lde->ev_read);
 			iev_lde->handler_write = ldp_write_handler;
@@ -380,6 +386,9 @@ ldpe_dispatch_main(struct thread *thread)
 
 			memcpy(&init, imsg.data, sizeof(init));
 			ldpe_init(&init);
+			break;
+		case IMSG_AGENTX_ENABLED:
+			ldp_agentx_enabled();
 			break;
 		case IMSG_CLOSE_SOCKETS:
 			af = imsg.hdr.peerid;
@@ -559,6 +568,53 @@ ldpe_dispatch_main(struct thread *thread)
 			ldpe_check_filter_af(AF_INET6, &leconf->ipv6,
 				laccess->name);
 			break;
+		case IMSG_LDP_SYNC_IF_STATE_REQUEST:
+			if (imsg.hdr.len != IMSG_HEADER_SIZE +
+			    sizeof(struct ldp_igp_sync_if_state_req)) {
+				log_warnx("%s: wrong imsg len", __func__);
+				break;
+			}
+			ldp_sync_if_state_req = imsg.data;
+			ldp_sync_fsm_state_req(ldp_sync_if_state_req);
+			break;
+		case IMSG_RLFA_REG:
+			if (imsg.hdr.len != IMSG_HEADER_SIZE +
+			    sizeof(struct zapi_rlfa_request)) {
+				log_warnx("%s: wrong imsg len", __func__);
+				break;
+			}
+			rlfa_req = imsg.data;
+
+			rnode = rlfa_node_find(&rlfa_req->destination,
+					       rlfa_req->pq_address);
+			if (!rnode)
+				rnode = rlfa_node_new(&rlfa_req->destination,
+						      rlfa_req->pq_address);
+			rclient = rlfa_client_find(rnode, &rlfa_req->igp);
+			if (rclient)
+				/* RLFA already registered - do nothing */
+				break;
+			rclient = rlfa_client_new(rnode, &rlfa_req->igp);
+			ldpe_rlfa_init(rclient);
+			break;
+		case IMSG_RLFA_UNREG_ALL:
+			if (imsg.hdr.len != IMSG_HEADER_SIZE +
+			    sizeof(struct zapi_rlfa_igp)) {
+				log_warnx("%s: wrong imsg len", __func__);
+				break;
+			}
+			rlfa_igp = imsg.data;
+
+			RB_FOREACH_SAFE (rnode, ldp_rlfa_node_head,
+					 &rlfa_node_tree, rntmp) {
+				rclient = rlfa_client_find(rnode, rlfa_igp);
+				if (!rclient)
+					continue;
+
+				ldpe_rlfa_exit(rclient);
+				rlfa_client_del(rclient);
+			}
+			break;
 		default:
 			log_debug("ldpe_dispatch_main: error handling imsg %d",
 			    imsg.hdr.type);
@@ -570,17 +626,14 @@ ldpe_dispatch_main(struct thread *thread)
 		imsg_event_add(iev);
 	else {
 		/* this pipe is dead, so remove the event handlers and exit */
-		THREAD_READ_OFF(iev->ev_read);
-		THREAD_WRITE_OFF(iev->ev_write);
+		thread_cancel(&iev->ev_read);
+		thread_cancel(&iev->ev_write);
 		ldpe_shutdown();
 	}
-
-	return (0);
 }
 
 /* ARGSUSED */
-static int
-ldpe_dispatch_lde(struct thread *thread)
+static void ldpe_dispatch_lde(struct thread *thread)
 {
 	struct imsgev		*iev = THREAD_ARG(thread);
 	struct imsgbuf		*ibuf = &iev->ibuf;
@@ -709,29 +762,23 @@ ldpe_dispatch_lde(struct thread *thread)
 		imsg_event_add(iev);
 	else {
 		/* this pipe is dead, so remove the event handlers and exit */
-		THREAD_READ_OFF(iev->ev_read);
-		THREAD_WRITE_OFF(iev->ev_write);
+		thread_cancel(&iev->ev_read);
+		thread_cancel(&iev->ev_write);
 		ldpe_shutdown();
 	}
-
-	return (0);
 }
 
 #ifdef __OpenBSD__
 /* ARGSUSED */
-static int
-ldpe_dispatch_pfkey(struct thread *thread)
+static void ldpe_dispatch_pfkey(struct thread *thread)
 {
 	int	 fd = THREAD_FD(thread);
 
-	pfkey_ev = NULL;
 	thread_add_read(master, ldpe_dispatch_pfkey, NULL, global.pfkeysock,
 			&pfkey_ev);
 
 	if (pfkey_read(fd, NULL) == -1)
 		fatal("pfkey_read failed, exiting...");
-
-	return (0);
 }
 #endif /* __OpenBSD__ */
 
@@ -745,13 +792,11 @@ ldpe_setup_sockets(int af, int disc_socket, int edisc_socket,
 
 	/* discovery socket */
 	af_global->ldp_disc_socket = disc_socket;
-	af_global->disc_ev = NULL;
 	thread_add_read(master, disc_recv_packet, &af_global->disc_ev, af_global->ldp_disc_socket,
 			&af_global->disc_ev);
 
 	/* extended discovery socket */
 	af_global->ldp_edisc_socket = edisc_socket;
-	af_global->edisc_ev = NULL;
 	thread_add_read(master, disc_recv_packet, &af_global->edisc_ev, af_global->ldp_edisc_socket,
 			&af_global->edisc_ev);
 
@@ -768,14 +813,14 @@ ldpe_close_sockets(int af)
 	af_global = ldp_af_global_get(&global, af);
 
 	/* discovery socket */
-	THREAD_READ_OFF(af_global->disc_ev);
+	thread_cancel(&af_global->disc_ev);
 	if (af_global->ldp_disc_socket != -1) {
 		close(af_global->ldp_disc_socket);
 		af_global->ldp_disc_socket = -1;
 	}
 
 	/* extended discovery socket */
-	THREAD_READ_OFF(af_global->edisc_ev);
+	thread_cancel(&af_global->edisc_ev);
 	if (af_global->ldp_edisc_socket != -1) {
 		close(af_global->ldp_edisc_socket);
 		af_global->ldp_edisc_socket = -1;
@@ -975,6 +1020,20 @@ ldpe_nbr_ctl(struct ctl_conn *c)
 }
 
 void
+ldpe_ldp_sync_ctl(struct ctl_conn *c)
+{
+	struct iface		*iface;
+	struct ctl_ldp_sync	*ictl;
+
+	RB_FOREACH(iface, iface_head, &leconf->iface_tree) {
+		ictl = ldp_sync_to_ctl(iface);
+		imsg_compose_event(&c->iev, IMSG_CTL_SHOW_LDP_SYNC,
+			0, 0, -1, ictl, sizeof(struct ctl_ldp_sync));
+	}
+	imsg_compose_event(&c->iev, IMSG_CTL_END, 0, 0, -1, NULL, 0);
+}
+
+void
 mapping_list_add(struct mapping_head *mh, struct map *map)
 {
 	struct mapping_entry	*me;
@@ -1005,4 +1064,11 @@ ldpe_check_filter_af(int af, struct ldpd_af_conf *af_conf,
 {
 	if (strcmp(af_conf->acl_thello_accept_from, filter_name) == 0)
 		ldpe_remove_dynamic_tnbrs(af);
+}
+
+void
+ldpe_set_config_change_time(void)
+{
+	/* SNMP update time when ever there is a config change */
+	leconf->config_change_time = time(NULL);
 }

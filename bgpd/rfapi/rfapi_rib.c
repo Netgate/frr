@@ -269,9 +269,8 @@ static void rfapi_info_free(struct rfapi_info *goner)
 			struct rfapi_rib_tcb *tcb;
 
 			tcb = goner->timer->arg;
-			thread_cancel(goner->timer);
+			thread_cancel(&goner->timer);
 			XFREE(MTYPE_RFAPI_RECENT_DELETE, tcb);
-			goner->timer = NULL;
 		}
 		XFREE(MTYPE_RFAPI_INFO, goner);
 	}
@@ -292,7 +291,7 @@ struct rfapi_rib_tcb {
 /*
  * remove route from rib
  */
-static int rfapiRibExpireTimer(struct thread *t)
+static void rfapiRibExpireTimer(struct thread *t)
 {
 	struct rfapi_rib_tcb *tcb = t->arg;
 
@@ -329,8 +328,6 @@ static int rfapiRibExpireTimer(struct thread *t)
 	XFREE(MTYPE_RFAPI_RECENT_DELETE, tcb);
 
 	RFAPI_RIB_CHECK_COUNTS(1, 0);
-
-	return 0;
 }
 
 static void rfapiRibStartTimer(struct rfapi_descriptor *rfd,
@@ -338,13 +335,11 @@ static void rfapiRibStartTimer(struct rfapi_descriptor *rfd,
 			       struct agg_node *rn, /* route node attached to */
 			       int deleted)
 {
-	struct thread *t = ri->timer;
 	struct rfapi_rib_tcb *tcb = NULL;
 
-	if (t) {
-		tcb = t->arg;
-		thread_cancel(t);
-		ri->timer = NULL;
+	if (ri->timer) {
+		tcb = ri->timer->arg;
+		thread_cancel(&ri->timer);
 	} else {
 		tcb = XCALLOC(MTYPE_RFAPI_RECENT_DELETE,
 			      sizeof(struct rfapi_rib_tcb));
@@ -625,7 +620,8 @@ static void rfapiRibBi2Ri(struct bgp_path_info *bpi, struct rfapi_info *ri,
 	ri->lifetime = lifetime;
 
 	/* This loop based on rfapiRouteInfo2NextHopEntry() */
-	for (pEncap = bpi->attr->vnc_subtlvs; pEncap; pEncap = pEncap->next) {
+	for (pEncap = bgp_attr_get_vnc_subtlvs(bpi->attr); pEncap;
+	     pEncap = pEncap->next) {
 		struct bgp_tea_options *hop;
 
 		switch (pEncap->type) {
@@ -684,10 +680,11 @@ static void rfapiRibBi2Ri(struct bgp_path_info *bpi, struct rfapi_info *ri,
 		memcpy(&vo->v.l2addr.macaddr, bpi->extra->vnc.import.rd.val + 2,
 		       ETH_ALEN);
 
-		(void)rfapiEcommunityGetLNI(bpi->attr->ecommunity,
+		(void)rfapiEcommunityGetLNI(bgp_attr_get_ecommunity(bpi->attr),
 					    &vo->v.l2addr.logical_net_id);
-		(void)rfapiEcommunityGetEthernetTag(bpi->attr->ecommunity,
-						    &vo->v.l2addr.tag_id);
+		(void)rfapiEcommunityGetEthernetTag(
+			bgp_attr_get_ecommunity(bpi->attr),
+			&vo->v.l2addr.tag_id);
 
 		/* local_nve_id comes from RD */
 		vo->v.l2addr.local_nve_id = bpi->extra->vnc.import.rd.val[1];
@@ -802,7 +799,7 @@ int rfapiRibPreloadBi(
 	 */
 	trn = agg_node_get(rfd->rsp_times[afi], p); /* locks trn */
 	trn->info = (void *)(uintptr_t)bgp_clock();
-	if (trn->lock > 1)
+	if (agg_node_get_lock_count(trn) > 1)
 		agg_unlock_node(trn);
 
 	return 0;
@@ -907,10 +904,6 @@ static void process_pending_node(struct bgp *bgp, struct rfapi_descriptor *rfd,
 			delete_list = list_new();
 			while (0
 			       == skiplist_first(slRibPt, NULL, (void **)&ri)) {
-
-				char buf[PREFIX_STRLEN];
-				char buf2[PREFIX_STRLEN];
-
 				listnode_add(delete_list, ri);
 				vnc_zlog_debug_verbose(
 					"%s: after listnode_add, delete_list->count=%d",
@@ -921,18 +914,15 @@ static void process_pending_node(struct bgp *bgp, struct rfapi_descriptor *rfd,
 				if (ri->timer) {
 					struct rfapi_rib_tcb *tcb;
 
-					tcb = ((struct thread *)ri->timer)->arg;
-					thread_cancel(ri->timer);
+					tcb = ri->timer->arg;
+					thread_cancel(&ri->timer);
 					XFREE(MTYPE_RFAPI_RECENT_DELETE, tcb);
-					ri->timer = NULL;
 				}
 
-				prefix2str(&ri->rk.vn, buf, sizeof(buf));
-				prefix2str(&ri->un, buf2, sizeof(buf2));
 				vnc_zlog_debug_verbose(
-					"%s:   put dl pfx=%pRN vn=%s un=%s cost=%d life=%d vn_options=%p",
-					__func__, pn, buf, buf2, ri->cost,
-					ri->lifetime, ri->vn_options);
+					"%s:   put dl pfx=%pRN vn=%pFX un=%pFX cost=%d life=%d vn_options=%p",
+					__func__, pn, &ri->rk.vn, &ri->un,
+					ri->cost, ri->lifetime, ri->vn_options);
 
 				skiplist_delete_first(slRibPt);
 			}
@@ -1009,11 +999,9 @@ static void process_pending_node(struct bgp *bgp, struct rfapi_descriptor *rfd,
 				if (ori->timer) {
 					struct rfapi_rib_tcb *tcb;
 
-					tcb = ((struct thread *)ori->timer)
-						      ->arg;
-					thread_cancel(ori->timer);
+					tcb = ori->timer->arg;
+					thread_cancel(&ori->timer);
 					XFREE(MTYPE_RFAPI_RECENT_DELETE, tcb);
-					ori->timer = NULL;
 				}
 
 #if DEBUG_PROCESS_PENDING_NODE
@@ -1242,7 +1230,7 @@ callback:
 			trn = agg_node_get(rfd->rsp_times[afi],
 					   p); /* locks trn */
 			trn->info = (void *)(uintptr_t)bgp_clock();
-			if (trn->lock > 1)
+			if (agg_node_get_lock_count(trn) > 1)
 				agg_unlock_node(trn);
 
 			rfapiRfapiIpAddr2Str(&new->vn_address, buf, BUFSIZ);
@@ -1357,11 +1345,9 @@ callback:
 				if (ri->timer) {
 					struct rfapi_rib_tcb *tcb;
 
-					tcb = ((struct thread *)ri->timer)->arg;
-					thread_cancel(
-						(struct thread *)ri->timer);
+					tcb = ri->timer->arg;
+					thread_cancel(&ri->timer);
 					XFREE(MTYPE_RFAPI_RECENT_DELETE, tcb);
-					ri->timer = NULL;
 				}
 				RFAPI_RIB_CHECK_COUNTS(0, delete_list->count);
 
@@ -1589,7 +1575,6 @@ void rfapiRibUpdatePendingNode(
 	afi_t afi;
 	uint32_t queued_flag;
 	int count = 0;
-	char buf[PREFIX_STRLEN];
 
 	vnc_zlog_debug_verbose("%s: entry", __func__);
 
@@ -1602,8 +1587,7 @@ void rfapiRibUpdatePendingNode(
 
 	prefix = agg_node_get_prefix(it_node);
 	afi = family2afi(prefix->family);
-	prefix2str(prefix, buf, sizeof(buf));
-	vnc_zlog_debug_verbose("%s: prefix=%s", __func__, buf);
+	vnc_zlog_debug_verbose("%s: prefix=%pFX", __func__, prefix);
 
 	pn = agg_node_get(rfd->rib_pending[afi], prefix);
 	assert(pn);
@@ -1809,11 +1793,8 @@ int rfapiRibFTDFilterRecentPrefix(
 
 #ifdef DEBUG_FTD_FILTER_RECENT
 	{
-		char buf_pfx[PREFIX_STRLEN];
-
-		prefix2str(agg_node_get_prefix(it_rn), buf_pfx,
-			   sizeof(buf_pfx));
-		vnc_zlog_debug_verbose("%s: prefix %s", __func__, buf_pfx);
+		vnc_zlog_debug_verbose("%s: prefix %pFX", __func__,
+				       agg_node_get_prefix(it_rn));
 	}
 #endif
 
@@ -1833,7 +1814,7 @@ int rfapiRibFTDFilterRecentPrefix(
 	 */
 	trn = agg_node_get(rfd->rsp_times[afi], p); /* locks trn */
 	prefix_time = (time_t)trn->info;
-	if (trn->lock > 1)
+	if (agg_node_get_lock_count(trn) > 1)
 		agg_unlock_node(trn);
 
 #ifdef DEBUG_FTD_FILTER_RECENT
@@ -1968,27 +1949,24 @@ rfapiRibPreload(struct bgp *bgp, struct rfapi_descriptor *rfd,
 			    && RFAPI_HOST_PREFIX(&rk.aux_prefix)) {
 				/* mark as "none" if nhp->prefix is 0/32 or
 				 * 0/128 */
-				rk.aux_prefix.family = 0;
+				rk.aux_prefix.family = AF_UNSPEC;
 			}
 		}
 
 #if DEBUG_NHL
 		{
-			char str_vn[PREFIX_STRLEN];
 			char str_aux_prefix[PREFIX_STRLEN];
 
-			str_vn[0] = 0;
 			str_aux_prefix[0] = 0;
 
-			prefix2str(&rk.vn, str_vn, sizeof(str_vn));
 			prefix2str(&rk.aux_prefix, str_aux_prefix,
 				   sizeof(str_aux_prefix));
 
 			if (!rk.aux_prefix.family) {
 			}
 			vnc_zlog_debug_verbose(
-				"%s:   rk.vn=%s rk.aux_prefix=%s", __func__,
-				str_vn,
+				"%s:   rk.vn=%pFX rk.aux_prefix=%s", __func__,
+				&rk.vn,
 				(rk.aux_prefix.family ? str_aux_prefix : "-"));
 		}
 		vnc_zlog_debug_verbose(
@@ -2069,20 +2047,13 @@ rfapiRibPreload(struct bgp *bgp, struct rfapi_descriptor *rfd,
 		 */
 		trn = agg_node_get(rfd->rsp_times[afi], &pfx); /* locks trn */
 		trn->info = (void *)(uintptr_t)bgp_clock();
-		if (trn->lock > 1)
+		if (agg_node_get_lock_count(trn) > 1)
 			agg_unlock_node(trn);
 
-		{
-			char str_pfx[PREFIX_STRLEN];
-			char str_pfx_vn[PREFIX_STRLEN];
-
-			prefix2str(&pfx, str_pfx, sizeof(str_pfx));
-			prefix2str(&rk.vn, str_pfx_vn, sizeof(str_pfx_vn));
-			vnc_zlog_debug_verbose(
-				"%s:   added pfx=%s nh[vn]=%s, cost=%u, lifetime=%u, allowed=%d",
-				__func__, str_pfx, str_pfx_vn, nhp->prefix.cost,
-				nhp->lifetime, allowed);
-		}
+		vnc_zlog_debug_verbose(
+			"%s:   added pfx=%pFX nh[vn]=%pFX, cost=%u, lifetime=%u, allowed=%d",
+			__func__, &pfx, &rk.vn, nhp->prefix.cost, nhp->lifetime,
+			allowed);
 
 		if (allowed) {
 			if (tail)
@@ -2137,10 +2108,9 @@ void rfapiRibPendingDeleteRoute(struct bgp *bgp, struct rfapi_import_table *it,
 				sl);
 
 			for (cursor = NULL,
-			    rc = skiplist_next(sl, NULL, (void **)&m,
-					       (void **)&cursor);
+			    rc = skiplist_next(sl, NULL, (void **)&m, &cursor);
 			     !rc; rc = skiplist_next(sl, NULL, (void **)&m,
-						     (void **)&cursor)) {
+						     &cursor)) {
 
 #if DEBUG_PENDING_DELETE_ROUTE
 				vnc_zlog_debug_verbose("%s: eth monitor rfd=%p",

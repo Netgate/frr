@@ -20,7 +20,7 @@
  */
 
 #include <zebra.h>
-
+#include "printfrr.h"
 #include "prefix.h"
 #include "table.h"
 
@@ -104,7 +104,6 @@ static void add_nodes(struct route_table *table, ...)
 static void print_subtree(struct route_node *rn, const char *legend,
 			  int indent_level)
 {
-	char buf[PREFIX2STR_BUFFER];
 	int i;
 
 	/*
@@ -114,8 +113,7 @@ static void print_subtree(struct route_node *rn, const char *legend,
 		printf("  ");
 	}
 
-	prefix2str(&rn->p, buf, sizeof(buf));
-	printf("%s: %s", legend, buf);
+	printfrr("%s: %pFX", legend, &rn->p);
 	if (!rn->info) {
 		printf(" (internal)");
 	}
@@ -384,7 +382,7 @@ static void verify_prefix_iter_cmp(const char *p1, const char *p2,
 	assert(exp_result == result);
 
 	/*
-	 * Also check the reverse comparision.
+	 * Also check the reverse comparison.
 	 */
 	result = route_table_prefix_iter_cmp((struct prefix *)&p2_pfx,
 					     (struct prefix *)&p1_pfx);
@@ -400,7 +398,7 @@ static void verify_prefix_iter_cmp(const char *p1, const char *p2,
 /*
  * test_prefix_iter_cmp
  *
- * Tests comparision of prefixes according to order of iteration.
+ * Tests comparison of prefixes according to order of iteration.
  */
 static void test_prefix_iter_cmp(void)
 {

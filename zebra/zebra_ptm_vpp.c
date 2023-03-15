@@ -107,8 +107,11 @@ static void zebra_ptm_vpp_parse_addr(struct stream *msg, uint8_t *family,
 
 	if (*family == AF_INET) {
 		addr_len = IPV4_MAX_BYTELEN;
-	} else {
+	} else if (*family == AF_INET6) {
 		addr_len = IPV6_MAX_BYTELEN;
+	} else {
+		zlog_warn("%s: invalid address family: %u", __func__, *family);
+		return;
 	}
 
 	STREAM_GET(addr, msg, addr_len);
@@ -122,76 +125,91 @@ static void zebra_ptm_vpp_parse_msg(struct stream *msg, uint32_t command,
 				    struct vpp_bfd_peer *bfd_peer)
 {
 	uint32_t tmp_num;
+	uint8_t if_name_len;
 
 	memset(bfd_peer, 0, sizeof(*bfd_peer));
+	bfd_peer->peer_addr_family = AF_UNSPEC;
+	bfd_peer->local_addr_family = AF_UNSPEC;
+	bfd_peer->sw_if_index = ~0U;
+	bfd_peer->ifindex = IFINDEX_INTERNAL;
 
 	/* Skip field: pid. */
 	STREAM_GETL(msg, tmp_num);
 
+	/* Read field: family. */
+	/* Read field: destination address. */
 	zebra_ptm_vpp_parse_addr(msg, &bfd_peer->peer_addr_family,
 				 bfd_peer->peer_addr);
 
-	if (command != ZEBRA_BFD_DEST_DEREGISTER) {
-		/* Skip field: min_rx_timer. */
-		STREAM_GETL(msg, tmp_num);
+	/* Skip field: min_rx_timer. */
+	STREAM_GETL(msg, tmp_num);
+	/* Skip field: min_tx_timer. */
+	STREAM_GETL(msg, tmp_num);
+	/* Skip field: detect_mult. */
+	STREAM_GETC(msg, tmp_num);
 
-		/* Skip field: min_tx_timer. */
-		STREAM_GETL(msg, tmp_num);
-
-		/* Skip field: detect_mult. */
-		STREAM_GETC(msg, tmp_num);
-	}
-
+	/* Read field: is_multihop. */
 	STREAM_GETC(msg, bfd_peer->multi_hop);
 
-	if (bfd_peer->multi_hop) {
-		zebra_ptm_vpp_parse_addr(msg, &bfd_peer->local_addr_family,
-					 bfd_peer->local_addr);
+	/* Read field: family. */
+	/* Read field: source address. */
+	zebra_ptm_vpp_parse_addr(msg, &bfd_peer->local_addr_family,
+				 bfd_peer->local_addr);
 
-		/* Skip field: multi_hop_cnt. */
-		STREAM_GETC(msg, tmp_num);
+	vmgmt_intf_refresh_all();
+	bfd_peer->sw_if_index = vmgmt_intf_get_sw_if_index_by_addr(
+		bfd_peer->local_addr, bfd_peer->local_addr_family == AF_INET6);
+	if (bfd_peer->sw_if_index == ~0U) {
+		zlog_debug("%s: cannot resolve sw_if_index by local address",
+			   __func__);
+	}
 
-		bfd_peer->sw_if_index = vmgmt_intf_get_sw_if_index_by_addr(
-			bfd_peer->local_addr,
-			(bfd_peer->local_addr_family == AF_INET6));
-	} else {
-		if (bfd_peer->peer_addr_family == AF_INET6) {
-			zebra_ptm_vpp_parse_addr(msg,
-						 &bfd_peer->local_addr_family,
-						 bfd_peer->local_addr);
-		}
+	/* Skip field: ttl. */
+	STREAM_GETC(msg, tmp_num);
 
-		uint8_t if_len;
+	/* Read field: ifname length. */
+	STREAM_GETC(msg, if_name_len);
+	if (if_name_len >= INTERFACE_NAMSIZ) {
+		zlog_err("%s: invalid if_name_len: %u", __func__, if_name_len);
+		return;
+	}
 
-		STREAM_GETC(msg, if_len);
+	/* Read field: interface name. */
+	if (if_name_len > 0) {
+		char if_name[INTERFACE_NAMSIZ];
 
-		if (if_len > 0) {
-			char if_name[INTERFACE_NAMSIZ];
+		STREAM_GET(if_name, msg, if_name_len);
+		if_name[if_name_len] = '\0';
+
+		if (bfd_peer->sw_if_index == ~0U) {
 			int n;
 
-			STREAM_GET(if_name, msg, if_len);
-			if_name[if_len] = '\0';
-
 			n = sscanf(if_name, "vpp%u", &bfd_peer->sw_if_index);
-			if (n < 1) {
-				bfd_peer->sw_if_index = ~0;
-				zlog_warn("%s: cannot parse sw_if_index",
-					  __func__);
+			if (n != 1) {
+				bfd_peer->sw_if_index = ~0U;
+				zlog_err("%s: cannot parse interface name: %s",
+					 __func__, if_name);
+				return;
 			}
 
 			struct interface *ifp;
 
-			ifp = if_get_by_name(if_name, VRF_DEFAULT);
+			ifp = if_lookup_by_name(if_name, VRF_DEFAULT);
+			if (ifp == NULL) {
+				zlog_err("%s: cannot lookup interface by "
+					 "name: %s", __func__, if_name);
+				return;
+			}
+
 			bfd_peer->ifindex = ifp->ifindex;
-		} else {
-			zlog_err("%s: if_name is not provided, "
-				 "cannot determine sw_if_index", __func__);
-			bfd_peer->sw_if_index = ~0;
-			bfd_peer->ifindex = IFINDEX_INTERNAL;
 		}
 	}
 
+	/* Read field: bfd_cbit. */
 	STREAM_GETC(msg, bfd_peer->cbit);
+
+	/* Skip field: profile name length. */
+	/* Skip field: profile name. */
 
 stream_failure:
 	return;
@@ -210,9 +228,11 @@ static void zebra_ptm_vpp_make_addr(struct stream *msg, uint8_t family,
 	if (family == AF_INET) {
 		stream_put(msg, addr, IPV4_MAX_BYTELEN);
 		stream_putc(msg, 32);
-	} else {
+	} else if (family == AF_INET6) {
 		stream_put(msg, addr, IPV6_MAX_BYTELEN);
 		stream_putc(msg, 128);
+	} else {
+		zlog_warn("%s: invalid address family: %u", __func__, family);
 	}
 }
 
@@ -224,14 +244,25 @@ static struct stream *zebra_ptm_vpp_make_msg(struct vpp_bfd_peer *bfd_peer,
 
 	msg = stream_new(ZEBRA_BFD_DEST_UPD_PACK_SIZE);
 
+	/* Write field: command */
+	/* Write field: vrf */
 	zclient_create_header(msg, ZEBRA_INTERFACE_BFD_DEST_UPDATE,
 			      VRF_DEFAULT);
 
-	stream_putl(msg, bfd_peer->ifindex);
+	/* Write field: interface index */
+	if (!bfd_peer->multi_hop) {
+		stream_putl(msg, bfd_peer->ifindex);
+	} else {
+		stream_putl(msg, IFINDEX_INTERNAL);
+	}
 
+	/* Write field: family */
+	/* Write field: destination address */
+	/* Write field: prefix length */
 	zebra_ptm_vpp_make_addr(msg, bfd_peer->peer_addr_family,
 				bfd_peer->peer_addr);
 
+	/* Write field: bfd status */
 	switch (bfd_state) {
 	case BFD_STATE_up:
 		stream_putl(msg, BFD_STATUS_UP);
@@ -255,7 +286,10 @@ static struct stream *zebra_ptm_vpp_make_msg(struct vpp_bfd_peer *bfd_peer,
 		break;
 	}
 
-	if (bfd_peer->local_addr_family) {
+	/* Write field: family. */
+	/* Write field: source address. */
+	/* Write field: prefix length */
+	if (bfd_peer->local_addr_family != AF_UNSPEC) {
 		zebra_ptm_vpp_make_addr(msg, bfd_peer->local_addr_family,
 					bfd_peer->local_addr);
 	} else {
@@ -264,8 +298,10 @@ static struct stream *zebra_ptm_vpp_make_msg(struct vpp_bfd_peer *bfd_peer,
 					bfd_peer->local_addr);
 	}
 
+	/* Write field: cbit */
 	stream_putc(msg, bfd_peer->cbit);
 
+	/* Write packet size. */
 	stream_putw_at(msg, 0, stream_get_endp(msg));
 
 	return msg;

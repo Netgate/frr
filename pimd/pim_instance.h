@@ -30,18 +30,7 @@
 #include "pim_vxlan_instance.h"
 #include "pim_oil.h"
 #include "pim_upstream.h"
-
-#if defined(HAVE_LINUX_MROUTE_H)
-#include <linux/mroute.h>
-#else
-/*
-  Below: from <linux/mroute.h>
-*/
-
-#ifndef MAXVIFS
-#define MAXVIFS (256)
-#endif
-#endif
+#include "pim_mroute.h"
 
 enum pim_spt_switchover {
 	PIM_SPT_IMMEDIATE,
@@ -96,9 +85,9 @@ struct pim_router {
 	int t_periodic;
 	struct pim_assert_metric infinite_assert_metric;
 	long rpf_cache_refresh_delay_msec;
-	int32_t register_suppress_time;
+	uint32_t register_suppress_time;
 	int packet_process;
-	int32_t register_probe_time;
+	uint32_t register_probe_time;
 
 	/*
 	 * What is the default vrf that we work in
@@ -127,7 +116,7 @@ struct pim_router {
 
 /* Per VRF PIM DB */
 struct pim_instance {
-	vrf_id_t vrf_id;
+	// vrf_id_t vrf_id;
 	struct vrf *vrf;
 
 	struct {
@@ -176,7 +165,11 @@ struct pim_instance {
 	struct pim_vxlan_instance vxlan;
 
 	struct list *ssmpingd_list;
-	struct in_addr ssmpingd_group_addr;
+	pim_addr ssmpingd_group_addr;
+
+	unsigned int gm_socket_if_count;
+	int gm_socket;
+	struct thread *t_gm_recv;
 
 	unsigned int igmp_group_count;
 	unsigned int igmp_watermark_limit;
@@ -205,10 +198,14 @@ struct pim_instance {
 	int64_t nexthop_lookups;
 	int64_t nexthop_lookups_avoided;
 	int64_t last_route_change_time;
+
+	uint64_t gm_rx_drop_sys;
 };
 
 void pim_vrf_init(void);
 void pim_vrf_terminate(void);
+
+extern struct pim_router *router;
 
 struct pim_instance *pim_get_pim_instance(vrf_id_t vrf_id);
 

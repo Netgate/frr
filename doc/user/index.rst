@@ -22,6 +22,7 @@ Basics
    :maxdepth: 2
 
    basic
+   extlog
    vtysh
    grpc
    filter
@@ -29,6 +30,7 @@ Basics
    ipv6
    kernel
    snmp
+   scripting
 .. modules
 
 #########
@@ -50,7 +52,9 @@ Protocols
    nhrpd
    ospfd
    ospf6d
+   pathd
    pim
+   pimv6
    pbr
    ripd
    ripngd

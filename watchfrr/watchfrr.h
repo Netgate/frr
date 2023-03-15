@@ -23,7 +23,13 @@
 
 #include "lib/memory.h"
 
-DECLARE_MGROUP(WATCHFRR)
+DECLARE_MGROUP(WATCHFRR);
+
+/*
+ * This is the name of the pathspace we are in `-N XXX`
+ * If the default then this is NULL
+ */
+extern const char *pathspace;
 
 extern void watchfrr_vty_init(void);
 

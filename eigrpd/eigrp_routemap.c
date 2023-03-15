@@ -265,8 +265,8 @@ route_match_metric(void *rule, struct prefix *prefix, route_map_object_t type,
 	//  uint32_t *metric;
 	//  uint32_t  check;
 	//  struct rip_info *rinfo;
-	//  struct eigrp_nexthop_entry *te;
-	//  struct eigrp_prefix_entry *pe;
+	//  struct eigrp_route_descriptor *te;
+	//  struct eigrp_prefix_descriptor *pe;
 	//  struct listnode *node, *node2, *nnode, *nnode2;
 	//  struct eigrp *e;
 	//
@@ -690,7 +690,7 @@ static const struct route_map_rule_cmd route_set_metric_cmd = {
 
 /* `set ip next-hop IP_ADDRESS' */
 
-/* Set nexthop to object.  ojbect must be pointer to struct attr. */
+/* Set nexthop to object.  object must be pointer to struct attr. */
 static enum route_map_cmd_result_t
 route_set_ip_nexthop(void *rule, struct prefix *prefix,
 		     route_map_object_t type, void *object)
@@ -748,7 +748,7 @@ static const struct route_map_rule_cmd route_set_ip_nexthop_cmd = {
 
 /* `set tag TAG' */
 
-/* Set tag to object.  ojbect must be pointer to struct attr. */
+/* Set tag to object.  object must be pointer to struct attr. */
 static enum route_map_cmd_result_t
 route_set_tag(void *rule, struct prefix *prefix,
 	      route_map_object_t type, void *object)
@@ -858,12 +858,10 @@ ALIAS(no_match_interface, no_match_interface_val_cmd, "no match interface WORD",
 
 DEFUN (match_ip_next_hop,
        match_ip_next_hop_cmd,
-       "match ip next-hop ((1-199)|(1300-2699)|WORD)",
+       "match ip next-hop ACCESSLIST4_NAME",
        MATCH_STR
        IP_STR
        "Match next-hop address of route\n"
-       "IP access-list number\n"
-       "IP access-list number (expanded range)\n"
        "IP Access-list name\n")
 {
 	return eigrp_route_match_add(vty, vty->index, "ip next-hop", argv[0]);
@@ -886,15 +884,13 @@ DEFUN (no_match_ip_next_hop,
 }
 
 ALIAS(no_match_ip_next_hop, no_match_ip_next_hop_val_cmd,
-      "no match ip next-hop ((1-199)|(1300-2699)|WORD)", NO_STR MATCH_STR IP_STR
+      "no match ip next-hop ACCESSLIST4_NAME", NO_STR MATCH_STR IP_STR
       "Match next-hop address of route\n"
-      "IP access-list number\n"
-      "IP access-list number (expanded range)\n"
       "IP Access-list name\n")
 
 DEFUN (match_ip_next_hop_prefix_list,
        match_ip_next_hop_prefix_list_cmd,
-       "match ip next-hop prefix-list WORD",
+       "match ip next-hop prefix-list PREFIXLIST_NAME",
        MATCH_STR
        IP_STR
        "Match next-hop address of route\n"
@@ -924,19 +920,17 @@ DEFUN (no_match_ip_next_hop_prefix_list,
 
 ALIAS(no_match_ip_next_hop_prefix_list,
       no_match_ip_next_hop_prefix_list_val_cmd,
-      "no match ip next-hop prefix-list WORD", NO_STR MATCH_STR IP_STR
+      "no match ip next-hop prefix-list PREFIXLIST_NAME", NO_STR MATCH_STR IP_STR
       "Match next-hop address of route\n"
       "Match entries of prefix-lists\n"
       "IP prefix-list name\n")
 
 DEFUN (match_ip_address,
        match_ip_address_cmd,
-       "match ip address ((1-199)|(1300-2699)|WORD)",
+       "match ip address ACCESSLIST4_NAME",
        MATCH_STR
        IP_STR
        "Match address of route\n"
-       "IP access-list number\n"
-       "IP access-list number (expanded range)\n"
        "IP Access-list name\n")
 {
 	return eigrp_route_match_add(vty, vty->index, "ip address", argv[0]);
@@ -958,15 +952,13 @@ DEFUN (no_match_ip_address,
 }
 
 ALIAS(no_match_ip_address, no_match_ip_address_val_cmd,
-      "no match ip address ((1-199)|(1300-2699)|WORD)", NO_STR MATCH_STR IP_STR
+      "no match ip address ACCESSLIST4_NAME", NO_STR MATCH_STR IP_STR
       "Match address of route\n"
-      "IP access-list number\n"
-      "IP access-list number (expanded range)\n"
       "IP Access-list name\n")
 
 DEFUN (match_ip_address_prefix_list,
        match_ip_address_prefix_list_cmd,
-       "match ip address prefix-list WORD",
+       "match ip address prefix-list PREFIXLIST_NAME",
        MATCH_STR
        IP_STR
        "Match address of route\n"
@@ -995,7 +987,7 @@ DEFUN (no_match_ip_address_prefix_list,
 }
 
 ALIAS(no_match_ip_address_prefix_list, no_match_ip_address_prefix_list_val_cmd,
-      "no match ip address prefix-list WORD", NO_STR MATCH_STR IP_STR
+      "no match ip address prefix-list PREFIXLIST_NAME", NO_STR MATCH_STR IP_STR
       "Match address of route\n"
       "Match entries of prefix-lists\n"
       "IP prefix-list name\n")
@@ -1130,6 +1122,48 @@ ALIAS(no_set_tag, no_set_tag_val_cmd, "no set tag (0-65535)", NO_STR SET_STR
       "Tag value for routing protocol\n"
       "Tag value\n")
 
+DEFUN (eigrp_distribute_list,
+       eigrp_distribute_list_cmd,
+       "distribute-list [prefix] ACCESSLIST_NAME <in|out> [WORD]",
+       "Filter networks in routing updates\n"
+       "Specify a prefix\n"
+       "Access-list name\n"
+       "Filter incoming routing updates\n"
+       "Filter outgoing routing updates\n"
+       "Interface name\n")
+{
+	const char *ifname = NULL;
+	int prefix = (argv[1]->type == WORD_TKN) ? 1 : 0;
+
+	if (argv[argc - 1]->type == VARIABLE_TKN)
+		ifname = argv[argc - 1]->arg;
+
+	return distribute_list_parser(prefix, true, argv[2 + prefix]->text,
+				      argv[1 + prefix]->arg, ifname);
+}
+
+DEFUN (eigrp_no_distribute_list,
+       eigrp_no_distribute_list_cmd,
+       "no distribute-list [prefix] ACCESSLIST_NAME <in|out> [WORD]",
+       NO_STR
+       "Filter networks in routing updates\n"
+       "Specify a prefix\n"
+       "Access-list name\n"
+       "Filter incoming routing updates\n"
+       "Filter outgoing routing updates\n"
+       "Interface name\n")
+{
+	const char *ifname = NULL;
+	int prefix = (argv[2]->type == WORD_TKN) ? 1 : 0;
+
+	if (argv[argc - 1]->type == VARIABLE_TKN)
+		ifname = argv[argc - 1]->arg;
+
+	return distribute_list_no_parser(vty, prefix, true,
+					 argv[3 + prefix]->text,
+					 argv[2 + prefix]->arg, ifname);
+}
+
 
 /* Route-map init */
 void eigrp_route_map_init()
@@ -1138,6 +1172,9 @@ void eigrp_route_map_init()
 	route_map_init_vty();
 	route_map_add_hook(eigrp_route_map_update);
 	route_map_delete_hook(eigrp_route_map_update);
+
+	install_element(EIGRP_NODE, &eigrp_distribute_list_cmd);
+	install_element(EIGRP_NODE, &eigrp_no_distribute_list_cmd);
 
 	/*route_map_install_match (&route_match_metric_cmd);
 	  route_map_install_match (&route_match_interface_cmd);*/

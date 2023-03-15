@@ -28,9 +28,9 @@
 #include "command.h"
 #include "log.h"
 
-DEFINE_MTYPE(LIB, WORK_QUEUE, "Work queue")
-DEFINE_MTYPE_STATIC(LIB, WORK_QUEUE_ITEM, "Work queue item")
-DEFINE_MTYPE_STATIC(LIB, WORK_QUEUE_NAME, "Work queue name string")
+DEFINE_MTYPE(LIB, WORK_QUEUE, "Work queue");
+DEFINE_MTYPE_STATIC(LIB, WORK_QUEUE_ITEM, "Work queue item");
+DEFINE_MTYPE_STATIC(LIB, WORK_QUEUE_NAME, "Work queue name string");
 
 /* master list of work_queues */
 static struct list _work_queues;
@@ -104,7 +104,7 @@ void work_queue_free_and_null(struct work_queue **wqp)
 	struct work_queue *wq = *wqp;
 
 	if (wq->thread != NULL)
-		thread_cancel(wq->thread);
+		thread_cancel(&(wq->thread));
 
 	while (!work_queue_empty(wq)) {
 		struct work_queue_item *item = work_queue_last_item(wq);
@@ -135,10 +135,11 @@ static int work_queue_schedule(struct work_queue *wq, unsigned int delay)
 		/* Schedule timer if there's a delay, otherwise just schedule
 		 * as an 'event'
 		 */
-		if (delay > 0)
+		if (delay > 0) {
 			thread_add_timer_msec(wq->master, work_queue_run, wq,
 					      delay, &wq->thread);
-		else
+			thread_ignore_late_timer(wq->thread);
+		} else
 			thread_add_event(wq->master, work_queue_run, wq, 0,
 					 &wq->thread);
 
@@ -215,7 +216,7 @@ void workqueue_cmd_init(void)
 void work_queue_plug(struct work_queue *wq)
 {
 	if (wq->thread)
-		thread_cancel(wq->thread);
+		thread_cancel(&(wq->thread));
 
 	wq->thread = NULL;
 
@@ -237,7 +238,7 @@ void work_queue_unplug(struct work_queue *wq)
  * will reschedule itself if required,
  * otherwise work_queue_item_add
  */
-int work_queue_run(struct thread *thread)
+void work_queue_run(struct thread *thread)
 {
 	struct work_queue *wq;
 	struct work_queue_item *item, *titem;
@@ -377,11 +378,6 @@ stats:
 	if (yielded)
 		wq->yields++;
 
-#if 0
-  printf ("%s: cycles %d, new: best %d, worst %d\n",
-            __func__, cycles, wq->cycles.best, wq->cycles.granularity);
-#endif
-
 	/* Is the queue done yet? If it is, call the completion callback. */
 	if (!work_queue_empty(wq)) {
 		if (ret == WQ_RETRY_LATER ||
@@ -392,6 +388,4 @@ stats:
 
 	} else if (wq->spec.completion_func)
 		wq->spec.completion_func(wq);
-
-	return 0;
 }

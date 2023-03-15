@@ -22,7 +22,7 @@
 #
 
 """
- test_bgp_ipv6_rtadv.py: Test the FRR/Quagga BGP daemon with BGP IPv6 interface
+ test_bgp_ipv6_rtadv.py: Test the FRR BGP daemon with BGP IPv6 interface
  with route advertisements on a separate netns.
 """
 
@@ -43,33 +43,31 @@ from lib.topogen import Topogen, TopoRouter, get_topogen
 from lib.topolog import logger
 
 # Required to instantiate the topology builder class.
-from mininet.topo import Topo
 
 
-class BGPIPV6RTADVTopo(Topo):
-    "Test topology builder"
+pytestmark = [pytest.mark.bgpd]
 
-    def build(self, *_args, **_opts):
-        "Build function"
-        tgen = get_topogen(self)
 
-        # Create 2 routers.
-        tgen.add_router("r1")
-        tgen.add_router("r2")
+def build_topo(tgen):
+    "Build function"
 
-        switch = tgen.add_switch("s1")
-        switch.add_link(tgen.gears["r1"])
-        switch.add_link(tgen.gears["r2"])
+    # Create 2 routers.
+    tgen.add_router("r1")
+    tgen.add_router("r2")
+
+    switch = tgen.add_switch("s1")
+    switch.add_link(tgen.gears["r1"])
+    switch.add_link(tgen.gears["r2"])
 
 
 def setup_module(mod):
     "Sets up the pytest environment"
-    tgen = Topogen(BGPIPV6RTADVTopo, mod.__name__)
+    tgen = Topogen(build_topo, mod.__name__)
     tgen.start_topology()
 
     router_list = tgen.routers()
 
-    for rname, router in router_list.iteritems():
+    for rname, router in router_list.items():
         router.load_config(
             TopoRouter.RD_ZEBRA, os.path.join(CWD, "{}/zebra.conf".format(rname))
         )
@@ -109,7 +107,7 @@ def test_protocols_convergence():
         test_func = partial(
             topotest.router_json_cmp,
             router,
-            "show ip route json".format(router.name),
+            "show ip route json",
             expected,
         )
         _, result = topotest.run_and_expect(test_func, None, count=160, wait=0.5)
@@ -128,7 +126,7 @@ def test_protocols_convergence():
         test_func = partial(
             topotest.router_json_cmp,
             router,
-            "show ipv6 route json".format(router.name),
+            "show ipv6 route json",
             expected,
         )
         _, result = topotest.run_and_expect(test_func, None, count=160, wait=0.5)

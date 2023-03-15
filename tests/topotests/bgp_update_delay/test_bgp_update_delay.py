@@ -60,7 +60,6 @@ event of packet loss.
 import os
 import sys
 import json
-import time
 import pytest
 import functools
 
@@ -70,41 +69,41 @@ sys.path.append(os.path.join(CWD, "../"))
 # pylint: disable=C0413
 from lib import topotest
 from lib.topogen import Topogen, TopoRouter, get_topogen
-from lib.topolog import logger
-from mininet.topo import Topo
+
+pytestmark = [pytest.mark.bgpd]
 
 
-class TemplateTopo(Topo):
-    def build(self, *_args, **_opts):
-        tgen = get_topogen(self)
+CWD = os.path.dirname(os.path.realpath(__file__))
 
-        for routern in range(1, 6):
-            tgen.add_router("r{}".format(routern))
 
-        switch = tgen.add_switch("s1")
-        switch.add_link(tgen.gears["r1"])
-        switch.add_link(tgen.gears["r2"])
+def build_topo(tgen):
+    for routern in range(1, 6):
+        tgen.add_router("r{}".format(routern))
 
-        switch = tgen.add_switch("s2")
-        switch.add_link(tgen.gears["r2"])
-        switch.add_link(tgen.gears["r3"])
+    switch = tgen.add_switch("s1")
+    switch.add_link(tgen.gears["r1"])
+    switch.add_link(tgen.gears["r2"])
 
-        switch = tgen.add_switch("s3")
-        switch.add_link(tgen.gears["r2"])
-        switch.add_link(tgen.gears["r4"])
+    switch = tgen.add_switch("s2")
+    switch.add_link(tgen.gears["r2"])
+    switch.add_link(tgen.gears["r3"])
 
-        switch = tgen.add_switch("s4")
-        switch.add_link(tgen.gears["r2"])
-        switch.add_link(tgen.gears["r5"])
+    switch = tgen.add_switch("s3")
+    switch.add_link(tgen.gears["r2"])
+    switch.add_link(tgen.gears["r4"])
+
+    switch = tgen.add_switch("s4")
+    switch.add_link(tgen.gears["r2"])
+    switch.add_link(tgen.gears["r5"])
 
 
 def setup_module(mod):
-    tgen = Topogen(TemplateTopo, mod.__name__)
+    tgen = Topogen(build_topo, mod.__name__)
     tgen.start_topology()
 
     router_list = tgen.routers()
 
-    for i, (rname, router) in enumerate(router_list.iteritems(), 1):
+    for i, (rname, router) in enumerate(router_list.items(), 1):
         router.load_config(
             TopoRouter.RD_ZEBRA, os.path.join(CWD, "{}/zebra.conf".format(rname))
         )
@@ -149,22 +148,21 @@ def test_bgp_update_delay():
 
     def _bgp_check_update_delay_in_progress(router):
         output = json.loads(router.vtysh_cmd("show ip bgp sum json"))
-        expected = {"ipv4Unicast": {"updateDelayInProgress":True}}
+        expected = {"ipv4Unicast": {"updateDelayInProgress": True}}
 
         return topotest.json_cmp(output, expected)
 
     def _bgp_check_route_install(router):
         output = json.loads(router.vtysh_cmd("show ip route 172.16.253.254/32 json"))
-        expected = {"172.16.253.254/32": [ {"protocol": "bgp"}]}
+        expected = {"172.16.253.254/32": [{"protocol": "bgp"}]}
 
         return topotest.json_cmp(output, expected)
 
     def _bgp_check_update_delay_and_wait(router):
         output = json.loads(router.vtysh_cmd("show ip bgp sum json"))
         expected = {
-                "ipv4Unicast": {
-                    "updateDelayLimit": 20,
-                    "updateDelayEstablishWait": 10}}
+            "ipv4Unicast": {"updateDelayLimit": 20, "updateDelayEstablishWait": 10}
+        }
 
         return topotest.json_cmp(output, expected)
 
@@ -177,13 +175,10 @@ def test_bgp_update_delay():
     def _bgp_check_vrf_update_delay_and_wait(router):
         output = json.loads(router.vtysh_cmd("show ip bgp vrf vrf1 sum json"))
         expected = {
-                "ipv4Unicast": {
-                    "updateDelayLimit": 20,
-                    "updateDelayEstablishWait": 10}}
-
+            "ipv4Unicast": {"updateDelayLimit": 20, "updateDelayEstablishWait": 10}
+        }
 
         return topotest.json_cmp(output, expected)
-
 
     # Check r2 initial convergence in default table
     test_func = functools.partial(_bgp_converge, router2)
@@ -198,7 +193,7 @@ def test_bgp_update_delay():
             router bgp 65002
               update-delay 20
         """
-        )
+    )
 
     # Shutdown peering on r1 toward r2 so that delay timers can be exercised
     router1.vtysh_cmd(
@@ -207,7 +202,7 @@ def test_bgp_update_delay():
             router bgp 65001
               neighbor 192.168.255.1 shut
         """
-        )
+    )
 
     # Clear bgp neighbors on r2 and then check for the 'in progress' indicator
     router2.vtysh_cmd("""clear ip bgp *""")
@@ -215,13 +210,17 @@ def test_bgp_update_delay():
     test_func = functools.partial(_bgp_check_update_delay_in_progress, router2)
     success, result = topotest.run_and_expect(test_func, None, count=30, wait=1)
 
-    assert result is None, 'Failed to set update-delay max-delay timer "{}"'.format(router2)
+    assert result is None, 'Failed to set update-delay max-delay timer "{}"'.format(
+        router2
+    )
 
     # Check that r2 only installs route learned from r4 after the max-delay timer expires
     test_func = functools.partial(_bgp_check_route_install, router2)
     success, result = topotest.run_and_expect(test_func, None, count=30, wait=1)
 
-    assert result is None, 'Failed to install route after update-delay "{}"'.format(router2)
+    assert result is None, 'Failed to install route after update-delay "{}"'.format(
+        router2
+    )
 
     # Define update-delay with max-delay and estabish-wait and check json output showing set
     router2.vtysh_cmd(
@@ -230,12 +229,14 @@ def test_bgp_update_delay():
             router bgp 65002
               update-delay 20 10
         """
-        )
+    )
 
     test_func = functools.partial(_bgp_check_update_delay_and_wait, router2)
     success, result = topotest.run_and_expect(test_func, None, count=30, wait=1)
 
-    assert result is None, 'Failed to set max-delay and establish-weight timers in "{}"'.format(router2)
+    assert (
+        result is None
+    ), 'Failed to set max-delay and establish-weight timers in "{}"'.format(router2)
 
     # Define update-delay with max-delay and estabish-wait and check json output showing set
     router2.vtysh_cmd("""clear ip bgp *""")
@@ -243,7 +244,11 @@ def test_bgp_update_delay():
     test_func = functools.partial(_bgp_check_route_install, router3)
     success, result = topotest.run_and_expect(test_func, None, count=30, wait=1)
 
-    assert result is None, 'Failed to installed advertised route after establish-wait timer espired "{}"'.format(router2)
+    assert (
+        result is None
+    ), 'Failed to installed advertised route after establish-wait timer espired "{}"'.format(
+        router2
+    )
 
     # Remove update-delay timer on r2 to verify that it goes back to normal behavior
     router2.vtysh_cmd(
@@ -252,7 +257,7 @@ def test_bgp_update_delay():
             router bgp 65002
               no update-delay
         """
-        )
+    )
 
     # Clear neighbors on r2 and check that route install time on r2 does not delay
     router2.vtysh_cmd("""clear ip bgp *""")
@@ -260,7 +265,9 @@ def test_bgp_update_delay():
     test_func = functools.partial(_bgp_check_route_install, router2)
     success, result = topotest.run_and_expect(test_func, None, count=30, wait=1)
 
-    assert result is None, 'Failed to remove update-delay delay timing "{}"'.format(router2)
+    assert result is None, 'Failed to remove update-delay delay timing "{}"'.format(
+        router2
+    )
 
     # Define global bgp update-delay with max-delay and establish-wait on r2
     router2.vtysh_cmd(
@@ -268,13 +275,15 @@ def test_bgp_update_delay():
           configure terminal
             bgp update-delay 20 10
         """
-        )
+    )
 
     # Check that r2 default instance and vrf1 have the max-delay and establish set
     test_func = functools.partial(_bgp_check_update_delay_and_wait, router2)
     success, result = topotest.run_and_expect(test_func, None, count=30, wait=1)
 
-    assert result is None, 'Failed to set update-delay in default instance "{}"'.format(router2)
+    assert result is None, 'Failed to set update-delay in default instance "{}"'.format(
+        router2
+    )
 
     test_func = functools.partial(_bgp_check_vrf_update_delay_and_wait, router2)
     success, result = topotest.run_and_expect(test_func, None, count=30, wait=1)
@@ -287,7 +296,11 @@ def test_bgp_update_delay():
     test_func = functools.partial(_bgp_check_route_install, router3)
     success, result = topotest.run_and_expect(test_func, None, count=30, wait=1)
 
-    assert result is None, 'Failed to installed advertised route after establish-wait timer espired "{}"'.format(router2)
+    assert (
+        result is None
+    ), 'Failed to installed advertised route after establish-wait timer espired "{}"'.format(
+        router2
+    )
 
 
 if __name__ == "__main__":

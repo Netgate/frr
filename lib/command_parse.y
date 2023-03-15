@@ -54,7 +54,7 @@
   #include "command_graph.h"
   #include "log.h"
 
-  DECLARE_MTYPE(LEX)
+  DECLARE_MTYPE(LEX);
 
   #define YYSTYPE CMD_YYSTYPE
   #define YYLTYPE CMD_YYLTYPE
@@ -75,7 +75,7 @@
 
 %code provides {
   #ifndef FLEX_SCANNER
-  #include "command_lex.h"
+  #include "lib/command_lex.h"
   #endif
 
   extern void set_lexer_string (yyscan_t *scn, const char *string);
@@ -104,6 +104,9 @@
 %token <string> RANGE
 %token <string> MAC
 %token <string> MAC_PREFIX
+
+/* special syntax, value is irrelevant */
+%token <string> EXCL_BRACKET
 
 /* union types for parsed rules */
 %type <node> start
@@ -214,10 +217,12 @@ cmd_token:
 {
   if ((ctx->currnode = graph_add_edge (ctx->currnode, $1)) != $1)
     graph_delete_node (ctx->graph, $1);
+  cmd_token_varname_seqappend($1);
 }
 | selector
 {
   graph_add_edge (ctx->currnode, $1.start);
+  cmd_token_varname_seqappend($1.start);
   ctx->currnode = $1.end;
 }
 ;
@@ -292,9 +297,8 @@ placeholder_token_real:
 placeholder_token:
   placeholder_token_real varname_token
 {
-  struct cmd_token *token = $$->data;
   $$ = $1;
-  cmd_token_varname_set (token, $2);
+  cmd_token_varname_set ($$->data, $2);
   XFREE (MTYPE_LEX, $2);
 };
 
@@ -303,7 +307,7 @@ placeholder_token:
 selector: '<' selector_seq_seq '>' varname_token
 {
   $$ = $2;
-  cmd_token_varname_set ($2.end->data, $4);
+  cmd_token_varname_join ($2.end, $4);
   XFREE (MTYPE_LEX, $4);
 };
 
@@ -335,11 +339,11 @@ selector: '{' selector_seq_seq '}' varname_token
    * 1) this allows "at least 1 of" semantics, which are otherwise impossible
    * 2) this would add a start->end->start loop in the graph that the current
    *    loop-avoidal fails to handle
-   * just use [{a|b}] if neccessary, that will work perfectly fine, and reason
+   * just use [{a|b}] if necessary, that will work perfectly fine, and reason
    * #1 is good enough to keep it this way. */
 
   loopcheck(ctx, &$$);
-  cmd_token_varname_set ($2.end->data, $4);
+  cmd_token_varname_join ($2.end, $4);
   XFREE (MTYPE_LEX, $4);
 };
 
@@ -356,6 +360,7 @@ selector_token_seq:
   selector_token_seq selector_token
 {
   graph_add_edge ($1.end, $2.start);
+  cmd_token_varname_seqappend($2.start);
   $$.start = $1.start;
   $$.end   = $2.end;
 }
@@ -367,7 +372,20 @@ selector: '[' selector_seq_seq ']' varname_token
 {
   $$ = $2;
   graph_add_edge ($$.start, $$.end);
-  cmd_token_varname_set ($2.end->data, $4);
+  cmd_token_varname_join ($2.end, $4);
+  XFREE (MTYPE_LEX, $4);
+}
+;
+
+/* ![option] productions */
+selector: EXCL_BRACKET selector_seq_seq ']' varname_token
+{
+  struct graph_node *neg_only = new_token_node (ctx, NEG_ONLY_TKN, NULL, NULL);
+
+  $$ = $2;
+  graph_add_edge ($$.start, neg_only);
+  graph_add_edge (neg_only, $$.end);
+  cmd_token_varname_join ($2.end, $4);
   XFREE (MTYPE_LEX, $4);
 }
 ;
@@ -376,7 +394,7 @@ selector: '[' selector_seq_seq ']' varname_token
 
 #undef scanner
 
-DEFINE_MTYPE(LIB, LEX, "Lexer token (temporary)")
+DEFINE_MTYPE(LIB, LEX, "Lexer token (temporary)");
 
 void
 cmd_graph_parse (struct graph *graph, const struct cmd_element *cmd)
@@ -492,11 +510,11 @@ terminate_graph (CMD_YYLTYPE *locp, struct parser_ctx *ctx,
     graph_new_node (ctx->graph, (void *)element, NULL);
 
   if (ctx->docstr && strlen (ctx->docstr) > 1) {
-    zlog_debug ("Excessive docstring while parsing '%s'", ctx->el->string);
-    zlog_debug ("----------");
+    zlog_err ("Excessive docstring while parsing '%s'", ctx->el->string);
+    zlog_err ("----------");
     while (ctx->docstr && ctx->docstr[1] != '\0')
-      zlog_debug ("%s", strsep(&ctx->docstr, "\n"));
-    zlog_debug ("----------\n");
+      zlog_err ("%s", strsep(&ctx->docstr, "\n"));
+    zlog_err ("----------");
   }
 
   graph_add_edge (finalnode, end_token_node);
@@ -509,7 +527,7 @@ doc_next (struct parser_ctx *ctx)
   const char *piece = ctx->docstr ? strsep (&ctx->docstr, "\n") : "";
   if (*piece == 0x03)
   {
-    zlog_debug ("Ran out of docstring while parsing '%s'", ctx->el->string);
+    zlog_err ("Ran out of docstring while parsing '%s'", ctx->el->string);
     piece = "";
   }
 

@@ -56,7 +56,7 @@ module frr-pim {
      (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
      OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.";
 
-  revision 2017-03-09 {
+  revision 2021-11-22 {
     description
       "Initial revision.";
     reference
@@ -77,78 +77,89 @@ module frr-pim {
    * Groupings
    */
 
+  grouping msdp-timers {
+    leaf hold-time {
+      type uint16 {
+        range "1..max";
+      }
+      units seconds;
+      default 75;
+      description
+        "Hold period is started at the MSDP peer connection establishment
+         and is reset every new message. When the period expires the
+         connection is closed. This value should be greater than the
+         remote keep-alive time.";
+    }
+
+    leaf keep-alive {
+      type uint16 {
+        range "1..max";
+      }
+      units seconds;
+      default 60;
+      description
+        "To maintain a connection established it is necessary to send
+         keep alive messages in a certain frequency and this allows its
+         configuration. This value should be less than the remote
+         hold time.";
+    }
+
+    leaf connection-retry {
+      type uint16 {
+        range "1..max";
+      }
+      units seconds;
+      default 30;
+      description
+        "This period is used in the MSDP peer with the highest IP value
+         in the pair and configures the interval between TCP connection
+         attempts.";
+    }
+  }
+
   grouping global-pim-config-attributes {
     description
-      "A grouping defining pim global attributes.";
+      "A grouping defining per address family pim global attributes";
 
     leaf ecmp {
-      type empty;
+      type boolean;
+      default "false";
       description
         "Enable PIM ECMP.";
     }
-
+    
     leaf ecmp-rebalance {
-      type empty;
+      type boolean;
+      default "false";
       description
         "Enable PIM ECMP Rebalance.";
     }
-
-    leaf join-prune-interval {
-      type uint16 {
-        range "60..600";
-      }
-      default "60";
-      description
-        "Join Prune Send Interval in seconds.";
-    }
-
+    
     leaf keep-alive-timer {
       type uint16 {
-        range "31..60000";
+        range "1..max";
       }
       default "210";
       description
         "Keep alive Timer in seconds.";
     }
-
+    
     leaf rp-keep-alive-timer {
       type uint16 {
-        range "31..60000";
+        range "1..max";
       }
       default "210";
       description
         "RP keep alive Timer in seconds.";
     }
 
-    leaf packets {
-      type uint8 {
-        range "1..100";
-      }
-      default "3";
-      description
-        "Number of packets to process at one time per fd.";
-    }
-
-    leaf register-suppress-time {
-      type uint16 {
-        range "5..60000";
-      }
-      default "60";
-      description
-        "Register Suppress Timer.";
-    }
-  }
-
-  grouping per-af-global-pim-config-attributes {
-    description
-      "A grouping defining per address family pim global attributes";
-
     leaf send-v6-secondary {
       when "../frr-pim:address-family = 'frr-rt:ipv4'" {
         description
           "Only applicable to IPv4 address family.";
       }
-      type empty;
+      type boolean;
+      default "true";
       description
         "Send v6 secondary addresses.";
     }
@@ -199,26 +210,42 @@ module frr-pim {
         "Enable ssmpingd operation.";
     }
 
-    container msdp-mesh-group {
-      presence
-        "Configure MSDP mesh-group.";
+    /* Global timers configuration. */
+    container msdp {
+      description "Global MSDP configuration.";
+      uses msdp-timers;
+    }
 
-      leaf mesh-group-name {
-        type string;
+    list msdp-mesh-groups {
+      key "name";
+      description
+        "RFC 3618 Section 10.2. MSDP mesh-group semantics
+
+         Groups multiple MSDP peers to reduce SA flooding typically used
+         in intra-domain settings.";
+
+      leaf name {
+        type string {
+          length 1..64;
+        }
         description
-          "MSDP mesh group name.";
+          "The mesh group name.";
       }
 
-      leaf-list member-ip {
+      leaf source {
         type inet:ip-address;
         description
-          "Peer ip address.";
+          "Source IP address for the TCP connections.";
       }
 
-      leaf source-ip {
-        type inet:ip-address;
-        description
-          "Source ip address for the TCP connection.";
+      list members {
+        key "address";
+
+        leaf address {
+          type inet:ip-address;
+          description
+            "Peer member IP address.";
+        }
       }
     }
 
@@ -234,6 +261,7 @@ module frr-pim {
       }
 
       leaf source-ip {
+        mandatory true;
         type inet:ip-address;
         description
           "MSDP source IP address.";
@@ -241,7 +269,7 @@ module frr-pim {
     }
 
     container mlag {
-      description
+      presence
         "Multi-chassis link aggregation.";
 
      leaf peerlink-rif {
@@ -293,30 +321,29 @@ module frr-pim {
         description
           "Only accept registers from a specific source prefix list.";
     }
-  } // per-af-global-pim-config-attributes
+  } // global-pim-config-attributes
 
   grouping interface-pim-config-attributes {
     description
-      "A grouping defining pim interface attributes.";
+      "A grouping defining pim interface attributes per address family.";
 
     leaf pim-enable {
-      type empty;
+      type boolean;
+      default "false";
       description
         "Enable PIM flag on the interface.";
     }
 
-    leaf dr-priority {
-      type uint32 {
-        range "1..4294967295";
-      }
-      default 1;
+    leaf pim-passive-enable {
+      type boolean;
+      default "false";
       description
-        "DR (Designated Router) priority";
+        "Disable exchange of protocol packets.";
     }
 
     leaf hello-interval {
-      type uint16 {
-        range "1..180";
+      type uint8 {
+        range "1..max";
       }
       default "30";
       description
@@ -325,7 +352,10 @@ module frr-pim {
 
     leaf hello-holdtime {
       type uint16 {
-        range "1..180";
+        range "1..max";
+      }
+      must ". > ./../hello-interval" {
+      error-message "HoldTime must be greater than Hello";
       }
       description
         "Hello holdtime";
@@ -337,7 +367,7 @@ module frr-pim {
 
       leaf min-rx-interval {
         type uint16 {
-          range "50..60000";
+          range "1..max";
         }
         default "300";
           description
@@ -346,7 +376,7 @@ module frr-pim {
 
       leaf min-tx-interval {
         type uint16 {
-          range "50..60000";
+          range "1..max";
         }
         default "300";
         description
@@ -361,30 +391,43 @@ module frr-pim {
         description
           "Detect Multiplier";
       }
+
+      leaf profile {
+        type string;
+        description
+          "Use a preconfigure BFD profile.";
+      }
     }
 
     leaf bsm {
-      type empty;
+      type boolean;
+      default "true";
       description
         "Enables BSM support on the interface.";
     }
 
     leaf unicast-bsm {
-      type empty;
+      type boolean;
+      default "true";
       description
         "Accept/Send unicast BSM on the interface.";
     }
 
     leaf active-active {
-      type empty;
+      type boolean;
+      default "false";
       description
         "Mark interface as Active-Active for MLAG operations.";
     }
-  } // interface-pim-config-attributes
 
-  grouping per-af-interface-pim-config-attributes {
-    description
-      "A grouping defining pim interface attributes per address family.";
+    leaf dr-priority {
+      type uint32 {
+        range "1..max";
+      }
+      default 1;
+      description
+        "DR (Designated Router) priority";
+    }
 
     leaf use-source {
       type inet:ip-address;
@@ -421,7 +464,36 @@ module frr-pim {
           "Multicast group address.";
       }
     }
-  } // per-af-interface-pim-config-attributes
+  } // interface-pim-config-attributes
+
+  grouping router-pim-config-attributes {
+    description
+      "A grouping defining pim router attributes per address family.";
+    leaf packets {
+      type uint8 {
+        range "1..max";
+      }
+      default "3";
+      description
+        "Number of packets to process at one time per fd.";
+    }
+    leaf join-prune-interval {
+      type uint16 {
+        range "1..max";
+      }
+      default "60";
+      description
+        "Join Prune Send Interval in seconds.";
+    }
+    leaf register-suppress-time {
+      type uint16 {
+        range "1..max";
+      }
+      default "60";
+      description
+        "Register Suppress Timer.";
+    }
+  }
 
   /*
    * Global Configuration data nodes
@@ -436,15 +508,12 @@ module frr-pim {
       }
       description
         "PIM configuration data.";
-
-      uses global-pim-config-attributes;
-
       list address-family {
         key "address-family";
         description
           "Each list entry for one address family.";
         uses frr-rt:address-family;
-        uses per-af-global-pim-config-attributes;
+        uses global-pim-config-attributes;
 
       } //address-family
     } // pim
@@ -455,17 +524,28 @@ module frr-pim {
    */
   augment "/frr-interface:lib/frr-interface:interface" {
     container pim {
-      description
-        "PIM interface parameters.";
-      uses interface-pim-config-attributes;
       list address-family {
         key "address-family";
         description
           "Each list entry for one address family.";
         uses frr-rt:address-family;
-        uses per-af-interface-pim-config-attributes;
+        uses interface-pim-config-attributes;
       }
     }
   }
-}
 
+  /*
+   * Router configuration data
+   */
+  container pim {
+    description
+      "PIM router parameters.";
+    list address-family {
+      key "address-family";
+      description
+        "Each list entry for one address family.";
+      uses frr-rt:address-family;
+      uses router-pim-config-attributes;
+    }
+  }
+}

@@ -29,7 +29,6 @@ Following tests are covered to test bgp community functionality:
 import os
 import sys
 import time
-import json
 import pytest
 
 # Save the Current Working Directory to find configuration files.
@@ -38,7 +37,6 @@ sys.path.append(os.path.join(CWD, "../"))
 
 # pylint: disable=C0413
 # Import topogen and topotest helpers
-from mininet.topo import Topo
 from lib.topogen import Topogen, get_topogen
 
 # Import topoJson from lib, to create topology and initial configuration
@@ -54,46 +52,25 @@ from lib.common_config import (
     create_route_maps,
     create_prefix_lists,
     create_route_maps,
-    required_linux_kernel_version
+    required_linux_kernel_version,
 )
 from lib.topolog import logger
 from lib.bgp import (
     verify_bgp_convergence,
     create_router_bgp,
-    clear_bgp_and_verify,
     verify_bgp_rib,
 )
-from lib.topojson import build_topo_from_json, build_config_from_json
+from lib.topojson import build_config_from_json
 from copy import deepcopy
 
-# Reading the data from JSON File for topology creation
-jsonFile = "{}/bgp_communities.json".format(CWD)
-try:
-    with open(jsonFile, "r") as topoJson:
-        topo = json.load(topoJson)
-except IOError:
-    assert False, "Could not read file {}".format(jsonFile)
+pytestmark = [pytest.mark.bgpd, pytest.mark.staticd]
+
 
 # Global variables
 BGP_CONVERGENCE = False
 ADDR_TYPES = check_address_types()
 NETWORK = {"ipv4": "2.2.2.2/32", "ipv6": "22:22::2/128"}
 NEXT_HOP_IP = {}
-
-
-class BGPCOMMUNITIES(Topo):
-    """
-    Test BGPCOMMUNITIES - topology 1
-
-    * `Topo`: Topology object
-    """
-
-    def build(self, *_args, **_opts):
-        """Build function"""
-        tgen = get_topogen(self)
-
-        # Building topology from json file
-        build_topo_from_json(tgen, topo)
 
 
 def setup_module(mod):
@@ -104,7 +81,7 @@ def setup_module(mod):
     """
 
     # Required linux kernel version for this suite to run.
-    result = required_linux_kernel_version('4.15')
+    result = required_linux_kernel_version("4.15")
     if result is not True:
         pytest.skip("Kernel requirements are not met")
 
@@ -115,11 +92,14 @@ def setup_module(mod):
     logger.info("Running setup_module to create topology")
 
     # This function initiates the topology build with Topogen...
-    tgen = Topogen(BGPCOMMUNITIES, mod.__name__)
+    json_file = "{}/bgp_communities.json".format(CWD)
+    tgen = Topogen(json_file, mod.__name__)
+    global topo
+    topo = tgen.json_topo
     # ... and here it calls Mininet initialization functions.
 
     # Starting topology, create tmp files which are loaded to routers
-    #  to start deamons and then start routers
+    #  to start daemons and then start routers
     start_topology(tgen)
 
     # Creating configuration from JSON
@@ -337,14 +317,18 @@ def test_bgp_no_advertise_community_p0(request):
         )
 
         result = verify_bgp_rib(tgen, addr_type, dut, input_dict, expected=False)
-        assert result is not True, "Testcase {} : Failed \n "
-        " Routes still present in R3 router. Error: {}".format(tc_name, result)
+        assert result is not True, "Testcase {} : Failed \n ".format(
+            tc_name
+        ) + " Routes still present in R3 router. Error: {}".format(result)
 
         result = verify_rib(
             tgen, addr_type, dut, input_dict, protocol=protocol, expected=False
         )
-        assert result is not True, "Testcase {} : Failed \n "
-        " Routes still present in R3 router. Error: {}".format(tc_name, result)
+        assert (
+            result is not True
+        ), "Testcase {} : Failed \n  Routes still present in R3 router. Error: {}".format(
+            tc_name, result
+        )
 
         step("Remove and Add no advertise community")
         # Configure neighbor for route map
@@ -389,12 +373,18 @@ def test_bgp_no_advertise_community_p0(request):
         )
 
         result = verify_bgp_rib(tgen, addr_type, dut, input_dict)
-        assert result is True, "Testcase {} : Failed \n "
-        " Routes still present in R3 router. Error: {}".format(tc_name, result)
+        assert (
+            result is True
+        ), "Testcase {} : Failed \n  Routes still present in R3 router. Error: {}".format(
+            tc_name, result
+        )
 
         result = verify_rib(tgen, addr_type, dut, input_dict, protocol=protocol)
-        assert result is True, "Testcase {} : Failed \n "
-        " Routes still present in R3 router. Error: {}".format(tc_name, result)
+        assert (
+            result is True
+        ), "Testcase {} : Failed \n  Routes still present in R3 router. Error: {}".format(
+            tc_name, result
+        )
 
     step("Repeat above steps when IBGP nbr configured between R1, R2 & R2, R3")
     topo1 = deepcopy(topo)
@@ -576,12 +566,18 @@ def test_bgp_no_advertise_community_p0(request):
         )
 
         result = verify_bgp_rib(tgen, addr_type, dut, input_dict)
-        assert result is True, "Testcase {} : Failed \n "
-        " Routes still present in R3 router. Error: {}".format(tc_name, result)
+        assert (
+            result is True
+        ), "Testcase {} : Failed \n  Routes still present in R3 router. Error: {}".format(
+            tc_name, result
+        )
 
         result = verify_rib(tgen, addr_type, dut, input_dict, protocol=protocol)
-        assert result is True, "Testcase {} : Failed \n "
-        " Routes still present in R3 router. Error: {}".format(tc_name, result)
+        assert (
+            result is True
+        ), "Testcase {} : Failed \n  Routes still present in R3 router. Error: {}".format(
+            tc_name, result
+        )
 
         step("Remove and Add no advertise community")
         # Configure neighbor for route map
@@ -626,12 +622,18 @@ def test_bgp_no_advertise_community_p0(request):
         )
 
         result = verify_bgp_rib(tgen, addr_type, dut, input_dict)
-        assert result is True, "Testcase {} : Failed \n "
-        " Routes still present in R3 router. Error: {}".format(tc_name, result)
+        assert (
+            result is True
+        ), "Testcase {} : Failed \n  Routes still present in R3 router. Error: {}".format(
+            tc_name, result
+        )
 
         result = verify_rib(tgen, addr_type, dut, input_dict, protocol=protocol)
-        assert result is True, "Testcase {} : Failed \n "
-        " Routes still present in R3 router. Error: {}".format(tc_name, result)
+        assert (
+            result is True
+        ), "Testcase {} : Failed \n  Routes still present in R3 router. Error: {}".format(
+            tc_name, result
+        )
 
     write_test_footer(tc_name)
 

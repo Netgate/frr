@@ -32,6 +32,8 @@ EOF
 		fi
 	)
 	vtysh=''
+	# FRR is broken if this file is present
+	rm -f /etc/frr/frr.conf
 	if test -f /etc/frr/vtysh.conf; then
 		if grep -q '^[[:space:]]*service[[:space:]]\+integrated-vtysh-config' /etc/frr/vtysh.conf; then
 			# existing vtysh.conf with integrated statement
@@ -73,6 +75,7 @@ EOF
 		-o -f /etc/frr/eigrpd.conf \
 		-o -f /etc/frr/babeld.conf \
 		-o -f /etc/frr/pbrd.conf \
+		-o -f /etc/frr/pathd.conf \
 		-o -f /etc/frr/bfdd.conf; then
 		# no explicit statement, but some split config file exists
 		# => need to fix vtysh.conf & frr.conf in postinst

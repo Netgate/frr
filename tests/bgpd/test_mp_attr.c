@@ -49,7 +49,7 @@
 #define OPT_PARAM  2
 
 /* need these to link in libbgp */
-struct zebra_privs_t *bgpd_privs = NULL;
+struct zebra_privs_t bgpd_privs = {};
 struct thread_master *master = NULL;
 
 static int failed = 0;
@@ -1086,8 +1086,8 @@ int main(void)
 	cmd_init(0);
 	bgp_vty_init();
 	master = thread_master_create("test mp attr");
-	bgp_master_init(master, BGP_SOCKET_SNDBUF_SIZE);
-	vrf_init(NULL, NULL, NULL, NULL, NULL);
+	bgp_master_init(master, BGP_SOCKET_SNDBUF_SIZE, list_new());
+	vrf_init(NULL, NULL, NULL, NULL);
 	bgp_option_set(BGP_OPT_NO_LISTEN);
 	bgp_attr_init();
 

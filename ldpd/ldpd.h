@@ -34,6 +34,7 @@
 #include "zclient.h"
 
 #include "ldp.h"
+#include "lib/ldp_sync.h"
 
 #define CONF_FILE		"/etc/ldpd.conf"
 #define LDPD_USER		"_ldpd"
@@ -62,15 +63,15 @@
 struct evbuf {
 	struct msgbuf		 wbuf;
 	struct thread		*ev;
-	int			 (*handler)(struct thread *);
+	void (*handler)(struct thread *);
 	void			*arg;
 };
 
 struct imsgev {
 	struct imsgbuf		 ibuf;
-	int			(*handler_write)(struct thread *);
+	void (*handler_write)(struct thread *);
 	struct thread		*ev_write;
-	int			(*handler_read)(struct thread *);
+	void (*handler_read)(struct thread *);
 	struct thread		*ev_read;
 };
 
@@ -93,6 +94,7 @@ enum imsg_type {
 	IMSG_CTL_SHOW_LIB_END,
 	IMSG_CTL_SHOW_L2VPN_PW,
 	IMSG_CTL_SHOW_L2VPN_BINDING,
+	IMSG_CTL_SHOW_LDP_SYNC,
 	IMSG_CTL_CLEAR_NBR,
 	IMSG_CTL_FIB_COUPLE,
 	IMSG_CTL_FIB_DECOUPLE,
@@ -153,7 +155,13 @@ enum imsg_type {
 	IMSG_INIT,
 	IMSG_PW_UPDATE,
 	IMSG_FILTER_UPDATE,
-	IMSG_NBR_SHUTDOWN
+	IMSG_NBR_SHUTDOWN,
+	IMSG_LDP_SYNC_IF_STATE_REQUEST,
+	IMSG_LDP_SYNC_IF_STATE_UPDATE,
+	IMSG_RLFA_REG,
+	IMSG_RLFA_UNREG_ALL,
+	IMSG_RLFA_LABELS,
+	IMSG_AGENTX_ENABLED,
 };
 
 struct ldpd_init {
@@ -166,7 +174,6 @@ struct ldpd_init {
 
 struct ldp_access {
 	char			 name[ACL_NAMSIZ];
-	enum access_type	 type;
 };
 
 union ldpd_addr {
@@ -225,6 +232,34 @@ enum nbr_action {
 	NBR_ACT_PASSIVE_INIT,
 	NBR_ACT_KEEPALIVE_SEND,
 	NBR_ACT_CLOSE_SESSION
+};
+
+/* LDP IGP Sync states */
+#define	LDP_SYNC_STA_UNKNOWN	0x0000
+#define	LDP_SYNC_STA_NOT_ACH 	0x0001
+#define	LDP_SYNC_STA_ACH	0x0002
+
+/* LDP IGP Sync events */
+enum ldp_sync_event {
+	LDP_SYNC_EVT_NOTHING,
+	LDP_SYNC_EVT_LDP_SYNC_START,
+	LDP_SYNC_EVT_LDP_SYNC_COMPLETE,
+	LDP_SYNC_EVT_CONFIG_LDP_OFF,
+	LDP_SYNC_EVT_ADJ_DEL,
+	LDP_SYNC_EVT_ADJ_NEW,
+	LDP_SYNC_EVT_SESSION_CLOSE,
+	LDP_SYNC_EVT_CONFIG_LDP_ON,
+	LDP_SYNC_EVT_IFACE_SHUTDOWN
+};
+
+/* LDP IGP Sync actions */
+enum ldp_sync_action {
+	LDP_SYNC_ACT_NOTHING,
+	LDP_SYNC_ACT_IFACE_START_SYNC,
+	LDP_SYNC_ACT_LDP_START_SYNC,
+	LDP_SYNC_ACT_LDP_COMPLETE_SYNC,
+	LDP_SYNC_ACT_CONFIG_LDP_OFF,
+	LDP_SYNC_ACT_IFACE_SHUTDOWN
 };
 
 /* forward declarations */
@@ -310,9 +345,14 @@ struct iface_af {
 	uint16_t		 hello_interval;
 };
 
+struct iface_ldp_sync {
+	int			 state;
+	struct thread           *wait_for_sync_timer;
+};
+
 struct iface {
 	RB_ENTRY(iface)		 entry;
-	char			 name[IF_NAMESIZE];
+	char			 name[INTERFACE_NAMSIZ];
 	ifindex_t		 ifindex;
 	struct if_addr_head	 addr_list;
 	struct in6_addr		 linklocal;
@@ -320,11 +360,12 @@ struct iface {
 	int			 operative;
 	struct iface_af		 ipv4;
 	struct iface_af		 ipv6;
-	QOBJ_FIELDS
+	struct iface_ldp_sync	 ldp_sync;
+	QOBJ_FIELDS;
 };
 RB_HEAD(iface_head, iface);
 RB_PROTOTYPE(iface_head, iface, entry, iface_compare);
-DECLARE_QOBJ_TYPE(iface)
+DECLARE_QOBJ_TYPE(iface);
 
 /* source of targeted hellos */
 struct tnbr {
@@ -335,12 +376,13 @@ struct tnbr {
 	union ldpd_addr		 addr;
 	int			 state;
 	uint16_t		 pw_count;
+	uint32_t		 rlfa_count;
 	uint8_t			 flags;
-	QOBJ_FIELDS
+	QOBJ_FIELDS;
 };
 RB_HEAD(tnbr_head, tnbr);
 RB_PROTOTYPE(tnbr_head, tnbr, entry, tnbr_compare);
-DECLARE_QOBJ_TYPE(tnbr)
+DECLARE_QOBJ_TYPE(tnbr);
 #define F_TNBR_CONFIGURED	 0x01
 #define F_TNBR_DYNAMIC		 0x02
 
@@ -362,11 +404,11 @@ struct nbr_params {
 		uint8_t			 md5key_len;
 	} auth;
 	uint8_t			 flags;
-	QOBJ_FIELDS
+	QOBJ_FIELDS;
 };
 RB_HEAD(nbrp_head, nbr_params);
 RB_PROTOTYPE(nbrp_head, nbr_params, entry, nbr_params_compare);
-DECLARE_QOBJ_TYPE(nbr_params)
+DECLARE_QOBJ_TYPE(nbr_params);
 #define F_NBRP_KEEPALIVE	 0x01
 #define F_NBRP_GTSM		 0x02
 #define F_NBRP_GTSM_HOPS	 0x04
@@ -392,20 +434,39 @@ struct ldp_stats {
 	uint32_t		 labelrel_rcvd;
 	uint32_t		 labelabreq_sent;
 	uint32_t		 labelabreq_rcvd;
+	uint32_t		 unknown_tlv;
+	uint32_t		 unknown_msg;
+
+};
+
+struct ldp_entity_stats {
+	uint32_t		 session_attempts;
+	uint32_t		 session_rejects_hello;
+	uint32_t		 session_rejects_ad;
+	uint32_t		 session_rejects_max_pdu;
+	uint32_t		 session_rejects_lr;
+	uint32_t		 bad_ldp_id;
+	uint32_t		 bad_pdu_len;
+	uint32_t		 bad_msg_len;
+	uint32_t		 bad_tlv_len;
+	uint32_t		 malformed_tlv;
+	uint32_t		 keepalive_timer_exp;
+	uint32_t		 shutdown_rcv_notify;
+	uint32_t		 shutdown_send_notify;
 };
 
 struct l2vpn_if {
 	RB_ENTRY(l2vpn_if)	 entry;
 	struct l2vpn		*l2vpn;
-	char			 ifname[IF_NAMESIZE];
+	char			 ifname[INTERFACE_NAMSIZ];
 	ifindex_t		 ifindex;
 	int			 operative;
 	uint8_t			 mac[ETH_ALEN];
-	QOBJ_FIELDS
+	QOBJ_FIELDS;
 };
 RB_HEAD(l2vpn_if_head, l2vpn_if);
 RB_PROTOTYPE(l2vpn_if_head, l2vpn_if, entry, l2vpn_if_compare);
-DECLARE_QOBJ_TYPE(l2vpn_if)
+DECLARE_QOBJ_TYPE(l2vpn_if);
 
 struct l2vpn_pw {
 	RB_ENTRY(l2vpn_pw)	 entry;
@@ -414,7 +475,7 @@ struct l2vpn_pw {
 	int			 af;
 	union ldpd_addr		 addr;
 	uint32_t		 pwid;
-	char			 ifname[IF_NAMESIZE];
+	char			 ifname[INTERFACE_NAMSIZ];
 	ifindex_t		 ifindex;
 	bool			 enabled;
 	uint32_t		 remote_group;
@@ -423,11 +484,11 @@ struct l2vpn_pw {
 	uint32_t		 remote_status;
 	uint8_t			 flags;
 	uint8_t			 reason;
-	QOBJ_FIELDS
+	QOBJ_FIELDS;
 };
 RB_HEAD(l2vpn_pw_head, l2vpn_pw);
 RB_PROTOTYPE(l2vpn_pw_head, l2vpn_pw, entry, l2vpn_pw_compare);
-DECLARE_QOBJ_TYPE(l2vpn_pw)
+DECLARE_QOBJ_TYPE(l2vpn_pw);
 #define F_PW_STATUSTLV_CONF	0x01	/* status tlv configured */
 #define F_PW_STATUSTLV		0x02	/* status tlv negotiated */
 #define F_PW_CWORD_CONF		0x04	/* control word configured */
@@ -446,16 +507,16 @@ struct l2vpn {
 	int			 type;
 	int			 pw_type;
 	int			 mtu;
-	char			 br_ifname[IF_NAMESIZE];
+	char			 br_ifname[INTERFACE_NAMSIZ];
 	ifindex_t		 br_ifindex;
 	struct l2vpn_if_head	 if_tree;
 	struct l2vpn_pw_head	 pw_tree;
 	struct l2vpn_pw_head	 pw_inactive_tree;
-	QOBJ_FIELDS
+	QOBJ_FIELDS;
 };
 RB_HEAD(l2vpn_head, l2vpn);
 RB_PROTOTYPE(l2vpn_head, l2vpn, entry, l2vpn_compare);
-DECLARE_QOBJ_TYPE(l2vpn)
+DECLARE_QOBJ_TYPE(l2vpn);
 #define L2VPN_TYPE_VPWS		1
 #define L2VPN_TYPE_VPLS		2
 
@@ -518,15 +579,18 @@ struct ldpd_conf {
 	uint16_t		 thello_holdtime;
 	uint16_t		 thello_interval;
 	uint16_t		 trans_pref;
+	uint16_t		 wait_for_sync_interval;
 	int			 flags;
-	QOBJ_FIELDS
+	time_t			 config_change_time;
+	struct ldp_entity_stats  stats;
+	QOBJ_FIELDS;
 };
-DECLARE_QOBJ_TYPE(ldpd_conf)
+DECLARE_QOBJ_TYPE(ldpd_conf);
 #define	F_LDPD_NO_FIB_UPDATE	0x0001
 #define	F_LDPD_DS_CISCO_INTEROP	0x0002
 #define	F_LDPD_ENABLED		0x0004
 #define	F_LDPD_ORDERED_CONTROL  0x0008
-
+#define	F_LDPD_ALLOW_BROKEN_LSP 0x0010
 
 struct ldpd_af_global {
 	struct thread		*disc_ev;
@@ -565,7 +629,7 @@ struct kroute {
 };
 
 struct kaddr {
-	char			 ifname[IF_NAMESIZE];
+	char			 ifname[INTERFACE_NAMSIZ];
 	ifindex_t		 ifindex;
 	int			 af;
 	union ldpd_addr		 addr;
@@ -574,7 +638,7 @@ struct kaddr {
 };
 
 struct kif {
-	char			 ifname[IF_NAMESIZE];
+	char			 ifname[INTERFACE_NAMSIZ];
 	ifindex_t		 ifindex;
 	int			 flags;
 	int			 operative;
@@ -592,7 +656,7 @@ struct acl_check {
 /* control data structures */
 struct ctl_iface {
 	int			 af;
-	char			 name[IF_NAMESIZE];
+	char			 name[INTERFACE_NAMSIZ];
 	ifindex_t		 ifindex;
 	int			 state;
 	enum iface_type		 type;
@@ -603,7 +667,7 @@ struct ctl_iface {
 };
 
 struct ctl_disc_if {
-	char			 name[IF_NAMESIZE];
+	char			 name[INTERFACE_NAMSIZ];
 	int			 active_v4;
 	int			 active_v6;
 	int			 no_adj;
@@ -619,7 +683,7 @@ struct ctl_adj {
 	int			 af;
 	struct in_addr		 id;
 	enum hello_type		 type;
-	char			 ifname[IF_NAMESIZE];
+	char			 ifname[INTERFACE_NAMSIZ];
 	union ldpd_addr		 src_addr;
 	uint16_t		 holdtime;
 	uint16_t		 holdtime_remaining;
@@ -640,6 +704,8 @@ struct ctl_nbr {
 	int			 nbr_state;
 	struct ldp_stats	 stats;
 	int			 flags;
+	uint16_t		 max_pdu_len;
+	uint16_t		 hold_time_remaining;
 };
 
 struct ctl_rt {
@@ -657,7 +723,7 @@ struct ctl_rt {
 struct ctl_pw {
 	uint16_t		 type;
 	char			 l2vpn_name[L2VPN_NAME_LEN];
-	char			 ifname[IF_NAMESIZE];
+	char			 ifname[INTERFACE_NAMSIZ];
 	uint32_t		 pwid;
 	struct in_addr		 lsr_id;
 	uint32_t		 local_label;
@@ -670,6 +736,16 @@ struct ctl_pw {
 	uint8_t			 remote_cword;
 	uint32_t		 status;
 	uint8_t			 reason;
+};
+
+struct ctl_ldp_sync {
+	char			 name[INTERFACE_NAMSIZ];
+	ifindex_t		 ifindex;
+	bool			 in_sync;
+	bool			 timer_running;
+	uint16_t		 wait_time;
+	uint16_t		 wait_time_remaining;
+	struct in_addr		 peer_ldp_id;
 };
 
 extern struct ldpd_conf		*ldpd_conf, *vty_conf;
@@ -716,7 +792,7 @@ void		 sa2addr(struct sockaddr *, int *, union ldpd_addr *,
 socklen_t	 sockaddr_len(struct sockaddr *);
 
 /* ldpd.c */
-int			 ldp_write_handler(struct thread *);
+void ldp_write_handler(struct thread *thread);
 void			 main_imsg_compose_ldpe(int, pid_t, void *, uint16_t);
 void			 main_imsg_compose_lde(int, pid_t, void *, uint16_t);
 int			 main_imsg_compose_both(enum imsg_type, void *,
@@ -726,8 +802,7 @@ int			 imsg_compose_event(struct imsgev *, uint16_t, uint32_t,
 			    pid_t, int, void *, uint16_t);
 void			 evbuf_enqueue(struct evbuf *, struct ibuf *);
 void			 evbuf_event_add(struct evbuf *);
-void			 evbuf_init(struct evbuf *, int,
-			    int (*)(struct thread *), void *);
+void evbuf_init(struct evbuf *, int, void (*)(struct thread *), void *);
 void			 evbuf_clear(struct evbuf *);
 int			 ldp_acl_request(struct imsgev *, char *, int,
 			    union ldpd_addr *, uint8_t);
@@ -825,6 +900,11 @@ extern char			 ctl_sock_path[MAXPATHLEN];
 /* ldp_zebra.c */
 void		 ldp_zebra_init(struct thread_master *);
 void		 ldp_zebra_destroy(void);
+int		 ldp_sync_zebra_send_state_update(struct ldp_igp_sync_if_state *);
+int		 ldp_zebra_send_rlfa_labels(struct zapi_rlfa_response *
+		    rlfa_labels);
+
+void ldp_zebra_regdereg_zebra_info(bool want_register);
 
 /* compatibility */
 #ifndef __OpenBSD__
@@ -834,5 +914,9 @@ void		 ldp_zebra_destroy(void);
 	(IN6_IS_ADDR_MULTICAST(a) &&	\
 	(__IPV6_ADDR_MC_SCOPE(a) == __IPV6_ADDR_SCOPE_INTFACELOCAL))
 #endif
+
+DECLARE_HOOK(ldp_register_mib, (struct thread_master * tm), (tm));
+
+extern void ldp_agentx_enabled(void);
 
 #endif	/* _LDPD_H_ */

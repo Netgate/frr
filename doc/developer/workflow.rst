@@ -88,26 +88,103 @@ FRR employs a ``<MAJOR>.<MINOR>.<BUGFIX>`` versioning scheme.
 ``BUGFIX``
    Fixes for actual bugs and/or security issues.  Fully compatible.
 
-We will pull a new development branch for the next release every 4 months.  The
-current schedule is Feb/June/October 1. The decision for a ``MAJOR/MINOR``
-release is made at the time of branch pull based on what has been received the
-previous 4 months. The branch name will be ``dev/MAJOR.MINOR``. At this point
-in time the master branch and this new branch, :file:`configure.ac`,
-documentation and packaging systems will be updated to reflect the next
-possible release name to allow for easy distinguishing.
+Releases are scheduled in a 4-month cycle on the first Tuesday each
+March/July/November.  Walking backwards from this date:
 
-After one month the development branch will be renamed to
-``stable/MAJOR.MINOR``.  The branch is a stable branch. This process is not
-held up unless a crash or security issue has been found and needs to
-be addressed. Issues being fixed will not cause a delay.
+ - 6 weeks earlier, ``master`` is frozen for new features, and feature PRs
+   are considered lowest priority (regardless of when they were opened.)
 
-Bugfix releases are made as needed at 1 month intervals until the next
-``MAJOR.MINOR`` release branch is pulled. Depending on the severity of the bugs,
-bugfix releases may occur sooner.
+ - 4 weeks earlier, the stable branch separates from master (named
+   ``dev/MAJOR.MINOR`` at this point) and tagged as ```base_X.Y``.
+   Master is unfrozen and new features may again proceed.
 
-Bugfixes are applied to the two most recent releases. However, backporting of bug
-fixes to older than the two most recent releases will not be prevented, if acked
-under the classical development workflow applying for a pull request.
+   Part of unfreezing master is editing the ``AC_INIT`` statement in
+   :file:`configure.ac` to reflect the new development version that master
+   now refers to.  This is accompanied by a ``frr-X.Y-dev`` tag on master,
+   which should always be on the first commit on master *after* the stable
+   branch was forked (even if that is not the edit to ``AC_INIT``; it's more
+   important to have it on the very first commit on master after the fork.)
+
+   (The :file:`configure.ac` edit and tag push are considered git housekeeping
+   and are pushed directly to ``master``, not through a PR.)
+
+   Below is the snippet of the commands to use in this step.
+
+     .. code-block:: console
+
+        % git remote --verbose
+        upstream  git@github.com:frrouting/frr (fetch)
+        upstream  git@github.com:frrouting/frr (push)
+
+        % git checkout master
+        % git pull upstream master
+        % git checkout -b dev/8.2
+        % git tag base_8.2
+        % git push upstream base_8.2
+        % git push upstream dev/8.2
+        % git checkout master
+        % sed -i 's/8.2-dev/8.3-dev/' configure.ac
+        % git add configure.ac
+        % git commit -s -m "build: FRR 8.3 development version"
+        % git tag -a frr-8.3-dev -m "frr-8.3-dev"
+        % git push upstream master
+        % git push upstream frr-8.3-dev
+
+   In this step, we also have to update package versions to reflect
+   the development version. Versions need to be updated using
+   a standard way of development (Pull Requests) based on master branch.
+
+   Only change the version number with no other changes. This will produce
+   packages with the a version number that is higher than any previous
+   version. Once the release is done, whatever updates we make to changelog
+   files on the release branch need to be cherry-picked to the master branch.
+
+ - 2 weeks earlier, a ``frr-X.Y-rc`` release candidate is tagged.
+
+     .. code-block:: console
+
+        % git remote --verbose
+        upstream  git@github.com:frrouting/frr (fetch)
+        upstream  git@github.com:frrouting/frr (push)
+
+        % git checkout dev/8.2
+        % git tag frr-8.2-rc
+        % git push upstream frr-8.2-rc
+
+ - on release date, the branch is renamed to ``stable/MAJOR.MINOR``.
+
+The 2 week window between each of these events should be used to run any and
+all testing possible for the release in progress.  However, the current
+intention is to stick to the schedule even if known issues remain.  This would
+hopefully occur only after all avenues of fixing issues are exhausted, but to
+achieve this, an as exhaustive as possible list of issues needs to be available
+as early as possible, i.e. the first 2-week window.
+
+For reference, the expected release schedule according to the above is:
+
++---------+------------+------------+------------+------------+------------+
+| Release | 2022-07-05 | 2022-11-01 | 2023-03-07 | 2023-07-04 | 2023-10-31 |
++---------+------------+------------+------------+------------+------------+
+| RC      | 2022-06-21 | 2022-10-18 | 2023-02-21 | 2023-06-20 | 2023-10-17 |
++---------+------------+------------+------------+------------+------------+
+| dev/X.Y | 2022-06-07 | 2022-10-04 | 2023-02-07 | 2023-06-06 | 2023-10-03 |
++---------+------------+------------+------------+------------+------------+
+| freeze  | 2022-05-24 | 2022-09-20 | 2023-01-24 | 2023-05-23 | 2023-09-19 |
++---------+------------+------------+------------+------------+------------+
+
+Each release is managed by one or more volunteer release managers from the FRR
+community.  These release managers are expected to handle the branch for a period
+of one year.  To spread and distribute this workload, this should be rotated for
+subsequent releases.  The release managers are currently assumed/expected to
+run a release management meeting during the weeks listed above.  Barring other
+constraints, this would be scheduled before the regular weekly FRR community
+call such that important items can be carried over into that call.
+
+Bugfixes are applied to the two most recent releases.  It is expected that
+each bugfix backported should include some reasoning for its inclusion
+as well as receiving approval by the release managers for that release before
+accepted into the release branch.  This does not necessarily preclude backporting of
+bug fixes to older than the two most recent releases.
 
 Security fixes are backported to all releases less than or equal to at least one
 year old. Security fixes may also be backported to older releases depending on
@@ -216,23 +293,13 @@ changelog with some better description.
 Submitting Patches and Enhancements
 ===================================
 
-FRR accepts patches from two sources:
-
-- GitHub pull request
-
-Contributors are highly encouraged to use GitHub's fork-and-PR workflow. It is
-easier for us to review it, test it, try it and discuss it on GitHub than it is
-via email, thus your patch will get more attention more quickly on GitHub.
+FRR accepts patches using GitHub pull requests.
 
 The base branch for new contributions and non-critical bug fixes should be
 ``master``. Please ensure your pull request is based on this branch when you
 submit it.
 
-GitHub Pull Requests
---------------------
-
-The preferred method of submitting changes is a GitHub pull request.  Code
-submitted by pull request will be automatically tested by one or more CI
+Code submitted by pull request will be automatically tested by one or more CI
 systems. Once the automated tests succeed, other developers will review your
 code for quality and correctness. After any concerns are resolved, your code
 will be merged into the branch it was submitted against.
@@ -278,6 +345,13 @@ Pre-submission Checklist
   requirement that automated testing must be written that exercises
   the new feature within our existing CI infrastructure.  Also the
   addition of automated testing to cover any pull request is encouraged.
+
+- All new code must use the current latest version of acceptable code.
+
+   - If a daemon is converted to YANG, then new code must use YANG.
+   - DEFPY's must be used for new cli
+   - Typesafe lists must be used
+   - printf formatting changes must be used
 
 .. _signing-off:
 
@@ -500,9 +574,21 @@ made. For example, a change in :file:`bgpd/rfapi` would be formatted as::
 The first line should be no longer than 50 characters. Subsequent lines should
 be wrapped to 72 characters.
 
+The purpose of commit messages is to briefly summarize what the commit is
+changing. Therefore, the extended summary portion should be in the form of an
+English paragraph. Brief examples of program output are acceptable but if
+present should be short (on the order of 10 lines) and clearly demonstrate what
+has changed. The goal should be that someone with only passing familiarity with
+the code in question can understand what is being changed.
+
+Commit messages consisting entirely of program output are *unacceptable*. These
+do not describe the behavior changed. For example, putting VTYSH output or the
+result of test runs as the sole content of commit messages is unacceptable.
+
 You must also sign off on your commit.
 
 .. seealso:: :ref:`signing-off`
+
 
 Source File Header
 ------------------
@@ -537,6 +623,8 @@ Please copy-paste this header verbatim. In particular:
 
 - Do not replace "This program" with "FRR"
 - Do not change the address of the FSF
+- keep ``#include <zebra.h>``.  The absolute first header included in any C
+  file **must** be either ``zebra.h`` or ``config.h`` (with HAVE_CONFIG_H guard)
 
 Adding Copyright Claims to Existing Files
 -----------------------------------------
@@ -563,7 +651,7 @@ In general, code submitted into FRR will be rejected if it uses unsafe
 programming practices.  While there is no enforced overall ruleset, the
 following requirements have achieved consensus:
 
-- ``strcpy``, ``strcat`` and ``sprintf`` are inacceptable without exception.
+- ``strcpy``, ``strcat`` and ``sprintf`` are unacceptable without exception.
   Use ``strlcpy``, ``strlcat`` and ``snprintf`` instead.  (Rationale:  even if
   you know the operation cannot overflow the buffer, a future code change may
   inadvertedly introduce an overflow.)
@@ -601,6 +689,39 @@ Other than these specific rules, coding practices from the Linux kernel as
 well as CERT or MISRA C guidelines may provide useful input on safe C code.
 However, these rules are not applied as-is;  some of them expressly collide
 with established practice.
+
+
+Container implementations
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+In particular to gain defensive coding benefits from better compiler type
+checks, there is a set of replacement container data structures to be found
+in :file:`lib/typesafe.h`.  They're documented under :ref:`lists`.
+
+Unfortunately, the FRR codebase is quite large, and migrating existing code to
+use these new structures is a tedious and far-reaching process (even if it
+can be automated with coccinelle, the patches would touch whole swaths of code
+and create tons of merge conflicts for ongoing work.)  Therefore, little
+existing code has been migrated.
+
+However, both **new code and refactors of existing code should use the new
+containers**.  If there are any reasons this can't be done, please work to
+remove these reasons (e.g. by adding necessary features to the new containers)
+rather than falling back to the old code.
+
+In order of likelyhood of removal, these are the old containers:
+
+- :file:`nhrpd/list.*`, ``hlist_*`` ⇒ ``DECLARE_LIST``
+- :file:`nhrpd/list.*`, ``list_*`` ⇒ ``DECLARE_DLIST``
+- :file:`lib/skiplist.*`, ``skiplist_*`` ⇒ ``DECLARE_SKIPLIST``
+- :file:`lib/*_queue.h` (BSD), ``SLIST_*`` ⇒ ``DECLARE_LIST``
+- :file:`lib/*_queue.h` (BSD), ``LIST_*`` ⇒ ``DECLARE_DLIST``
+- :file:`lib/*_queue.h` (BSD), ``STAILQ_*`` ⇒ ``DECLARE_LIST``
+- :file:`lib/*_queue.h` (BSD), ``TAILQ_*`` ⇒ ``DECLARE_DLIST``
+- :file:`lib/hash.*`, ``hash_*`` ⇒ ``DECLARE_HASH``
+- :file:`lib/linklist.*`, ``list_*`` ⇒ ``DECLARE_DLIST``
+- open-coded linked lists ⇒ ``DECLARE_LIST``/``DECLARE_DLIST``
+
 
 Code Formatting
 ---------------
@@ -776,16 +897,35 @@ necessary replacements.
 | u_long    | unsigned long            |
 +-----------+--------------------------+
 
+FRR also uses unnamed struct fields, enabled with ``-fms-extensions`` (cf.
+https://gcc.gnu.org/onlinedocs/gcc/Unnamed-Fields.html).  The following two
+patterns can/should be used where contextually appropriate:
+
+.. code-block:: c
+
+   struct outer {
+           struct inner;
+   };
+
+.. code-block:: c
+
+   struct outer {
+           union {
+                   struct inner;
+                   struct inner inner_name;
+           };
+   };
+
+
 .. _style-exceptions:
 
 Exceptions
-^^^^^^^^^^
+""""""""""
 
 FRR project code comes from a variety of sources, so there are some
 stylistic exceptions in place. They are organized here by branch.
 
-For ``master``
-""""""""""""""
+For ``master``:
 
 BSD coding style applies to:
 
@@ -797,8 +937,7 @@ BSD coding style applies to:
 -  Indents are 4 spaces
 -  Function return types are on their own line
 
-For ``stable/3.0`` and ``stable/2.0``
-"""""""""""""""""""""""""""""""""""""
+For ``stable/3.0`` and ``stable/2.0``:
 
 GNU coding style apply to the following parts:
 
@@ -815,6 +954,21 @@ GNU coding style apply to the following parts:
 BSD coding style applies to:
 
 -  ``ldpd/``
+
+
+Python Code
+^^^^^^^^^^^
+
+Format all Python code with `black <https://github.com/psf/black>`_.
+
+In a line::
+
+   python3 -m black <file.py>
+
+Run this on any Python files you modify before committing.
+
+FRR's Python code has been formatted with black version 19.10b.
+
 
 YANG
 ^^^^
@@ -854,6 +1008,104 @@ doesn't warrant an update to checkpatch, it is documented here.
 | DEFPY_HIDDEN, DEFPY_ATTR: complex macros | DEF* macros cannot be wrapped in parentheses without updating |
 | should be wrapped in parentheses         | all usages of the macro, which would be highly disruptive.    |
 +------------------------------------------+---------------------------------------------------------------+
+
+Types of configurables
+----------------------
+
+.. note::
+
+   This entire section essentially just argues to not make configuration
+   unnecessarily involved for the user.  Rather than rules, this is more of
+   a list of conclusions intended to help make FRR usable for operators.
+
+
+Almost every feature FRR has comes with its own set of switches and options.
+There are several stages at which configuration can be applied.  In order of
+preference, these are:
+
+-  at configuration/runtime, through YANG.
+
+   This is the preferred way for all FRR knobs.  Not all daemons and features
+   are fully YANGified yet, so in some cases new features cannot rely on a
+   YANG interface.  If a daemon already implements a YANG interface (even
+   partial), new CLI options must be implemented through a YANG model.
+
+   .. warning::
+
+      Unlike everything else in this section being guidelines with some slack,
+      implementing and using a YANG interface for new CLI options in (even
+      partially!) YANGified daemons is a hard requirement.
+
+
+-  at configuration/runtime, through the CLI.
+
+   The "good old" way for all regular configuration.  More involved for users
+   to automate *correctly* than YANG.
+
+-  at startup, by loading additional modules.
+
+   If a feature introduces a dependency on additional libraries (e.g. libsnmp,
+   rtrlib, etc.), this is the best way to encapsulate the dependency.  Having
+   a separate module allows the distribution to create a separate package
+   with the extra dependency, so FRR can still be installed without pulling
+   everything in.
+
+   A module may also be appropriate if a feature is large and reasonably well
+   isolated.  Reducing the amount of running the code is a security benefit,
+   so even if there are no new external dependencies, modules can be useful.
+
+   While modules cannot currently be loaded at runtime, this is a tradeoff
+   decision that was made to allow modules to change/extend code that is very
+   hard to (re)adjust at runtime.  If there is a case for runtime (un)loading
+   of modules, this tradeoff can absolutely be reevaluated.
+
+-  at startup, with command line options.
+
+   This interface is only appropriate for options that have an effect very
+   early in FRR startup, i.e. before configuration is loaded.  Anything that
+   affects configuration load itself should be here, as well as options
+   changing the environment FRR runs in.
+
+   If a tunable can be changed at runtime, a command line option is only
+   acceptable if the configured value has an effect before configuration is
+   loaded (e.g. zebra reads routes from the kernel before loading config, so
+   the netlink buffer size is an appropriate command line option.)
+
+-  at compile time, with ``./configure`` options.
+
+   This is the absolute last preference for tunables, since the distribution
+   needs to make the decision for the user and/or the user needs to rebuild
+   FRR in order to change the option.
+
+   "Good" configure options do one of three things:
+
+   -  set distribution-specific parameters, most prominently all the path
+      options.  File system layout is a distribution/packaging choice, so the
+      user would hopefully never need to adjust these.
+
+   -  changing toolchain behavior, e.g. instrumentation, warnings,
+      optimizations and sanitizers.
+
+   -  enabling/disabling parts of the build, especially if they need
+      additional dependencies.  Being able to build only parts of FRR, or
+      without some library, is useful.  **The only effect these options should
+      have is adding or removing files from the build result.**  If a knob
+      in this category causes the same binary to exist in different variants,
+      it is likely implemented incorrectly!
+
+      .. note::
+
+         This last guideline is currently ignored by several configure options.
+         ``vtysh`` in general depends on the entire list of enabled daemons,
+         and options like ``--enable-bgp-vnc`` and ``--enable-ospfapi`` change
+         daemons internally.  Consider this more of an "ideal" than a "rule".
+
+
+Whenever adding new knobs, please try reasonably hard to go up as far as
+possible on the above list.  Especially ``./configure`` flags are often enough
+the "easy way out" but should be avoided when at all possible.  To a lesser
+degree, the same applies to command line options.
+
 
 Compile-time conditional code
 -----------------------------
@@ -972,6 +1224,37 @@ but are no longer actively maintained. MemorySanitizer is not available in GCC.
    The different Sanitizers are mostly incompatible with each other.  Please
    refer to GCC/LLVM documentation for details.
 
+frr-format plugin
+   This is a GCC plugin provided with FRR that does extended type checks for
+   ``%pFX``-style printfrr extensions.  To use this plugin,
+
+   1. install GCC plugin development files, e.g.::
+
+         apt-get install gcc-10-plugin-dev
+
+   2. **before** running ``configure``, compile the plugin with::
+
+         make -C tools/gcc-plugins CXX=g++-10
+
+   (Edit the GCC version to what you're using, it should work for GCC 9 or
+   newer.)
+
+   After this, the plugin should be automatically picked up by ``configure``.
+   The plugin does not change very frequently, so you can keep it around across
+   work on different FRR branches.  After a ``git clean -x``, the ``make`` line
+   will need to be run again.  You can also add ``--with-frr-format`` to the
+   ``configure`` line to make sure the plugin is used, otherwise if something
+   is not set up correctly it might be silently ignored.
+
+   .. warning::
+
+      Do **not** enable this plugin for package/release builds.  It is intended
+      for developer/debug builds only.  Since it modifies the compiler, it may
+      cause silent corruption of the executable files.
+
+      Using the plugin also changes the string for ``PRI[udx]64`` from the
+      system value to ``%L[udx]`` (normally ``%ll[udx]`` or ``%l[udx]``.)
+
 Additionally, the FRR codebase is regularly scanned with Coverity.
 Unfortunately Coverity does not have the ability to handle scanning pull
 requests, but after code is merged it will send an email notifying project
@@ -996,8 +1279,8 @@ CLI changes
 -----------
 
 CLI's are a complicated ugly beast. Additions or changes to the CLI should use
-a DEFUN to encapsulate one setting as much as is possible.  Additionally as new
-DEFUN's are added to the system, documentation should be provided for the new
+a DEFPY to encapsulate one setting as much as is possible.  Additionally as new
+DEFPY's are added to the system, documentation should be provided for the new
 commands.
 
 Backwards Compatibility
@@ -1070,6 +1353,38 @@ callers about the limits to side-effects from your apis, and it makes
 it possible to use your apis in paths that involve ``const``
 objects. If you encounter existing apis that *could* be ``const``,
 consider including changes in your own pull-request.
+
+Help with specific warnings
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+FRR's configure script enables a whole batch of extra warnings, some of which
+may not be obvious in how to fix.  Here are some notes on specific warnings:
+
+* ``-Wstrict-prototypes``:  you probably just forgot the ``void`` in a function
+  declaration with no parameters, i.e. ``static void foo() {...}`` rather than
+  ``static void foo(void) {...}``.
+
+  Without the ``void``, in C, it's a function with *unspecified* parameters
+  (and varargs calling convention.)  This is a notable difference to C++, where
+  the ``void`` is optional and an empty parameter list means no parameters.
+
+* ``"strict match required"`` from the frr-format plugin:  check if you are
+  using a cast in a printf parameter list.  The frr-format plugin cannot
+  access correct full type information for casts like
+  ``printfrr(..., (uint64_t)something, ...)`` and will print incorrect
+  warnings particularly if ``uint64_t``, ``size_t`` or ``ptrdiff_t`` are
+  involved.  The problem is *not* triggered with a variable or function return
+  value of the exact same type (without a cast).
+
+  Since these cases are very rare, community consensus is to just work around
+  the warning even though the code might be correct.  If you are running into
+  this, your options are:
+
+  1. try to avoid the cast altogether, maybe using a different printf format
+     specifier (e.g. ``%lu`` instead of ``%zu`` or ``PRIu64``).
+  2. fix the type(s) of the function/variable/struct member being printed
+  3. create a temporary variable with the value and print that without a cast
+     (this is the last resort and was not necessary anywhere so far.)
 
 
 .. _documentation:
@@ -1216,13 +1531,12 @@ towards making documentation easier to use, write and maintain.
 CLI Commands
 ^^^^^^^^^^^^
 
-When documenting CLI please use a combination of the ``.. index::`` and
-``.. clicmd::`` directives. For example, the command :clicmd:`show pony` would
-be documented as follows:
+When documenting CLI please use the ``.. clicmd::`` directive. This directive
+will format the command and generate index entries automatically. For example,
+the command :clicmd:`show pony` would be documented as follows:
 
 .. code-block:: rest
 
-   .. index:: show pony
    .. clicmd:: show pony
 
       Prints an ASCII pony. Example output:::
@@ -1239,6 +1553,7 @@ be documented as follows:
          hjw    |_>|>     /_] //
                   /_]        /_]
 
+
 When documented this way, CLI commands can be cross referenced with the
 ``:clicmd:`` inline markup like so:
 
@@ -1248,6 +1563,28 @@ When documented this way, CLI commands can be cross referenced with the
 
 This is very helpful for users who want to quickly remind themselves what a
 particular command does.
+
+When documenting a cli that has a ``no`` form, please do not include the ``no``
+form. I.e. ``no show pony`` would not be documented anywhere. Since most
+commands have ``no`` forms, users should be able to infer these or get help
+from vtysh's completions.
+
+When documenting commands that have lots of possible variants, just document
+the single command in summary rather than enumerating each possible variant.
+E.g. for ``show pony [foo|bar]``, do not:
+
+.. code-block:: rest
+
+   .. clicmd:: show pony
+   .. clicmd:: show pony foo
+   .. clicmd:: show pony bar
+
+Do:
+
+.. code-block:: rest
+
+   .. clicmd:: show pony [foo|bar]
+
 
 Configuration Snippets
 ^^^^^^^^^^^^^^^^^^^^^^

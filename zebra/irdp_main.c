@@ -42,7 +42,6 @@
 #include "prefix.h"
 #include "command.h"
 #include "memory.h"
-#include "zebra_memory.h"
 #include "stream.h"
 #include "ioctl.h"
 #include "connected.h"
@@ -52,7 +51,7 @@
 #include "privs.h"
 #include "libfrr.h"
 #include "lib_errors.h"
-#include "version.h"
+#include "lib/version.h"
 #include "zebra/interface.h"
 #include "zebra/rtadv.h"
 #include "zebra/rib.h"
@@ -113,7 +112,6 @@ int irdp_sock_init(void)
 		return ret;
 	};
 
-	t_irdp_raw = NULL;
 	thread_add_read(zrouter.master, irdp_read_raw, NULL, sock, &t_irdp_raw);
 
 	return sock;
@@ -175,7 +173,6 @@ static void irdp_send(struct interface *ifp, struct prefix *p, struct stream *s)
 {
 	struct zebra_if *zi = ifp->info;
 	struct irdp_interface *irdp = zi->irdp;
-	char buf[PREFIX_STRLEN];
 	uint32_t dst;
 	uint32_t ttl = 1;
 
@@ -190,10 +187,11 @@ static void irdp_send(struct interface *ifp, struct prefix *p, struct stream *s)
 		dst = htonl(INADDR_ALLHOSTS_GROUP);
 
 	if (irdp->flags & IF_DEBUG_MESSAGES)
-		zlog_debug("IRDP: TX Advert on %s %s Holdtime=%d Preference=%d",
-			   ifp->name, prefix2str(p, buf, sizeof(buf)),
-			   irdp->flags & IF_SHUTDOWN ? 0 : irdp->Lifetime,
-			   get_pref(irdp, p));
+		zlog_debug(
+			"IRDP: TX Advert on %s %pFX Holdtime=%d Preference=%d",
+			ifp->name, p,
+			irdp->flags & IF_SHUTDOWN ? 0 : irdp->Lifetime,
+			get_pref(irdp, p));
 
 	send_packet(ifp, s, dst, p, ttl);
 }
@@ -207,7 +205,7 @@ static void irdp_advertisement(struct interface *ifp, struct prefix *p)
 	stream_free(s);
 }
 
-int irdp_send_thread(struct thread *t_advert)
+void irdp_send_thread(struct thread *t_advert)
 {
 	uint32_t timer, tmp;
 	struct interface *ifp = THREAD_ARG(t_advert);
@@ -218,7 +216,7 @@ int irdp_send_thread(struct thread *t_advert)
 	struct connected *ifc;
 
 	if (!irdp)
-		return 0;
+		return;
 
 	irdp->flags &= ~IF_SOLICIT;
 
@@ -248,7 +246,6 @@ int irdp_send_thread(struct thread *t_advert)
 	irdp->t_advertise = NULL;
 	thread_add_timer(zrouter.master, irdp_send_thread, ifp, timer,
 			 &irdp->t_advertise);
-	return 0;
 }
 
 void irdp_advert_off(struct interface *ifp)
@@ -263,9 +260,7 @@ void irdp_advert_off(struct interface *ifp)
 	if (!irdp)
 		return;
 
-	if (irdp->t_advertise)
-		thread_cancel(irdp->t_advertise);
-	irdp->t_advertise = NULL;
+	thread_cancel(&irdp->t_advertise);
 
 	if (ifp->connected)
 		for (ALL_LIST_ELEMENTS(ifp->connected, node, nnode, ifc)) {
@@ -300,9 +295,7 @@ void process_solicit(struct interface *ifp)
 		return;
 
 	irdp->flags |= IF_SOLICIT;
-	if (irdp->t_advertise)
-		thread_cancel(irdp->t_advertise);
-	irdp->t_advertise = NULL;
+	thread_cancel(&irdp->t_advertise);
 
 	timer = (frr_weak_random() % MAX_RESPONSE_DELAY) + 1;
 
@@ -353,4 +346,5 @@ static int irdp_module_init(void)
 }
 
 FRR_MODULE_SETUP(.name = "zebra_irdp", .version = FRR_VERSION,
-		 .description = "zebra IRDP module", .init = irdp_module_init, )
+		 .description = "zebra IRDP module", .init = irdp_module_init,
+);

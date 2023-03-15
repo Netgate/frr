@@ -30,10 +30,9 @@
 #include "static_zebra.h"
 #include "static_nht.h"
 
-static void static_nht_update_path(struct route_node *rn,
-				   struct static_path *pn, struct prefix *nhp,
+static void static_nht_update_path(struct static_path *pn, struct prefix *nhp,
 				   uint32_t nh_num, vrf_id_t nh_vrf_id,
-				   struct vrf *vrf, safi_t safi)
+				   struct vrf *vrf)
 {
 	struct static_nexthop *nh;
 
@@ -52,11 +51,12 @@ static void static_nht_update_path(struct route_node *rn,
 			nh->nh_valid = !!nh_num;
 
 		if (nhp->family == AF_INET6
-		    && memcmp(&nhp->u.prefix6, &nh->addr.ipv6, 16) == 0)
+		    && memcmp(&nhp->u.prefix6, &nh->addr.ipv6, IPV6_MAX_BYTELEN)
+			       == 0)
 			nh->nh_valid = !!nh_num;
 
 		if (nh->state == STATIC_START)
-			static_zebra_route_add(rn, pn, safi, true);
+			static_zebra_route_add(pn, true);
 	}
 }
 
@@ -83,8 +83,8 @@ static void static_nht_update_safi(struct prefix *sp, struct prefix *nhp,
 		if (rn && rn->info) {
 			si = static_route_info_from_rnode(rn);
 			frr_each(static_path_list, &si->path_list, pn) {
-				static_nht_update_path(rn, pn, nhp, nh_num,
-						       nh_vrf_id, vrf, safi);
+				static_nht_update_path(pn, nhp, nh_num,
+						       nh_vrf_id, vrf);
 			}
 			route_unlock_node(rn);
 		}
@@ -96,24 +96,20 @@ static void static_nht_update_safi(struct prefix *sp, struct prefix *nhp,
 		if (!si)
 			continue;
 		frr_each(static_path_list, &si->path_list, pn) {
-			static_nht_update_path(rn, pn, nhp, nh_num, nh_vrf_id,
-					       vrf, safi);
+			static_nht_update_path(pn, nhp, nh_num, nh_vrf_id, vrf);
 		}
 	}
 }
 
-void static_nht_update(struct prefix *sp, struct prefix *nhp,
-		       uint32_t nh_num, afi_t afi, vrf_id_t nh_vrf_id)
+void static_nht_update(struct prefix *sp, struct prefix *nhp, uint32_t nh_num,
+		       afi_t afi, safi_t safi, vrf_id_t nh_vrf_id)
 {
 
 	struct vrf *vrf;
 
-	RB_FOREACH (vrf, vrf_name_head, &vrfs_by_name) {
-		static_nht_update_safi(sp, nhp, nh_num, afi, SAFI_UNICAST,
-				       vrf, nh_vrf_id);
-		static_nht_update_safi(sp, nhp, nh_num, afi, SAFI_MULTICAST,
-				       vrf, nh_vrf_id);
-	}
+	RB_FOREACH (vrf, vrf_name_head, &vrfs_by_name)
+		static_nht_update_safi(sp, nhp, nh_num, afi, safi, vrf,
+				       nh_vrf_id);
 }
 
 static void static_nht_reset_start_safi(struct prefix *nhp, afi_t afi,
@@ -167,16 +163,13 @@ static void static_nht_reset_start_safi(struct prefix *nhp, afi_t afi,
 	}
 }
 
-void static_nht_reset_start(struct prefix *nhp, afi_t afi, vrf_id_t nh_vrf_id)
+void static_nht_reset_start(struct prefix *nhp, afi_t afi, safi_t safi,
+			    vrf_id_t nh_vrf_id)
 {
 	struct vrf *vrf;
 
-	RB_FOREACH (vrf, vrf_name_head, &vrfs_by_name) {
-		static_nht_reset_start_safi(nhp, afi, SAFI_UNICAST,
-					    vrf, nh_vrf_id);
-		static_nht_reset_start_safi(nhp, afi, SAFI_MULTICAST,
-					    vrf, nh_vrf_id);
-	}
+	RB_FOREACH (vrf, vrf_name_head, &vrfs_by_name)
+		static_nht_reset_start_safi(nhp, afi, safi, vrf, nh_vrf_id);
 }
 
 static void static_nht_mark_state_safi(struct prefix *sp, afi_t afi,
@@ -213,7 +206,7 @@ static void static_nht_mark_state_safi(struct prefix *sp, afi_t afi,
 	route_unlock_node(rn);
 }
 
-void static_nht_mark_state(struct prefix *sp, vrf_id_t vrf_id,
+void static_nht_mark_state(struct prefix *sp, safi_t safi, vrf_id_t vrf_id,
 			   enum static_install_states state)
 {
 	struct vrf *vrf;
@@ -227,6 +220,5 @@ void static_nht_mark_state(struct prefix *sp, vrf_id_t vrf_id,
 	if (!vrf || !vrf->info)
 		return;
 
-	static_nht_mark_state_safi(sp, afi, SAFI_UNICAST, vrf, state);
-	static_nht_mark_state_safi(sp, afi, SAFI_MULTICAST, vrf, state);
+	static_nht_mark_state_safi(sp, afi, safi, vrf, state);
 }

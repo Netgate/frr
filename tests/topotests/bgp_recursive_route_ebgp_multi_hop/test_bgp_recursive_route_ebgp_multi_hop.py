@@ -20,7 +20,7 @@
 #
 
 """
-Following tests are covered to test bgp recursive route and ebgp 
+Following tests are covered to test bgp recursive route and ebgp
 multi-hop functionality:
 
 1.  Verify that BGP routes are installed in iBGP peer, only when there
@@ -40,10 +40,8 @@ multi-hop functionality:
 import os
 import sys
 import time
-import json
 import pytest
 from time import sleep
-from copy import deepcopy
 
 # Save the Current Working Directory to find configuration files.
 CWD = os.path.dirname(os.path.realpath(__file__))
@@ -51,8 +49,6 @@ sys.path.append(os.path.join(CWD, "../"))
 
 # pylint: disable=C0413
 # Import topogen and topotest helpers
-from lib import topotest
-from mininet.topo import Topo
 from lib.topogen import Topogen, get_topogen
 
 # Import topoJson from lib, to create topology and initial configuration
@@ -69,30 +65,22 @@ from lib.common_config import (
     create_route_maps,
     create_interface_in_kernel,
     shutdown_bringup_interface,
-    addKernelRoute,
-    delete_route_maps,
-    kill_mininet_routers_process,
 )
 from lib.topolog import logger
 from lib.bgp import (
     verify_bgp_convergence,
     create_router_bgp,
-    clear_bgp_and_verify,
     verify_bgp_rib,
     verify_bgp_convergence_from_running_config,
     modify_as_number,
     verify_bgp_attributes,
     clear_bgp,
 )
-from lib.topojson import build_topo_from_json, build_config_from_json
+from lib.topojson import build_config_from_json
 
-# Reading the data from JSON File for topology and configuration creation
-jsonFile = "{}/bgp_recursive_route_ebgp_multi_hop.json".format(CWD)
-try:
-    with open(jsonFile, "r") as topoJson:
-        topo = json.load(topoJson)
-except IOError :
-    logger.info("Could not read file:", jsonFile)
+
+pytestmark = [pytest.mark.bgpd, pytest.mark.staticd]
+
 
 # Global variables
 BGP_CONVERGENCE = False
@@ -121,21 +109,6 @@ Loopabck_IP = {
 }
 
 
-class CreateTopo(Topo):
-    """
-    Test BasicTopo - topology 1
-
-    * `Topo`: Topology object
-    """
-
-    def build(self, *_args, **_opts):
-        """Build function"""
-        tgen = get_topogen(self)
-
-        # Building topology from json file
-        build_topo_from_json(tgen, topo)
-
-
 def setup_module(mod):
     """
     Sets up the pytest environment
@@ -150,11 +123,14 @@ def setup_module(mod):
     logger.info("Running setup_module to create topology")
 
     # This function initiates the topology build with Topogen...
-    tgen = Topogen(CreateTopo, mod.__name__)
+    json_file = "{}/bgp_recursive_route_ebgp_multi_hop.json".format(CWD)
+    tgen = Topogen(json_file, mod.__name__)
+    global topo
+    topo = tgen.json_topo
     # ... and here it calls Mininet initialization functions.
 
     # Starting topology, create tmp files which are loaded to routers
-    #  to start deamons and then start routers
+    #  to start daemons and then start routers
     start_topology(tgen)
 
     # Creating configuration from JSON
@@ -284,7 +260,9 @@ def test_recursive_routes_iBGP_peer_p1(request):
             input_dict_4,
             next_hop=topo["routers"]["r3"]["links"]["r1"][addr_type].split("/")[0],
         )
-        assert result is True, "Testcase  : Failed \n Error : {}".format(tc_name, result)
+        assert result is True, "Testcase {}: Failed \n Error : {}".format(
+            tc_name, result
+        )
 
     step(
         "Configure a static routes for next hop IP on R2 via multiple"
@@ -317,7 +295,9 @@ def test_recursive_routes_iBGP_peer_p1(request):
             }
         }
         result = create_static_routes(tgen, input_dict_3)
-        assert result is True, "Testcase  : Failed \n Error : {}".format(tc_name, result)
+        assert result is True, "Testcase {}: Failed \n Error : {}".format(
+            tc_name, result
+        )
 
         step("verify if redistributed routes are now installed in FIB of R2")
         result = verify_rib(
@@ -328,7 +308,9 @@ def test_recursive_routes_iBGP_peer_p1(request):
             next_hop=topo["routers"]["r3"]["links"]["r1"][addr_type].split("/")[0],
             protocol="bgp",
         )
-        assert result is True, "Testcase  : Failed \n Error : {}".format(tc_name, result)
+        assert result is True, "Testcase {}: Failed \n Error : {}".format(
+            tc_name, result
+        )
 
     step("Delete 1 route from static recursive for the next-hop IP")
     dut = "r2"
@@ -345,7 +327,9 @@ def test_recursive_routes_iBGP_peer_p1(request):
             }
         }
         result = create_static_routes(tgen, input_dict_3)
-        assert result is True, "Testcase  : Failed \n Error : {}".format(tc_name, result)
+        assert result is True, "Testcase {}: Failed \n Error : {}".format(
+            tc_name, result
+        )
 
         step("Verify that redistributed routes are withdrawn from FIB of R2")
         result = verify_rib(
@@ -355,9 +339,11 @@ def test_recursive_routes_iBGP_peer_p1(request):
             input_dict_4,
             next_hop=topo["routers"]["r3"]["links"]["r1"][addr_type].split("/")[0],
             protocol="bgp",
-            expected=False
+            expected=False,
         )
-        assert result is not True, "Testcase  : Failed \n Error : {}".format(
+        assert (
+            result is not True
+        ), "Testcase {} : Failed \n " "Routes are still present \n Error: {}".format(
             tc_name, result
         )
 
@@ -375,7 +361,9 @@ def test_recursive_routes_iBGP_peer_p1(request):
             }
         }
         result = create_static_routes(tgen, input_dict_3)
-        assert result is True, "Testcase  : Failed \n Error : {}".format(tc_name, result)
+        assert result is True, "Testcase {}: Failed \n Error : {}".format(
+            tc_name, result
+        )
 
         step("Verify that redistributed routes are again installed" "in FIB of R2")
         result = verify_rib(
@@ -386,7 +374,9 @@ def test_recursive_routes_iBGP_peer_p1(request):
             next_hop=topo["routers"]["r3"]["links"]["r1"][addr_type].split("/")[0],
             protocol="bgp",
         )
-        assert result is True, "Testcase  : Failed \n Error : {}".format(tc_name, result)
+        assert result is True, "Testcase {}: Failed \n Error : {}".format(
+            tc_name, result
+        )
 
     step("Configure static route with changed next-hop from same subnet")
     for addr_type in ADDR_TYPES:
@@ -410,7 +400,9 @@ def test_recursive_routes_iBGP_peer_p1(request):
             }
         }
         result = create_static_routes(tgen, input_dict_4)
-        assert result is True, "Testcase  : Failed \n Error : {}".format(tc_name, result)
+        assert result is True, "Testcase {}: Failed \n Error : {}".format(
+            tc_name, result
+        )
 
         result = verify_rib(tgen, addr_type, "r1", input_dict_4, protocol="static")
         assert result is True, "Testcase {} : Failed \n Error : {}".format(
@@ -455,7 +447,9 @@ def test_recursive_routes_iBGP_peer_p1(request):
             }
         }
         result = create_static_routes(tgen, input_dict_4)
-        assert result is True, "Testcase  : Failed \n Error : {}".format(tc_name, result)
+        assert result is True, "Testcase {}: Failed \n Error : {}".format(
+            tc_name, result
+        )
 
         result = verify_rib(tgen, addr_type, "r1", input_dict_4, protocol="static")
         assert result is True, "Testcase {} : Failed \n Error : {}".format(
@@ -469,7 +463,9 @@ def test_recursive_routes_iBGP_peer_p1(request):
         result = verify_rib(
             tgen, addr_type, "r2", input_dict_4, protocol="bgp", expected=False
         )
-        assert result is not True, "Testcase {} : Failed \n Error : {}".format(
+        assert (
+            result is not True
+        ), "Testcase {} : Failed \n " "Routes are still present \n Error: {}".format(
             tc_name, result
         )
 
@@ -578,9 +574,11 @@ def test_next_hop_as_self_ip_p1(request):
             "r2",
             input_dict_4,
             next_hop=topo["routers"]["r2"]["links"]["r4"][addr_type].split("/")[0],
-            expected=False
+            expected=False,
         )
-        assert result is not True, "Testcase  : Failed \n Error : {}".format(
+        assert (
+            result is not True
+        ), "Testcase {} : Failed \n " "Routes are still present \n Error: {}".format(
             tc_name, result
         )
 
@@ -614,7 +612,9 @@ def test_next_hop_as_self_ip_p1(request):
             input_dict_4,
             next_hop=topo["routers"]["r2"]["links"]["r4"][addr_type].split("/")[0],
         )
-        assert result is True, "Testcase  : Failed \n Error : {}".format(tc_name, result)
+        assert result is True, "Testcase {}: Failed \n Error : {}".format(
+            tc_name, result
+        )
 
     step("No shutdown interface on R2 which was shut in previous step")
     intf_r2_r4 = topo["routers"]["r2"]["links"]["r4"]["interface"]
@@ -644,16 +644,20 @@ def test_next_hop_as_self_ip_p1(request):
             input_dict_4,
             next_hop=topo["routers"]["r2"]["links"]["r4"][addr_type].split("/")[0],
         )
-        assert result is True, "Testcase  : Failed \n Error : {}".format(tc_name, result)
+        assert result is True, "Testcase {}: Failed \n Error : {}".format(
+            tc_name, result
+        )
         result = verify_rib(
             tgen,
             addr_type,
             "r2",
             input_dict_4,
             next_hop=topo["routers"]["r2"]["links"]["r4"][addr_type].split("/")[0],
-            expected=False
+            expected=False,
         )
-        assert result is not True, "Testcase  : Failed \n Error : {}".format(
+        assert (
+            result is not True
+        ), "Testcase {} : Failed \n " "Routes are still present \n Error: {}".format(
             tc_name, result
         )
 
@@ -907,7 +911,9 @@ def test_next_hop_with_recursive_lookup_p1(request):
     result = verify_bgp_convergence_from_running_config(tgen, expected=False)
     assert (
         result is not True
-    ), "Testcase {} : Failed \n" "BGP is converged \n Error : {}".format(tc_name, result)
+    ), "Testcase {} : Failed \n" "BGP is converged \n Error : {}".format(
+        tc_name, result
+    )
     logger.info("Expected behaviour: {}".format(result))
 
     for addr_type in ADDR_TYPES:
@@ -1018,11 +1024,12 @@ def test_next_hop_with_recursive_lookup_p1(request):
             input_dict,
             protocol="bgp",
             next_hop=next_hop,
-            expected=False
+            expected=False,
         )
-        assert result is not True, (
-            "Testcase {} : Failed \n "
-            "Route is still present \n Error : {}".format(tc_name, result)
+        assert (
+            result is not True
+        ), "Testcase {} : Failed \n " "Route is still present \n Error : {}".format(
+            tc_name, result
         )
 
     step("Re-apply redistribution on R4.")
@@ -1069,7 +1076,7 @@ def test_next_hop_with_recursive_lookup_p1(request):
             tc_name, result
         )
 
-    step("Toggle the interface on R3(ifconfig 192.34).")
+    step("Toggle the interface on R3.")
 
     intf_r3_r4 = topo["routers"]["r3"]["links"]["r4"]["interface"]
     shutdown_bringup_interface(tgen, "r3", intf_r3_r4)
@@ -1083,7 +1090,9 @@ def test_next_hop_with_recursive_lookup_p1(request):
     result = verify_bgp_convergence_from_running_config(tgen, expected=False)
     assert (
         result is not True
-    ), "Testcase {} : Failed \n" "BGP is converged \n Error : {}".format(tc_name, result)
+    ), "Testcase {} : Failed \n" "BGP is converged \n Error : {}".format(
+        tc_name, result
+    )
     logger.info("Expected behaviour: {}".format(result))
 
     for addr_type in ADDR_TYPES:
@@ -1099,11 +1108,12 @@ def test_next_hop_with_recursive_lookup_p1(request):
             input_dict,
             protocol="bgp",
             next_hop=next_hop,
-            expected=False
+            expected=False,
         )
-        assert result is not True, (
-            "Testcase {} : Failed \n "
-            "Route is still present \n Error : {}".format(tc_name, result)
+        assert (
+            result is not True
+        ), "Testcase {} : Failed \n " "Route is still present \n Error : {}".format(
+            tc_name, result
         )
 
     shutdown_bringup_interface(tgen, "r3", intf_r3_r4, True)
@@ -1124,7 +1134,7 @@ def test_next_hop_with_recursive_lookup_p1(request):
             tc_name, result
         )
 
-    step("Toggle the interface on R4(ifconfig 192.34).")
+    step("Toggle the interface on R4.")
 
     intf_r4_r3 = topo["routers"]["r4"]["links"]["r3"]["interface"]
     shutdown_bringup_interface(tgen, "r4", intf_r4_r3)
@@ -1138,7 +1148,9 @@ def test_next_hop_with_recursive_lookup_p1(request):
     result = verify_bgp_convergence_from_running_config(tgen, expected=False)
     assert (
         result is not True
-    ), "Testcase {} : Failed \n" "BGP is converged \n Error : {}".format(tc_name, result)
+    ), "Testcase {} : Failed \n" "BGP is converged \n Error : {}".format(
+        tc_name, result
+    )
     logger.info("Expected behaviour: {}".format(result))
 
     for addr_type in ADDR_TYPES:
@@ -1154,11 +1166,12 @@ def test_next_hop_with_recursive_lookup_p1(request):
             input_dict,
             protocol="bgp",
             next_hop=next_hop,
-            expected=False
+            expected=False,
         )
-        assert result is not True, (
-            "Testcase {} : Failed \n "
-            "Route is still present \n Error : {}".format(tc_name, result)
+        assert (
+            result is not True
+        ), "Testcase {} : Failed \n " "Route is still present \n Error : {}".format(
+            tc_name, result
         )
 
     shutdown_bringup_interface(tgen, "r4", intf_r4_r3, True)
@@ -1237,7 +1250,9 @@ def test_BGP_path_attributes_default_values_p1(request):
                 topo["routers"]["r3"]["links"]["r4"][addr_type].split("/")[0],
             ],
         )
-        assert result is True, "Testcase  : Failed \n Error : {}".format(tc_name, result)
+        assert result is True, "Testcase {}: Failed \n Error : {}".format(
+            tc_name, result
+        )
 
     for addr_type in ADDR_TYPES:
         input_dict_4 = {
@@ -1256,7 +1271,9 @@ def test_BGP_path_attributes_default_values_p1(request):
             rmap_name="rmap_pf",
             input_dict=input_dict_4,
         )
-        assert result is True, "Testcase  : Failed \n Error : {}".format(tc_name, result)
+        assert result is True, "Testcase {}: Failed \n Error : {}".format(
+            tc_name, result
+        )
 
     step(
         "Configure a route-map to set below attribute value as 500"
@@ -1358,7 +1375,9 @@ def test_BGP_path_attributes_default_values_p1(request):
             rmap_name="rmap_pf",
             input_dict=input_dict_4,
         )
-        assert result is True, "Testcase  : Failed \n Error : {}".format(tc_name, result)
+        assert result is True, "Testcase {}: Failed \n Error : {}".format(
+            tc_name, result
+        )
 
     step("Remove the route-map from R4")
     input_dict_5 = {
@@ -1432,7 +1451,9 @@ def test_BGP_path_attributes_default_values_p1(request):
             input_dict=input_dict_4,
             nexthop=None,
         )
-        assert result is True, "Testcase  : Failed \n Error : {}".format(tc_name, result)
+        assert result is True, "Testcase {}: Failed \n Error : {}".format(
+            tc_name, result
+        )
 
     write_test_footer(tc_name)
 
@@ -1581,7 +1602,9 @@ def test_BGP_peering_bw_loopback_and_physical_p1(request):
 
     step("Verify that once eBGP multi-hop is removed, BGP session goes down")
     result = verify_bgp_convergence_from_running_config(tgen, expected=False)
-    assert result is not True, "Testcase {} : Failed \n Error : {}".format(
+    assert (
+        result is not True
+    ), "Testcase {} : Failed \n " "BGP is converged \n Error: {}".format(
         tc_name, result
     )
 
@@ -1621,7 +1644,9 @@ def test_BGP_peering_bw_loopback_and_physical_p1(request):
 
     step("Verify that BGP session goes down, when update-source is removed")
     result = verify_bgp_convergence_from_running_config(tgen, expected=False)
-    assert result is not True, "Testcase {} : Failed \n Error : {}".format(
+    assert (
+        result is not True
+    ), "Testcase {} : Failed \n " "BGP is converged \n Error: {}".format(
         tc_name, result
     )
 
@@ -1670,16 +1695,20 @@ def test_BGP_peering_bw_loopback_and_physical_p1(request):
             input_dict_1,
             protocol="static",
             next_hop=topo["routers"]["r1"]["links"]["r3"][addr_type].split("/")[0],
-            expected=False
+            expected=False,
         )
-        assert result is not True, "Testcase {} : Failed \n Error : {}".format(
+        assert (
+            result is not True
+        ), "Testcase {} : Failed \n " "Routes are still present \n Error: {}".format(
             tc_name, result
         )
 
     sleep(3)
     step("Verify that BGP session goes down, when static route is removed")
     result = verify_bgp_convergence_from_running_config(tgen, expected=False)
-    assert result is not True, "Testcase {} : Failed \n Error : {}".format(
+    assert (
+        result is not True
+    ), "Testcase {} : Failed \n " "BGP is converged \n Error: {}".format(
         tc_name, result
     )
 
@@ -1723,7 +1752,9 @@ def test_BGP_peering_bw_loopback_and_physical_p1(request):
     sleep(3)
     step("Verify that BGP neighborship between R1 and R3 goes down")
     result = verify_bgp_convergence_from_running_config(tgen, expected=False)
-    assert result is not True, "Testcase {} : Failed \n Error : {}".format(
+    assert (
+        result is not True
+    ), "Testcase {} : Failed \n " "BGP is converged \n Error: {}".format(
         tc_name, result
     )
 
@@ -1801,7 +1832,9 @@ def test_BGP_active_standby_preemption_and_ecmp_p1(request):
                 topo["routers"]["r3"]["links"]["r4"][addr_type].split("/")[0],
             ],
         )
-        assert result is True, "Testcase  : Failed \n Error : {}".format(tc_name, result)
+        assert result is True, "Testcase {}: Failed \n Error : {}".format(
+            tc_name, result
+        )
 
     step(
         "Configure a route-map to set as-path attribute and"
@@ -2037,9 +2070,11 @@ def test_BGP_active_standby_preemption_and_ecmp_p1(request):
                 topo["routers"]["r2"]["links"]["r4"][addr_type].split("/")[0],
                 topo["routers"]["r3"]["links"]["r4"][addr_type].split("/")[0],
             ],
-            expected=False
+            expected=False,
         )
-        assert result is not True, "Testcase {} : Failed \n Error : {}".format(
+        assert (
+            result is not True
+        ), "Testcase {} : Failed \n " "Routes are still present \n Error: {}".format(
             tc_name, result
         )
 
@@ -2065,8 +2100,20 @@ def test_BGP_active_standby_preemption_and_ecmp_p1(request):
         "r4": {
             "bgp": {
                 "address_family": {
-                    "ipv4": {"unicast": {"maximum_paths": {"ebgp": 1,}}},
-                    "ipv6": {"unicast": {"maximum_paths": {"ebgp": 1,}}},
+                    "ipv4": {
+                        "unicast": {
+                            "maximum_paths": {
+                                "ebgp": 1,
+                            }
+                        }
+                    },
+                    "ipv6": {
+                        "unicast": {
+                            "maximum_paths": {
+                                "ebgp": 1,
+                            }
+                        }
+                    },
                 }
             }
         }
@@ -2084,9 +2131,11 @@ def test_BGP_active_standby_preemption_and_ecmp_p1(request):
             topo["routers"]["r2"]["links"]["r4"][addr_type].split("/")[0],
             topo["routers"]["r3"]["links"]["r4"][addr_type].split("/")[0],
         ],
-        expected=False
+        expected=False,
     )
-    assert result is not True, "Testcase {} : Failed \n Error : {}".format(
+    assert (
+        result is not True
+    ), "Testcase {} : Failed \n " "Routes are still present \n Error: {}".format(
         tc_name, result
     )
 
@@ -2095,8 +2144,20 @@ def test_BGP_active_standby_preemption_and_ecmp_p1(request):
         "r4": {
             "bgp": {
                 "address_family": {
-                    "ipv4": {"unicast": {"maximum_paths": {"ebgp": 2,}}},
-                    "ipv6": {"unicast": {"maximum_paths": {"ebgp": 2,}}},
+                    "ipv4": {
+                        "unicast": {
+                            "maximum_paths": {
+                                "ebgp": 2,
+                            }
+                        }
+                    },
+                    "ipv6": {
+                        "unicast": {
+                            "maximum_paths": {
+                                "ebgp": 2,
+                            }
+                        }
+                    },
                 }
             }
         }
@@ -2264,7 +2325,9 @@ def test_password_authentication_for_eBGP_and_iBGP_peers_p1(request):
         "configured but not peer routers"
     )
     result = verify_bgp_convergence(tgen, topo, expected=False)
-    assert result is not True, "Testcase {} : Failed \n Error : {}".format(
+    assert (
+        result is not True
+    ), "Testcase {} : Failed \n " "BGP is converged \n Error: {}".format(
         tc_name, result
     )
 
@@ -2293,7 +2356,9 @@ def test_password_authentication_for_eBGP_and_iBGP_peers_p1(request):
         "strings are in CAPs on R2 and R3"
     )
     result = verify_bgp_convergence(tgen, topo, expected=False)
-    assert result is not True, "Testcase {} : Failed \n Error : {}".format(
+    assert (
+        result is not True
+    ), "Testcase {} : Failed \n " "BGP is converged \n Error: {}".format(
         tc_name, result
     )
 
@@ -2319,7 +2384,9 @@ def test_password_authentication_for_eBGP_and_iBGP_peers_p1(request):
 
     step("Verify if password is removed from R1, both sessions go down again")
     result = verify_bgp_convergence(tgen, topo, expected=False)
-    assert result is not True, "Testcase {} : Failed \n Error : {}".format(
+    assert (
+        result is not True
+    ), "Testcase {} : Failed \n " "BGP is converged \n Error: {}".format(
         tc_name, result
     )
 

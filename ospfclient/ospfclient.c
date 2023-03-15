@@ -30,6 +30,7 @@
 #include "prefix.h" /* needed by ospf_asbr.h */
 #include "privs.h"
 #include "log.h"
+#include "lib/printfrr.h"
 
 /* work around gcc bug 69981, disable MTYPEs in libospf */
 #define _QUAGGA_OSPF_MEMORY_H
@@ -81,7 +82,7 @@ struct my_opaque_lsa {
  * ---------------------------------------------------------
  */
 
-static int lsa_delete(struct thread *t)
+static void lsa_delete(struct thread *t)
 {
 	struct ospf_apiclient *oclient;
 	struct in_addr area_id;
@@ -92,7 +93,7 @@ static int lsa_delete(struct thread *t)
 	rc = inet_aton(args[6], &area_id);
 	if (rc <= 0) {
 		printf("Address Specified: %s is invalid\n", args[6]);
-		return rc;
+		return;
 	}
 
 	printf("Deleting LSA... ");
@@ -101,10 +102,9 @@ static int lsa_delete(struct thread *t)
 				       atoi(args[3]),  /* opaque type */
 				       atoi(args[4])); /* opaque ID */
 	printf("done, return code is = %d\n", rc);
-	return rc;
 }
 
-static int lsa_inject(struct thread *t)
+static void lsa_inject(struct thread *t)
 {
 	struct ospf_apiclient *cl;
 	struct in_addr ifaddr;
@@ -123,13 +123,13 @@ static int lsa_inject(struct thread *t)
 	rc = inet_aton(args[5], &ifaddr);
 	if (rc <= 0) {
 		printf("Ifaddr specified %s is invalid\n", args[5]);
-		return rc;
+		return;
 	}
 
 	rc = inet_aton(args[6], &area_id);
 	if (rc <= 0) {
 		printf("Area ID specified %s is invalid\n", args[6]);
-		return rc;
+		return;
 	}
 	lsa_type = atoi(args[2]);
 	opaque_type = atoi(args[3]);
@@ -145,14 +145,12 @@ static int lsa_inject(struct thread *t)
 	printf("done, return code is %d\n", rc);
 
 	counter++;
-
-	return 0;
 }
 
 
 /* This thread handles asynchronous messages coming in from the OSPF
    API server */
-static int lsa_read(struct thread *thread)
+static void lsa_read(struct thread *thread)
 {
 	struct ospf_apiclient *oclient;
 	int fd;
@@ -172,8 +170,6 @@ static int lsa_read(struct thread *thread)
 
 	/* Reschedule read thread */
 	thread_add_read(master, lsa_read, oclient, fd, NULL);
-
-	return 0;
 }
 
 /* ---------------------------------------------------------
@@ -186,8 +182,8 @@ static void lsa_update_callback(struct in_addr ifaddr, struct in_addr area_id,
 				struct lsa_header *lsa)
 {
 	printf("lsa_update_callback: ");
-	printf("ifaddr: %s ", inet_ntoa(ifaddr));
-	printf("area: %s\n", inet_ntoa(area_id));
+	printfrr("ifaddr: %pI4 ", &ifaddr);
+	printfrr("area: %pI4\n", &area_id);
 	printf("is_self_origin: %u\n", is_self_originated);
 
 	/* It is important to note that lsa_header does indeed include the
@@ -211,8 +207,8 @@ static void lsa_delete_callback(struct in_addr ifaddr, struct in_addr area_id,
 				struct lsa_header *lsa)
 {
 	printf("lsa_delete_callback: ");
-	printf("ifaddr: %s ", inet_ntoa(ifaddr));
-	printf("area: %s\n", inet_ntoa(area_id));
+	printf("ifaddr: %pI4 ", &ifaddr);
+	printf("area: %pI4\n", &area_id);
 	printf("is_self_origin: %u\n", is_self_originated);
 
 	ospf_lsa_header_dump(lsa);
@@ -221,8 +217,8 @@ static void lsa_delete_callback(struct in_addr ifaddr, struct in_addr area_id,
 static void ready_callback(uint8_t lsa_type, uint8_t opaque_type,
 			   struct in_addr addr)
 {
-	printf("ready_callback: lsa_type: %d opaque_type: %d addr=%s\n",
-	       lsa_type, opaque_type, inet_ntoa(addr));
+	printfrr("ready_callback: lsa_type: %d opaque_type: %d addr=%pI4\n",
+		 lsa_type, opaque_type, &addr);
 
 	/* Schedule opaque LSA originate in 5 secs */
 	thread_add_timer(master, lsa_inject, oclient, 5, NULL);
@@ -236,20 +232,20 @@ static void ready_callback(uint8_t lsa_type, uint8_t opaque_type,
 
 static void new_if_callback(struct in_addr ifaddr, struct in_addr area_id)
 {
-	printf("new_if_callback: ifaddr: %s ", inet_ntoa(ifaddr));
-	printf("area_id: %s\n", inet_ntoa(area_id));
+	printfrr("new_if_callback: ifaddr: %pI4 ", &ifaddr);
+	printfrr("area_id: %pI4\n", &area_id);
 }
 
 static void del_if_callback(struct in_addr ifaddr)
 {
-	printf("new_if_callback: ifaddr: %s\n ", inet_ntoa(ifaddr));
+	printfrr("new_if_callback: ifaddr: %pI4\n ", &ifaddr);
 }
 
 static void ism_change_callback(struct in_addr ifaddr, struct in_addr area_id,
 				uint8_t state)
 {
-	printf("ism_change: ifaddr: %s ", inet_ntoa(ifaddr));
-	printf("area_id: %s\n", inet_ntoa(area_id));
+	printfrr("ism_change: ifaddr: %pI4 ", &ifaddr);
+	printfrr("area_id: %pI4\n", &area_id);
 	printf("state: %d [%s]\n", state,
 	       lookup_msg(ospf_ism_state_msg, state, NULL));
 }
@@ -257,9 +253,9 @@ static void ism_change_callback(struct in_addr ifaddr, struct in_addr area_id,
 static void nsm_change_callback(struct in_addr ifaddr, struct in_addr nbraddr,
 				struct in_addr router_id, uint8_t state)
 {
-	printf("nsm_change: ifaddr: %s ", inet_ntoa(ifaddr));
-	printf("nbraddr: %s\n", inet_ntoa(nbraddr));
-	printf("router_id: %s\n", inet_ntoa(router_id));
+	printfrr("nsm_change: ifaddr: %pI4 ", &ifaddr);
+	printfrr("nbraddr: %pI4\n", &nbraddr);
+	printfrr("router_id: %pI4\n", &router_id);
 	printf("state: %d [%s]\n", state,
 	       lookup_msg(ospf_nsm_state_msg, state, NULL));
 }

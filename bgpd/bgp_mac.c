@@ -34,7 +34,7 @@
 #include "bgpd/bgp_evpn_private.h"
 
 DEFINE_MTYPE_STATIC(BGPD, BSM, "Mac Hash Entry");
-DEFINE_MTYPE_STATIC(BGPD, BSM_STRING, "Mac Hash Entry Interface String");
+DEFINE_MTYPE_STATIC(BGPD, BSM_STRING, "Mac Hash Entry Intf String");
 
 struct bgp_self_mac {
 	struct ethaddr macaddr;
@@ -156,7 +156,7 @@ static void bgp_process_mac_rescan_table(struct bgp *bgp, struct peer *peer,
 			struct prefix_rd prd;
 			uint32_t num_labels = 0;
 			mpls_label_t *label_pnt = NULL;
-			struct bgp_route_evpn evpn;
+			struct bgp_route_evpn *evpn;
 
 			if (pevpn->family == AF_EVPN
 			    && pevpn->prefix.route_type == BGP_EVPN_MAC_IP_ROUTE
@@ -200,8 +200,8 @@ static void bgp_process_mac_rescan_table(struct bgp *bgp, struct peer *peer,
 						AFI_L2VPN, SAFI_EVPN, &prd,
 						p, label_pnt, num_labels,
 						pi->addpath_rx_id ? 1 : 0,
-						pi->addpath_rx_id, pfx_buf,
-						sizeof(pfx_buf));
+						pi->addpath_rx_id, NULL,
+						pfx_buf, sizeof(pfx_buf));
 					zlog_debug(
 						   "%s skip update of %s marked as removed",
 						   peer->host, pfx_buf);
@@ -209,14 +209,15 @@ static void bgp_process_mac_rescan_table(struct bgp *bgp, struct peer *peer,
 				continue;
 			}
 
-			memcpy(&evpn, &pi->attr->evpn_overlay, sizeof(evpn));
+			memcpy(&evpn, bgp_attr_get_evpn_overlay(pi->attr),
+			       sizeof(evpn));
 			int32_t ret = bgp_update(peer, p,
 						 pi->addpath_rx_id,
 						 pi->attr, AFI_L2VPN, SAFI_EVPN,
 						 ZEBRA_ROUTE_BGP,
 						 BGP_ROUTE_NORMAL, &prd,
 						 label_pnt, num_labels,
-						 1, &evpn);
+						 1, evpn);
 
 			if (ret < 0)
 				bgp_dest_unlock_node(dest);
@@ -238,7 +239,7 @@ static void bgp_mac_rescan_evpn_table(struct bgp *bgp, struct ethaddr *macaddr)
 		if (CHECK_FLAG(peer->sflags, PEER_STATUS_GROUP))
 			continue;
 
-		if (peer->status != Established)
+		if (!peer_established(peer))
 			continue;
 
 		if (CHECK_FLAG(peer->af_flags[afi][safi],

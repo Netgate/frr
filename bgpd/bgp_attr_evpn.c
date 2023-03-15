@@ -26,6 +26,7 @@
 #include "log.h"
 #include "memory.h"
 #include "stream.h"
+#include "vxlan.h"
 
 #include "bgpd/bgpd.h"
 #include "bgpd/bgp_attr.h"
@@ -35,18 +36,29 @@
 #include "bgpd/bgp_evpn.h"
 #include "bgpd/bgp_evpn_private.h"
 
+bool bgp_route_evpn_same(const struct bgp_route_evpn *e1,
+			 const struct bgp_route_evpn *e2)
+{
+	return (e1->type == e2->type &&
+		!memcmp(&(e1->eth_s_id), &(e2->eth_s_id), sizeof(esi_t)) &&
+		!ipaddr_cmp(&(e1->gw_ip), &(e2->gw_ip)));
+}
+
 void bgp_add_routermac_ecom(struct attr *attr, struct ethaddr *routermac)
 {
 	struct ecommunity_val routermac_ecom;
+	struct ecommunity *ecomm = bgp_attr_get_ecommunity(attr);
 
-	memset(&routermac_ecom, 0, sizeof(struct ecommunity_val));
+	memset(&routermac_ecom, 0, sizeof(routermac_ecom));
 	routermac_ecom.val[0] = ECOMMUNITY_ENCODE_EVPN;
 	routermac_ecom.val[1] = ECOMMUNITY_EVPN_SUBTYPE_ROUTERMAC;
 	memcpy(&routermac_ecom.val[2], routermac->octet, ETH_ALEN);
-	if (!attr->ecommunity)
-		attr->ecommunity = ecommunity_new();
-	ecommunity_add_val(attr->ecommunity, &routermac_ecom, false, false);
-	ecommunity_str(attr->ecommunity);
+	if (!ecomm) {
+		bgp_attr_set_ecommunity(attr, ecommunity_new());
+		ecomm = bgp_attr_get_ecommunity(attr);
+	}
+	ecommunity_add_val(ecomm, &routermac_ecom, false, false);
+	ecommunity_str(ecomm);
 }
 
 /* converts to an esi
@@ -88,10 +100,10 @@ char *ecom_mac2str(char *ecom_mac)
 /* Fetch router-mac from extended community */
 bool bgp_attr_rmac(struct attr *attr, struct ethaddr *rmac)
 {
-	int i = 0;
+	uint32_t i = 0;
 	struct ecommunity *ecom;
 
-	ecom = attr->ecommunity;
+	ecom = bgp_attr_get_ecommunity(attr);
 	if (!ecom || !ecom->size)
 		return false;
 
@@ -121,9 +133,9 @@ bool bgp_attr_rmac(struct attr *attr, struct ethaddr *rmac)
 uint8_t bgp_attr_default_gw(struct attr *attr)
 {
 	struct ecommunity *ecom;
-	int i;
+	uint32_t i;
 
-	ecom = attr->ecommunity;
+	ecom = bgp_attr_get_ecommunity(attr);
 	if (!ecom || !ecom->size)
 		return 0;
 
@@ -146,16 +158,53 @@ uint8_t bgp_attr_default_gw(struct attr *attr)
 }
 
 /*
+ * Fetch and return the DF preference and algorithm from
+ * DF election extended community, if present, else 0.
+ */
+uint16_t bgp_attr_df_pref_from_ec(struct attr *attr, uint8_t *alg)
+{
+	struct ecommunity *ecom;
+	uint32_t i;
+	uint16_t df_pref = 0;
+
+	*alg = EVPN_MH_DF_ALG_SERVICE_CARVING;
+	ecom = bgp_attr_get_ecommunity(attr);
+	if (!ecom || !ecom->size)
+		return 0;
+
+	for (i = 0; i < ecom->size; i++) {
+		uint8_t *pnt;
+		uint8_t type, sub_type;
+
+		pnt = (ecom->val + (i * ECOMMUNITY_SIZE));
+		type = *pnt++;
+		sub_type = *pnt++;
+		if (!(type == ECOMMUNITY_ENCODE_EVPN
+		      && sub_type == ECOMMUNITY_EVPN_SUBTYPE_DF_ELECTION))
+			continue;
+
+		*alg = (*pnt++) & ECOMMUNITY_EVPN_SUBTYPE_DF_ALG_BITS;
+
+		pnt += 3;
+		pnt = ptr_get_be16(pnt, &df_pref);
+		(void)pnt; /* consume value */
+		break;
+	}
+
+	return df_pref;
+}
+
+/*
  * Fetch and return the sequence number from MAC Mobility extended
  * community, if present, else 0.
  */
 uint32_t bgp_attr_mac_mobility_seqnum(struct attr *attr, uint8_t *sticky)
 {
 	struct ecommunity *ecom;
-	int i;
+	uint32_t i;
 	uint8_t flags = 0;
 
-	ecom = attr->ecommunity;
+	ecom = bgp_attr_get_ecommunity(attr);
 	if (!ecom || !ecom->size)
 		return 0;
 
@@ -199,10 +248,10 @@ void bgp_attr_evpn_na_flag(struct attr *attr,
 		uint8_t *router_flag, bool *proxy)
 {
 	struct ecommunity *ecom;
-	int i;
+	uint32_t i;
 	uint8_t val;
 
-	ecom = attr->ecommunity;
+	ecom = bgp_attr_get_ecommunity(attr);
 	if (!ecom || !ecom->size)
 		return;
 
@@ -265,15 +314,4 @@ extern int bgp_build_evpn_prefix(int evpn_type, uint32_t eth_tag,
 	} else
 		return -1;
 	return 0;
-}
-
-extern bool is_zero_gw_ip(const union gw_addr *gw_ip, const afi_t afi)
-{
-	if (afi == AF_INET6 && IN6_IS_ADDR_UNSPECIFIED(&gw_ip->ipv6))
-		return true;
-
-	if (afi == AF_INET && gw_ip->ipv4.s_addr == INADDR_ANY)
-		return true;
-
-	return false;
 }

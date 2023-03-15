@@ -151,7 +151,7 @@ bool bgp_adj_out_lookup(struct peer *peer, struct bgp_dest *dest,
 	struct peer_af *paf;
 	afi_t afi;
 	safi_t safi;
-	int addpath_capable;
+	bool addpath_capable;
 
 	RB_FOREACH (adj, bgp_adj_out_rb, &dest->adj_out)
 		SUBGRP_FOREACH_PEER (adj->subgroup, paf)
@@ -205,6 +205,7 @@ void bgp_adj_in_remove(struct bgp_dest *dest, struct bgp_adj_in *bai)
 {
 	bgp_attr_unintern(&bai->attr);
 	BGP_ADJ_IN_DEL(dest, bai);
+	bgp_dest_unlock_node(dest);
 	peer_unlock(bai->peer); /* adj_in peer reference */
 	XFREE(MTYPE_BGP_ADJ_IN, bai);
 }
@@ -223,10 +224,8 @@ bool bgp_adj_in_unset(struct bgp_dest *dest, struct peer *peer,
 	while (adj) {
 		adj_next = adj->next;
 
-		if (adj->peer == peer && adj->addpath_rx_id == addpath_id) {
+		if (adj->peer == peer && adj->addpath_rx_id == addpath_id)
 			bgp_adj_in_remove(dest, adj);
-			bgp_dest_unlock_node(dest);
-		}
 
 		adj = adj_next;
 	}

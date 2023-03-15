@@ -35,9 +35,8 @@
 
 struct thread_master *master;
 
-static int dummy_func(struct thread *thread)
+static void dummy_func(struct thread *thread)
 {
-	return 0;
 }
 
 int main(int argc, char **argv)
@@ -55,11 +54,10 @@ int main(int argc, char **argv)
 	/* create thread structures so they won't be allocated during the
 	 * time measurement */
 	for (i = 0; i < SCHEDULE_TIMERS; i++) {
-		timers[i] = NULL;
 		thread_add_timer_msec(master, dummy_func, NULL, 0, &timers[i]);
 	}
 	for (i = 0; i < SCHEDULE_TIMERS; i++)
-		thread_cancel(timers[i]);
+		thread_cancel(&timers[i]);
 
 	monotime(&tv_start);
 
@@ -67,7 +65,6 @@ int main(int argc, char **argv)
 		long interval_msec;
 
 		interval_msec = prng_rand(prng) % (100 * SCHEDULE_TIMERS);
-		timers[i] = NULL;
 		thread_add_timer_msec(master, dummy_func, NULL, interval_msec,
 				      &timers[i]);
 	}
@@ -78,9 +75,7 @@ int main(int argc, char **argv)
 		int index;
 
 		index = prng_rand(prng) % SCHEDULE_TIMERS;
-		if (timers[index])
-			thread_cancel(timers[index]);
-		timers[index] = NULL;
+		thread_cancel(&timers[index]);
 	}
 
 	monotime(&tv_stop);
