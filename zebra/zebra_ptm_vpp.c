@@ -29,8 +29,9 @@
 #include <tnsrinfra/types.h>
 #include <tnsrinfra/vec.h>
 
-#include <vppmgmt/vpp_mgmt_api.h>
-#include <vnet/bfd/bfd_protocol.h>
+#include <vppmgmt2/vpp_mgmt2_api.h>
+#include <vppmgmt2/vpp_mgmt2_bfd.h>
+#include <vppmgmt2/vpp_mgmt2_ip.h>
 
 
 /*
@@ -38,10 +39,8 @@
  */
 
 struct vpp_bfd_peer {
-	uint8_t peer_addr_family;
-	uint8_t peer_addr[IPV6_MAX_BYTELEN];
-	uint8_t local_addr_family;
-	uint8_t local_addr[IPV6_MAX_BYTELEN];
+	vapi_type_address peer_addr;
+	vapi_type_address local_addr;
 	uint32_t sw_if_index;
 	uint32_t ifindex;
 	uint8_t multi_hop;
@@ -51,20 +50,19 @@ struct vpp_bfd_peer {
 static struct vpp_bfd_peer *bfd_peers_to_monitor;
 
 
-static uint32_t zebra_ptm_vpp_bfd_peer_search(uint8_t *peer_addr,
-					      uint32_t sw_if_index)
+static uint32_t
+zebra_ptm_vpp_bfd_peer_search(vapi_type_address *peer_addr, uint32_t sw_if_index)
 {
 	uint32_t index;
-	struct vpp_bfd_peer *bp;
 
 	tnsr_vec_foreach_index(index, bfd_peers_to_monitor) {
-		bp = tnsr_vec_elt_at_index(bfd_peers_to_monitor, index);
+		struct vpp_bfd_peer *bp;
 
-		if (memcmp(bp->peer_addr, peer_addr, IPV6_MAX_BYTELEN) != 0) {
+		bp = tnsr_vec_elt_at_index(bfd_peers_to_monitor, index);
+		if (bp->sw_if_index != sw_if_index) {
 			continue;
 		}
-
-		if (bp->sw_if_index != sw_if_index) {
+		if (!vmgmt2_ip_address_equal(&bp->peer_addr, peer_addr)) {
 			continue;
 		}
 
@@ -75,13 +73,12 @@ static uint32_t zebra_ptm_vpp_bfd_peer_search(uint8_t *peer_addr,
 }
 
 
-static struct vpp_bfd_peer *zebra_ptm_vpp_bfd_get_peer(uint8_t *peer_addr,
-						       uint32_t sw_if_index)
+static struct vpp_bfd_peer *
+zebra_ptm_vpp_bfd_get_peer(vapi_type_address *peer_addr, uint32_t sw_if_index)
 {
 	uint32_t index;
 
 	index = zebra_ptm_vpp_bfd_peer_search(peer_addr, sw_if_index);
-
 	if (index == ~0U) {
 		return NULL;
 	}
@@ -98,38 +95,41 @@ static struct vpp_bfd_peer *zebra_ptm_vpp_bfd_get_peer(uint8_t *peer_addr,
  * Messages parsing functions
  */
 
-static void zebra_ptm_vpp_parse_addr(struct stream *msg, uint8_t *family,
-				     uint8_t *addr)
+static void
+zebra_ptm_vpp_parse_addr(struct stream *msg, vapi_type_address *addr)
 {
+	uint8_t family;
+	STREAM_GETW(msg, family);
+
 	uint8_t addr_len;
-
-	STREAM_GETW(msg, *family);
-
-	if (*family == AF_INET) {
+	if (family == AF_INET) {
 		addr_len = IPV4_MAX_BYTELEN;
-	} else if (*family == AF_INET6) {
+		family = ADDRESS_IP4;
+	} else if (family == AF_INET6) {
 		addr_len = IPV6_MAX_BYTELEN;
+		family = ADDRESS_IP6;
 	} else {
-		zlog_warn("%s: invalid address family: %u", __func__, *family);
+		zlog_warn("%s: invalid address family: %u", __func__, family);
 		return;
 	}
 
-	STREAM_GET(addr, msg, addr_len);
+	addr->af = family;
+	STREAM_GET(&addr->un, msg, addr_len);
 
 stream_failure:
 	return;
 }
 
 
-static void zebra_ptm_vpp_parse_msg(struct stream *msg, uint32_t command,
-				    struct vpp_bfd_peer *bfd_peer)
+static void
+zebra_ptm_vpp_parse_msg(struct stream *msg,
+			uint32_t command,
+			struct vpp_bfd_peer *bfd_peer)
 {
 	uint32_t tmp_num;
 	uint8_t if_name_len;
 
 	memset(bfd_peer, 0, sizeof(*bfd_peer));
-	bfd_peer->peer_addr_family = AF_UNSPEC;
-	bfd_peer->local_addr_family = AF_UNSPEC;
 	bfd_peer->sw_if_index = ~0U;
 	bfd_peer->ifindex = IFINDEX_INTERNAL;
 
@@ -138,8 +138,8 @@ static void zebra_ptm_vpp_parse_msg(struct stream *msg, uint32_t command,
 
 	/* Read field: family. */
 	/* Read field: destination address. */
-	zebra_ptm_vpp_parse_addr(msg, &bfd_peer->peer_addr_family,
-				 bfd_peer->peer_addr);
+	zebra_ptm_vpp_parse_addr(msg, &bfd_peer->peer_addr);
+	bfd_peer->local_addr.af = bfd_peer->peer_addr.af;
 
 	/* Skip field: min_rx_timer. */
 	STREAM_GETL(msg, tmp_num);
@@ -153,12 +153,11 @@ static void zebra_ptm_vpp_parse_msg(struct stream *msg, uint32_t command,
 
 	/* Read field: family. */
 	/* Read field: source address. */
-	zebra_ptm_vpp_parse_addr(msg, &bfd_peer->local_addr_family,
-				 bfd_peer->local_addr);
+	zebra_ptm_vpp_parse_addr(msg, &bfd_peer->local_addr);
 
-	vmgmt_intf_refresh_all();
-	bfd_peer->sw_if_index = vmgmt_intf_get_sw_if_index_by_addr(
-		bfd_peer->local_addr, bfd_peer->local_addr_family == AF_INET6);
+	vmgmt2_ip_refresh_all();
+	u32 sw_if_index = vmgmt2_ip_lookup_intf_by_addr(&bfd_peer->local_addr);
+	bfd_peer->sw_if_index = sw_if_index;
 	if (bfd_peer->sw_if_index == ~0U) {
 		zlog_debug("%s: cannot resolve sw_if_index by local address",
 			   __func__);
@@ -212,6 +211,7 @@ static void zebra_ptm_vpp_parse_msg(struct stream *msg, uint32_t command,
 	/* Skip field: profile name. */
 
 stream_failure:
+	tmp_num = tmp_num;
 	return;
 }
 
@@ -220,19 +220,24 @@ stream_failure:
  * Messages construction functions
  */
 
-static void zebra_ptm_vpp_make_addr(struct stream *msg, uint8_t family,
-				    uint8_t *addr)
+static void
+zebra_ptm_vpp_make_addr(struct stream *msg,
+			vapi_type_address *addr)
 {
-	stream_putc(msg, family);
+	uint8_t af = addr->af;
 
-	if (family == AF_INET) {
-		stream_put(msg, addr, IPV4_MAX_BYTELEN);
+	if (af == ADDRESS_IP4) {
+		stream_putc(msg, AF_INET);
+		stream_put(msg, &addr->un, IPV4_MAX_BYTELEN);
 		stream_putc(msg, 32);
-	} else if (family == AF_INET6) {
-		stream_put(msg, addr, IPV6_MAX_BYTELEN);
+
+	} else if (af == ADDRESS_IP6) {
+		stream_putc(msg, AF_INET6);
+		stream_put(msg, &addr->un, IPV6_MAX_BYTELEN);
 		stream_putc(msg, 128);
+
 	} else {
-		zlog_warn("%s: invalid address family: %u", __func__, family);
+		zlog_warn("%s: invalid address family: %u", __func__, af);
 	}
 }
 
@@ -259,23 +264,22 @@ static struct stream *zebra_ptm_vpp_make_msg(struct vpp_bfd_peer *bfd_peer,
 	/* Write field: family */
 	/* Write field: destination address */
 	/* Write field: prefix length */
-	zebra_ptm_vpp_make_addr(msg, bfd_peer->peer_addr_family,
-				bfd_peer->peer_addr);
+	zebra_ptm_vpp_make_addr(msg, &bfd_peer->peer_addr);
 
 	/* Write field: bfd status */
 	switch (bfd_state) {
-	case BFD_STATE_up:
+	case BFD_STATE_API_UP:
 		stream_putl(msg, BFD_STATUS_UP);
 		zlog_debug("%s: BFD_STATUS_UP", __func__);
 		break;
 
-	case BFD_STATE_admin_down:
+	case BFD_STATE_API_ADMIN_DOWN:
 		stream_putl(msg, BFD_STATUS_ADMIN_DOWN);
 		zlog_debug("%s: BFD_STATUS_ADMIN_DOWN", __func__);
 		break;
 
-	case BFD_STATE_down:
-	case BFD_STATE_init:
+	case BFD_STATE_API_DOWN:
+	case BFD_STATE_API_INIT:
 		stream_putl(msg, BFD_STATUS_DOWN);
 		zlog_debug("%s: BFD_STATUS_DOWN", __func__);
 		break;
@@ -289,14 +293,7 @@ static struct stream *zebra_ptm_vpp_make_msg(struct vpp_bfd_peer *bfd_peer,
 	/* Write field: family. */
 	/* Write field: source address. */
 	/* Write field: prefix length */
-	if (bfd_peer->local_addr_family != AF_UNSPEC) {
-		zebra_ptm_vpp_make_addr(msg, bfd_peer->local_addr_family,
-					bfd_peer->local_addr);
-	} else {
-		/* No local address. Use peer address family and zeroes. */
-		zebra_ptm_vpp_make_addr(msg, bfd_peer->peer_addr_family,
-					bfd_peer->local_addr);
-	}
+	zebra_ptm_vpp_make_addr(msg, &bfd_peer->local_addr);
 
 	/* Write field: cbit */
 	stream_putc(msg, bfd_peer->cbit);
@@ -315,29 +312,30 @@ static struct stream *zebra_ptm_vpp_make_msg(struct vpp_bfd_peer *bfd_peer,
 static struct work_queue *bfd_event_wq;
 
 
-static void zebra_ptm_vpp_bfd_event_add(struct bfd_session *bfd_sess)
+static void
+zebra_ptm_vpp_bfd_event_add(vapi_payload_bfd_udp_session_event *bfd_sess_ev)
 {
-	struct bfd_session *bfd_sess_copy;
+	vapi_payload_bfd_udp_session_event *bfd_sess_ev_copy;
 
-	bfd_sess_copy = malloc(sizeof(struct bfd_session));
-	if (!bfd_sess_copy) {
+	bfd_sess_ev_copy = malloc(sizeof(*bfd_sess_ev_copy));
+	if (!bfd_sess_ev_copy) {
 		return;
 	}
 
-	memcpy(bfd_sess_copy, bfd_sess, sizeof(struct bfd_session));
+	memcpy(bfd_sess_ev_copy, bfd_sess_ev, sizeof(*bfd_sess_ev_copy));
 
-	work_queue_add(bfd_event_wq, bfd_sess_copy);
+	work_queue_add(bfd_event_wq, bfd_sess_ev_copy);
 }
 
 
 static wq_item_status zebra_ptm_vpp_bfd_event_process(struct work_queue *wq,
 						      void *data)
 {
-	struct bfd_session *bfd_sess = data;
+	vapi_payload_bfd_udp_session_event *bfd_sess_ev = data;
 	struct vpp_bfd_peer *bfd_peer;
 
-	bfd_peer = zebra_ptm_vpp_bfd_get_peer(bfd_sess->peer_addr,
-					      bfd_sess->sw_if_index);
+	bfd_peer = zebra_ptm_vpp_bfd_get_peer(&bfd_sess_ev->peer_addr,
+					      bfd_sess_ev->sw_if_index);
 
 	if (bfd_peer == NULL) {
 		zlog_debug("%s: unknown bfd peer", __func__);
@@ -346,7 +344,7 @@ static wq_item_status zebra_ptm_vpp_bfd_event_process(struct work_queue *wq,
 
 	struct stream *msg_upd;
 
-	msg_upd = zebra_ptm_vpp_make_msg(bfd_peer, bfd_sess->state);
+	msg_upd = zebra_ptm_vpp_make_msg(bfd_peer, bfd_sess_ev->state);
 
 	zebra_ptm_send_clients_proxy(msg_upd);
 
@@ -364,20 +362,19 @@ static void zebra_ptm_vpp_bfd_event_clear(struct work_queue *wq, void *data)
  * Peers registration/deregistration functions
  */
 
-static struct bfd_session *zebra_ptm_vpp_bfd_get_sess(uint8_t *peer_addr,
-						      uint32_t sw_if_index)
+static vapi_payload_bfd_udp_session_details *
+zebra_ptm_vpp_bfd_get_sess(vapi_type_address *peer_addr, uint32_t sw_if_index)
 {
-	struct bfd_session *bfd_sessions;
-	struct bfd_session *bs;
+	vapi_payload_bfd_udp_session_details *bfd_sessions;
+	vapi_payload_bfd_udp_session_details *bs;
 
-	bfd_sessions = vmgmt_bfd_get_sessions();
+	bfd_sessions = vmgmt2_bfd_get_sessions_vec();
 
 	tnsr_vec_foreach(bs, bfd_sessions) {
-		if (memcmp(bs->peer_addr, peer_addr, IPV6_MAX_BYTELEN) != 0) {
+		if (bs->sw_if_index != sw_if_index) {
 			continue;
 		}
-
-		if (bs->sw_if_index != sw_if_index) {
+		if (!vmgmt2_ip_address_equal(&bs->peer_addr, peer_addr)) {
 			continue;
 		}
 
@@ -390,10 +387,10 @@ static struct bfd_session *zebra_ptm_vpp_bfd_get_sess(uint8_t *peer_addr,
 
 static void zebra_ptm_vpp_dest_reg(struct vpp_bfd_peer *bfd_peer)
 {
-	struct bfd_session *bfd_sess;
+	vapi_payload_bfd_udp_session_details *bfd_sess;
 	uint32_t index;
 
-	bfd_sess = zebra_ptm_vpp_bfd_get_sess(bfd_peer->peer_addr,
+	bfd_sess = zebra_ptm_vpp_bfd_get_sess(&bfd_peer->peer_addr,
 					      bfd_peer->sw_if_index);
 
 	if (bfd_sess) {
@@ -404,7 +401,7 @@ static void zebra_ptm_vpp_dest_reg(struct vpp_bfd_peer *bfd_peer)
 		zebra_ptm_send_clients_proxy(msg_upd);
 	}
 
-	index = zebra_ptm_vpp_bfd_peer_search(bfd_peer->peer_addr,
+	index = zebra_ptm_vpp_bfd_peer_search(&bfd_peer->peer_addr,
 					      bfd_peer->sw_if_index);
 
 	if (index == ~0U) {
@@ -417,7 +414,7 @@ static void zebra_ptm_vpp_dest_dereg(struct vpp_bfd_peer *bfd_peer)
 {
 	uint32_t index;
 
-	index = zebra_ptm_vpp_bfd_peer_search(bfd_peer->peer_addr,
+	index = zebra_ptm_vpp_bfd_peer_search(&bfd_peer->peer_addr,
 					      bfd_peer->sw_if_index);
 
 	if (index == ~0U) {
@@ -429,12 +426,12 @@ static void zebra_ptm_vpp_dest_dereg(struct vpp_bfd_peer *bfd_peer)
 }
 
 
-void zebra_ptm_vpp_reroute(struct zserv *zs, struct zebra_vrf *zvrf,
-			   struct stream *msg, uint32_t command)
+void zebra_ptm_vpp_reroute(struct zserv *zs,
+			   struct zebra_vrf *zvrf,
+			   struct stream *msg,
+			   uint32_t command)
 {
-	int ret;
-
-	ret = vmgmt_check_connection();
+	int ret = vmgmt2_check_connection();
 	if (ret < 0) {
 		zlog_err("%s: VPP may be down or API is not responding",
 			 __func__);
@@ -469,7 +466,7 @@ void zebra_ptm_vpp_reroute(struct zserv *zs, struct zebra_vrf *zvrf,
 
 void zebra_ptm_vpp_init(void)
 {
-	vmgmt_bfd_events_register(zebra_ptm_vpp_bfd_event_add, 1);
+	vmgmt2_bfd_events_register(zebra_ptm_vpp_bfd_event_add, 1);
 
 	bfd_event_wq = work_queue_new(zrouter.master, "bfd_event_wq");
 	bfd_event_wq->spec.workfunc = zebra_ptm_vpp_bfd_event_process;
@@ -481,7 +478,7 @@ void zebra_ptm_vpp_init(void)
 
 void zebra_ptm_vpp_finish(void)
 {
-	vmgmt_bfd_events_register(zebra_ptm_vpp_bfd_event_add, 0);
+	vmgmt2_bfd_events_register(zebra_ptm_vpp_bfd_event_add, 0);
 	tnsr_vec_free(bfd_peers_to_monitor);
 	work_queue_free_and_null(&bfd_event_wq);
 }

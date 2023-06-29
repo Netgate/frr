@@ -60,7 +60,7 @@
 #include "zebra/zebra_srv6.h"
 #include "zebra/zebra_srv6_vty.h"
 
-#include <vppmgmt/vpp_mgmt_api.h>
+#include <vppmgmt2/vpp_mgmt2_api.h>
 
 #define ZEBRA_PTM_SUPPORT
 
@@ -197,8 +197,8 @@ static void sigint(void)
 
 	/* Close VPP API connection */
 	frr_with_privs(&zserv_privs) {
-		vmgmt_disconnect();
-		zlog_info("vmgmt_disconnect success");
+		vmgmt2_disconnect();
+		zlog_info("vmgmt2_disconnect success");
 	}
 
 	zebra_ns_notify_close();
@@ -465,11 +465,11 @@ int main(int argc, char **argv)
 	frr_with_privs(&zserv_privs) {
 		int ret;
 
-		ret = vmgmt_init((char *)"zebra", 1);
+		ret = vmgmt2_init((char *)"zebra");
 		if (ret < 0) {
-			zlog_err("vmgmt_init failed with status %d", ret);
+			zlog_err("vmgmt2_init failed with status %d", ret);
 		} else {
-			zlog_info("vmgmt_init success");
+			zlog_info("vmgmt2_init success");
 		}
 	}
 

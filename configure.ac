@@ -155,6 +155,12 @@ AC_ARG_WITH([vppdir], [AS_HELP_STRING([--with-vppdir=DIR], [use vpp in DIR for b
 AC_SUBST(VPP_DIR)
 AM_CONDITIONAL([VPP_DIR_SET], [test "x$VPP_DIR" != "x" ])
 
+AC_ARG_WITH([libyang2dir], [AS_HELP_STRING([--with-libyang2dir=DIR], [use libyang2 in DIR for build])], [
+   LIBYANG2_DIR="$withval"
+])
+AC_SUBST(LIBYANG2_DIR)
+AM_CONDITIONAL([LIBYANG2_DIR_SET], [test "x$LIBYANG2_DIR" != "x" ])
+
 AC_ARG_WITH([yangmodelsdir], [AS_HELP_STRING([--with-yangmodelsdir=DIR], [yang models directory (${datarootdir}/yang)])], [
 	yangmodelsdir="$withval"
 ], [

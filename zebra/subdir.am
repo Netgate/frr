@@ -77,10 +77,10 @@ VPP_INCLUDE_DIR		= ${VPP_DIR}/build-root/install-vpp-native/vpp/include
 VPP_LIB_DIR		= ${VPP_DIR}/build-root/install-vpp-native/vpp/$(strip $(OS_LIB_DIR))
 AM_CFLAGS		+= -I${VPP_INCLUDE_DIR}
 zebra_zebra_LDADD	+= -L${VPP_LIB_DIR}
-zebra_zebra_LDFLAGS	+= -Wl,-rpath-link ${VPP_LIB_DIR}
+zebra_zebra_LDFLAGS	+= -Wl,-rpath-link=${VPP_LIB_DIR}
 endif
 
-zebra_zebra_LDADD	+= -lvppmgmt
+zebra_zebra_LDADD	+= -lvppmgmt2 -lvapiclient
 zebra_zebra_LDADD	+= -ltnsrinfra
 
 if HAVE_PROTOBUF3
