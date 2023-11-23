@@ -44,9 +44,7 @@
 #include "zebra/zebra_vxlan.h"
 #include "zebra/zebra_netns_notify.h"
 #include "zebra/zebra_routemap.h"
-#ifndef VTYSH_EXTRACT_PL
 #include "zebra/zebra_vrf_clippy.c"
-#endif
 #include "zebra/table_manager.h"
 
 static void zebra_vrf_table_create(struct zebra_vrf *zvrf, afi_t afi,
@@ -270,6 +268,7 @@ static int zebra_vrf_delete(struct vrf *vrf)
 
 	/* Cleanup EVPN states for vrf */
 	zebra_vxlan_vrf_delete(zvrf);
+	zebra_routemap_vrf_delete(zvrf);
 
 	list_delete_all_node(zvrf->rid_all_sorted_list);
 	list_delete_all_node(zvrf->rid_lo_sorted_list);

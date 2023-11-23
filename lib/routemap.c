@@ -36,6 +36,8 @@
 #include "json.h"
 #include "jhash.h"
 
+#include "lib/routemap_clippy.c"
+
 DEFINE_MTYPE_STATIC(LIB, ROUTE_MAP, "Route map");
 DEFINE_MTYPE(LIB, ROUTE_MAP_NAME, "Route map name");
 DEFINE_MTYPE_STATIC(LIB, ROUTE_MAP_INDEX, "Route map index");
@@ -1815,9 +1817,24 @@ route_map_get_index(struct route_map *map, const struct prefix *prefix,
 	struct route_map_index *index = NULL, *best_index = NULL;
 	struct route_map_index *head_index = NULL;
 	struct route_table *table = NULL;
-	unsigned char family = prefix->family;
 
-	if (family == AF_INET)
+	/* Route-map optimization relies on LPM lookups of the prefix to reduce
+	 * the amount of route-map clauses a given prefix needs to be processed
+	 * against. These LPM trees are IPv4/IPv6-specific and prefix->family
+	 * must be AF_INET or AF_INET6 in order for the lookup to succeed. So if
+	 * the AF doesn't line up with the LPM trees, skip the optimization.
+	 */
+	if (map->optimization_disabled ||
+	    (prefix->family == AF_INET && !map->ipv4_prefix_table) ||
+	    (prefix->family == AF_INET6 && !map->ipv6_prefix_table)) {
+		if (rmap_debug)
+			zlog_debug(
+				"Skipping route-map optimization for route-map: %s, pfx: %pFX, family: %d",
+				map->name, prefix, prefix->family);
+		return map->head;
+	}
+
+	if (prefix->family == AF_INET)
 		table = map->ipv4_prefix_table;
 	else
 		table = map->ipv6_prefix_table;
@@ -2539,6 +2556,7 @@ route_map_result_t route_map_apply_ext(struct route_map *map,
 	struct route_map_index *index = NULL;
 	struct route_map_rule *set = NULL;
 	bool skip_match_clause = false;
+	struct prefix conv;
 
 	if (recursion > RMAP_RECURSION_LIMIT) {
 		flog_warn(
@@ -2556,37 +2574,51 @@ route_map_result_t route_map_apply_ext(struct route_map *map,
 
 	map->applied++;
 
-	if ((!map->optimization_disabled)
-	    && (map->ipv4_prefix_table || map->ipv6_prefix_table)) {
-		index = route_map_get_index(map, prefix, match_object,
-					    &match_ret);
-		if (index) {
-			index->applied++;
-			if (rmap_debug)
-				zlog_debug(
-					"Best match route-map: %s, sequence: %d for pfx: %pFX, result: %s",
-					map->name, index->pref, prefix,
-					route_map_cmd_result_str(match_ret));
+	/*
+	 * Handling for matching evpn_routes in the prefix table.
+	 *
+	 * We convert type2/5 prefix to ipv4/6 prefix to do longest
+	 * prefix matching on.
+	 */
+	if (prefix->family == AF_EVPN) {
+		if (evpn_prefix2prefix(prefix, &conv) != 0) {
+			zlog_debug(
+				"Unable to convert EVPN prefix %pFX into IPv4/IPv6 prefix. Falling back to non-optimized route-map lookup",
+				prefix);
 		} else {
-			if (rmap_debug)
-				zlog_debug(
-					"No best match sequence for pfx: %pFX in route-map: %s, result: %s",
-					prefix, map->name,
-					route_map_cmd_result_str(match_ret));
-			/*
-			 * No index matches this prefix. Return deny unless,
-			 * match_ret = RMAP_NOOP.
-			 */
-			if (match_ret == RMAP_NOOP)
-				ret = RMAP_PERMITMATCH;
-			else
-				ret = RMAP_DENYMATCH;
-			goto route_map_apply_end;
+			zlog_debug(
+				"Converted EVPN prefix %pFX into %pFX for optimized route-map lookup",
+				prefix, &conv);
+
+			prefix = &conv;
 		}
-		skip_match_clause = true;
-	} else {
-		index = map->head;
 	}
+
+	index = route_map_get_index(map, prefix, match_object, &match_ret);
+	if (index) {
+		index->applied++;
+		if (rmap_debug)
+			zlog_debug(
+				"Best match route-map: %s, sequence: %d for pfx: %pFX, result: %s",
+				map->name, index->pref, prefix,
+				route_map_cmd_result_str(match_ret));
+	} else {
+		if (rmap_debug)
+			zlog_debug(
+				"No best match sequence for pfx: %pFX in route-map: %s, result: %s",
+				prefix, map->name,
+				route_map_cmd_result_str(match_ret));
+		/*
+		 * No index matches this prefix. Return deny unless,
+		 * match_ret = RMAP_NOOP.
+		 */
+		if (match_ret == RMAP_NOOP)
+			ret = RMAP_PERMITMATCH;
+		else
+			ret = RMAP_DENYMATCH;
+		goto route_map_apply_end;
+	}
+	skip_match_clause = true;
 
 	for (; index; index = index->next) {
 		if (!skip_match_clause) {
@@ -3080,27 +3112,24 @@ static void clear_route_map_helper(struct route_map *map)
 		index->applied_clear = index->applied;
 }
 
-DEFUN (rmap_clear_counters,
+DEFPY (rmap_clear_counters,
        rmap_clear_counters_cmd,
-       "clear route-map counters [WORD]",
+       "clear route-map counters [RMAP_NAME$rmapname]",
        CLEAR_STR
        "route-map information\n"
        "counters associated with the specified route-map\n"
        "route-map name\n")
 {
-	int idx_word = 2;
 	struct route_map *map;
 
-	const char *name = (argc == 3 ) ? argv[idx_word]->arg : NULL;
-
-	if (name) {
-		map = route_map_lookup_by_name(name);
+	if (rmapname) {
+		map = route_map_lookup_by_name(rmapname);
 
 		if (map)
 			clear_route_map_helper(map);
 		else {
 			vty_out(vty, "%s: 'route-map %s' not found\n",
-				frr_protonameinst, name);
+				frr_protonameinst, rmapname);
 			return CMD_SUCCESS;
 		}
 	} else {
@@ -3168,6 +3197,12 @@ static struct cmd_node rmap_debug_node = {
 	.prompt = "",
 	.config_write = rmap_config_write_debug,
 };
+
+void route_map_show_debug(struct vty *vty)
+{
+	if (rmap_debug)
+		vty_out(vty, "debug route-map\n");
+}
 
 /* Configuration write function. */
 static int rmap_config_write_debug(struct vty *vty)

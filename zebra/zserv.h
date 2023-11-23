@@ -215,16 +215,21 @@ struct zserv {
 	 * relative to last_read_time.
 	 */
 
+	pthread_mutex_t stats_mtx;
+	/* BEGIN covered by stats_mtx */
+
 	/* monotime of client creation */
-	_Atomic uint64_t connect_time;
+	uint64_t connect_time;
 	/* monotime of last message received */
-	_Atomic uint64_t last_read_time;
+	uint64_t last_read_time;
 	/* monotime of last message sent */
-	_Atomic uint64_t last_write_time;
+	uint64_t last_write_time;
 	/* command code of last message read */
-	_Atomic uint64_t last_read_cmd;
+	uint64_t last_read_cmd;
 	/* command code of last message written */
-	_Atomic uint64_t last_write_cmd;
+	uint64_t last_write_cmd;
+
+	/* END covered by stats_mtx */
 
 	/*
 	 * Number of instances configured with
@@ -362,6 +367,13 @@ extern void zserv_release_client(struct zserv *client);
  *    the client to close
  */
 extern void zserv_close_client(struct zserv *client);
+
+/*
+ * Free memory for a zserv client object - note that this does not
+ * clean up the internal allocations associated with the zserv client,
+ * this just free the struct's memory.
+ */
+void zserv_client_delete(struct zserv *client);
 
 /*
  * Log a ZAPI message hexdump.

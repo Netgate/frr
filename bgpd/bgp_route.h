@@ -214,9 +214,14 @@ struct bgp_path_info_extra {
 	} vnc;
 #endif
 
-	/* For imported routes into a VNI (or VRF), this points to the parent.
+	/*
+	 * For imported routes into a VNI (or VRF)
 	 */
-	void *parent;
+	void *parent;	    /* parent from global table */
+	union {
+		struct ethaddr mac; /* MAC set here for VNI IP table */
+		struct ipaddr ip;   /* IP set here for VNI MAC table */
+	} vni_info;
 
 	/*
 	 * Some tunnelish parameters follow. Maybe consolidate into an
@@ -289,7 +294,7 @@ struct bgp_path_info {
 	int lock;
 
 	/* BGP information status.  */
-	uint16_t flags;
+	uint32_t flags;
 #define BGP_PATH_IGP_CHANGED (1 << 0)
 #define BGP_PATH_DAMPED (1 << 1)
 #define BGP_PATH_HISTORY (1 << 2)
@@ -306,6 +311,7 @@ struct bgp_path_info {
 #define BGP_PATH_RIB_ATTR_CHG (1 << 13)
 #define BGP_PATH_ANNC_NH_SELF (1 << 14)
 #define BGP_PATH_LINK_BW_CHG (1 << 15)
+#define BGP_PATH_ACCEPT_OWN (1 << 16)
 
 	/* BGP route type.  This can be static, RIP, OSPF, BGP etc.  */
 	uint8_t type;
@@ -657,8 +663,9 @@ DECLARE_HOOK(bgp_process,
 #define BGP_SHOW_OPT_AFI_IP6 (1 << 4)
 #define BGP_SHOW_OPT_ESTABLISHED (1 << 5)
 #define BGP_SHOW_OPT_FAILED (1 << 6)
-#define BGP_SHOW_OPT_DETAIL (1 << 7)
+#define BGP_SHOW_OPT_JSON_DETAIL (1 << 7)
 #define BGP_SHOW_OPT_TERSE (1 << 8)
+#define BGP_SHOW_OPT_ROUTES_DETAIL (1 << 9)
 
 /* Prototypes. */
 extern void bgp_rib_remove(struct bgp_dest *dest, struct bgp_path_info *pi,
@@ -667,6 +674,7 @@ extern void bgp_process_queue_init(struct bgp *bgp);
 extern void bgp_route_init(void);
 extern void bgp_route_finish(void);
 extern void bgp_cleanup_routes(struct bgp *);
+extern void bgp_free_aggregate_info(struct bgp_aggregate *aggregate);
 extern void bgp_announce_route(struct peer *peer, afi_t afi, safi_t safi,
 			       bool force);
 extern void bgp_stop_announce_route_timer(struct peer_af *paf);
@@ -675,7 +683,12 @@ extern void bgp_default_originate(struct peer *, afi_t, safi_t, int);
 extern void bgp_soft_reconfig_table_task_cancel(const struct bgp *bgp,
 						const struct bgp_table *table,
 						const struct peer *peer);
-extern void bgp_soft_reconfig_in(struct peer *, afi_t, safi_t);
+
+/*
+ * If this peer is configured for soft reconfig in then do the work
+ * and return true.  If it is not return false; and do nothing
+ */
+extern bool bgp_soft_reconfig_in(struct peer *peer, afi_t afi, safi_t safi);
 extern void bgp_clear_route(struct peer *, afi_t, safi_t);
 extern void bgp_clear_route_all(struct peer *);
 extern void bgp_clear_adj_in(struct peer *, afi_t, safi_t);
@@ -738,17 +751,17 @@ extern int bgp_static_unset_safi(afi_t afi, safi_t safi, struct vty *,
 				 const char *, const char *, const char *);
 
 /* this is primarily for MPLS-VPN */
-extern int bgp_update(struct peer *peer, const struct prefix *p,
-		      uint32_t addpath_id, struct attr *attr,
-		      afi_t afi, safi_t safi, int type, int sub_type,
-		      struct prefix_rd *prd, mpls_label_t *label,
-		      uint32_t num_labels, int soft_reconfig,
-		      struct bgp_route_evpn *evpn);
-extern int bgp_withdraw(struct peer *peer, const struct prefix *p,
-			uint32_t addpath_id, struct attr *attr, afi_t afi,
-			safi_t safi, int type, int sub_type,
-			struct prefix_rd *prd, mpls_label_t *label,
-			uint32_t num_labels, struct bgp_route_evpn *evpn);
+extern void bgp_update(struct peer *peer, const struct prefix *p,
+		       uint32_t addpath_id, struct attr *attr, afi_t afi,
+		       safi_t safi, int type, int sub_type,
+		       struct prefix_rd *prd, mpls_label_t *label,
+		       uint32_t num_labels, int soft_reconfig,
+		       struct bgp_route_evpn *evpn);
+extern void bgp_withdraw(struct peer *peer, const struct prefix *p,
+			 uint32_t addpath_id, struct attr *attr, afi_t afi,
+			 safi_t safi, int type, int sub_type,
+			 struct prefix_rd *prd, mpls_label_t *label,
+			 uint32_t num_labels, struct bgp_route_evpn *evpn);
 
 /* for bgp_nexthop and bgp_damp */
 extern void bgp_process(struct bgp *, struct bgp_dest *, afi_t, safi_t);
@@ -767,7 +780,7 @@ extern void bgp_config_write_distance(struct vty *, struct bgp *, afi_t,
 extern void bgp_aggregate_delete(struct bgp *bgp, const struct prefix *p,
 				 afi_t afi, safi_t safi,
 				 struct bgp_aggregate *aggregate);
-extern void bgp_aggregate_route(struct bgp *bgp, const struct prefix *p,
+extern bool bgp_aggregate_route(struct bgp *bgp, const struct prefix *p,
 				afi_t afi, safi_t safi,
 				struct bgp_aggregate *aggregate);
 extern void bgp_aggregate_increment(struct bgp *bgp, const struct prefix *p,
@@ -843,17 +856,18 @@ extern bool bgp_zebra_has_route_changed(struct bgp_path_info *selected);
 
 extern void route_vty_out_detail_header(struct vty *vty, struct bgp *bgp,
 					struct bgp_dest *dest,
+					const struct prefix *p,
 					const struct prefix_rd *prd, afi_t afi,
 					safi_t safi, json_object *json);
 extern void route_vty_out_detail(struct vty *vty, struct bgp *bgp,
-				 struct bgp_dest *bn,
+				 struct bgp_dest *bn, const struct prefix *p,
 				 struct bgp_path_info *path, afi_t afi,
 				 safi_t safi, enum rpki_states,
 				 json_object *json_paths);
-extern int bgp_show_table_rd(struct vty *vty, struct bgp *bgp, safi_t safi,
+extern int bgp_show_table_rd(struct vty *vty, struct bgp *bgp, afi_t afi, safi_t safi,
 			     struct bgp_table *table, struct prefix_rd *prd,
 			     enum bgp_show_type type, void *output_arg,
-			     bool use_json);
+			     uint16_t show_flags);
 extern void bgp_best_path_select_defer(struct bgp *bgp, afi_t afi, safi_t safi);
 extern bool bgp_update_martian_nexthop(struct bgp *bgp, afi_t afi, safi_t safi,
 				       uint8_t type, uint8_t stype,
@@ -868,4 +882,15 @@ extern void subgroup_announce_reset_nhop(uint8_t family, struct attr *attr);
 const char *
 bgp_path_selection_reason2str(enum bgp_path_selection_reason reason);
 extern bool bgp_addpath_encode_rx(struct peer *peer, afi_t afi, safi_t safi);
+extern const struct prefix_rd *bgp_rd_from_dest(const struct bgp_dest *dest,
+						safi_t safi);
+extern void bgp_path_info_free_with_caller(const char *caller,
+					   struct bgp_path_info *path);
+extern void bgp_path_info_add_with_caller(const char *caller,
+					  struct bgp_dest *dest,
+					  struct bgp_path_info *pi);
+extern void bgp_aggregate_free(struct bgp_aggregate *aggregate);
+#define bgp_path_info_add(A, B)                                                \
+	bgp_path_info_add_with_caller(__func__, (A), (B))
+#define bgp_path_info_free(B) bgp_path_info_free_with_caller(__func__, (B))
 #endif /* _QUAGGA_BGP_ROUTE_H */

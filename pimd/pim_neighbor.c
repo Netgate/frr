@@ -42,6 +42,7 @@
 #include "pim_jp_agg.h"
 #include "pim_bfd.h"
 #include "pim_register.h"
+#include "pim_oil.h"
 
 static void dr_election_by_addr(struct interface *ifp)
 {
@@ -136,9 +137,10 @@ int pim_if_dr_election(struct interface *ifp)
 		pim_if_update_could_assert(ifp);
 		pim_if_update_assert_tracking_desired(ifp);
 
-		if (PIM_I_am_DR(pim_ifp))
+		if (PIM_I_am_DR(pim_ifp)) {
 			pim_ifp->am_i_dr = true;
-		else {
+			pim_clear_nocache_state(pim_ifp);
+		} else {
 			if (pim_ifp->am_i_dr == true) {
 				pim_reg_del_on_couldreg_fail(ifp);
 				pim_ifp->am_i_dr = false;
@@ -419,7 +421,7 @@ struct pim_neighbor *pim_neighbor_find_by_secondary(struct interface *ifp,
 }
 
 struct pim_neighbor *pim_neighbor_find(struct interface *ifp,
-				       pim_addr source_addr)
+				       pim_addr source_addr, bool secondary)
 {
 	struct pim_interface *pim_ifp;
 	struct listnode *node;
@@ -436,6 +438,13 @@ struct pim_neighbor *pim_neighbor_find(struct interface *ifp,
 		if (!pim_addr_cmp(source_addr, neigh->source_addr)) {
 			return neigh;
 		}
+	}
+
+	if (secondary) {
+		struct prefix p;
+
+		pim_addr_to_prefix(&p, source_addr);
+		return pim_neighbor_find_by_secondary(ifp, &p);
 	}
 
 	return NULL;

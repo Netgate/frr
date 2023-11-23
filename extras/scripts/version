@@ -4,6 +4,8 @@
 #
 # ex: tabstop=4 shiftwidth=4 softtabstop=4 expandtab
 
+. /etc/os-release
+
 path=$( cd "$(dirname "${BASH_SOURCE}")" ; pwd -P )
 
 cd "$path"
@@ -29,6 +31,11 @@ else
         CMT=$(echo ${vstring} | cut -s -d- -f3,4)
     fi
 
+    TNSR_VER=$(git tag --merged HEAD --list 'tnsr-v*' | sort | tail -n 1)
+    if [ -n "${TNSR_VER}" ]; then
+        TNSR_VER="+${TNSR_VER}+${VERSION_CODENAME}"
+    fi
+
     if [ -n "${BUILD_NUMBER}" ]; then
         BLD="b${BUILD_NUMBER}"
     elif [ -n "${BUILD_VER_TIMESTAMP}" ]; then
@@ -38,7 +45,7 @@ fi
 
 test -z "${ADD}" && ADD=1
 
-SUFFIX="${CMT:++}${CMT}"
+SUFFIX="${TNSR_VER}${CMT:++}${CMT}"
 if [ -z "${SUFFIX}" ]; then
     SUFFIX="${BLD:++}${BLD}"
 else

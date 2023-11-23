@@ -883,33 +883,39 @@ static void rfapiImportTableFlush(struct rfapi_import_table *it)
 	for (afi = AFI_IP; afi < AFI_MAX; ++afi) {
 
 		struct agg_node *rn;
+		struct agg_table *at;
 
-		for (rn = agg_route_top(it->imported_vpn[afi]); rn;
-		     rn = agg_route_next(rn)) {
-			/*
-			 * Each route_node has:
-			 * aggregate: points to rfapi_it_extra with monitor
-			 * chain(s)
-			 * info: points to chain of bgp_path_info
-			 */
-			/* free bgp_path_info and its children */
-			rfapiBgpInfoChainFree(rn->info);
-			rn->info = NULL;
+		at = it->imported_vpn[afi];
+		if (at) {
+			for (rn = agg_route_top(at); rn;
+			     rn = agg_route_next(rn)) {
+				/*
+				 * Each route_node has:
+				 * aggregate: points to rfapi_it_extra with
+				 *     monitor chain(s)
+				 * info: points to chain of bgp_path_info
+				 */
+				/* free bgp_path_info and its children */
+				rfapiBgpInfoChainFree(rn->info);
+				rn->info = NULL;
 
-			rfapiMonitorExtraFlush(SAFI_MPLS_VPN, rn);
+				rfapiMonitorExtraFlush(SAFI_MPLS_VPN, rn);
+			}
+			agg_table_finish(at);
 		}
 
-		for (rn = agg_route_top(it->imported_encap[afi]); rn;
-		     rn = agg_route_next(rn)) {
-			/* free bgp_path_info and its children */
-			rfapiBgpInfoChainFree(rn->info);
-			rn->info = NULL;
+		if (at) {
+			at = it->imported_encap[afi];
+			for (rn = agg_route_top(at); rn;
+			     rn = agg_route_next(rn)) {
+				/* free bgp_path_info and its children */
+				rfapiBgpInfoChainFree(rn->info);
+				rn->info = NULL;
 
-			rfapiMonitorExtraFlush(SAFI_ENCAP, rn);
+				rfapiMonitorExtraFlush(SAFI_ENCAP, rn);
+			}
+			agg_table_finish(at);
 		}
-
-		agg_table_finish(it->imported_vpn[afi]);
-		agg_table_finish(it->imported_encap[afi]);
 	}
 	if (it->monitor_exterior_orphans) {
 		skiplist_free(it->monitor_exterior_orphans);
@@ -2344,8 +2350,7 @@ static void rfapiMonitorEncapDelete(struct bgp_path_info *vpn_bpi)
 }
 
 /*
- * quagga lib/thread.h says this must return int even though
- * it doesn't do anything with the return value
+ * Timer callback for withdraw
  */
 static void rfapiWithdrawTimerVPN(struct thread *t)
 {
@@ -2355,19 +2360,27 @@ static void rfapiWithdrawTimerVPN(struct thread *t)
 	const struct prefix *p;
 	struct rfapi_monitor_vpn *moved;
 	afi_t afi;
+	bool early_exit = false;
 
 	if (bgp == NULL) {
 		vnc_zlog_debug_verbose(
                    "%s: NULL BGP pointer, assume shutdown race condition!!!",
                    __func__);
-		return;
+		early_exit = true;
 	}
-	if (CHECK_FLAG(bgp->flags, BGP_FLAG_DELETE_IN_PROGRESS)) {
+	if (bgp && CHECK_FLAG(bgp->flags, BGP_FLAG_DELETE_IN_PROGRESS)) {
 		vnc_zlog_debug_verbose(
 			"%s: BGP delete in progress, assume shutdown race condition!!!",
 			__func__);
+		early_exit = true;
+	}
+
+	/* This callback is responsible for the withdraw object's memory */
+	if (early_exit) {
+		XFREE(MTYPE_RFAPI_WITHDRAW, wcb);
 		return;
 	}
+
 	assert(wcb->node);
 	assert(bpi);
 	assert(wcb->import_table);
@@ -2908,7 +2921,8 @@ static void rfapiBgpInfoFilteredImportEncap(
 
 	vnc_zlog_debug_verbose(
 		"%s: entry: %s: prefix %s/%d", __func__, action_str,
-		inet_ntop(p->family, &p->u.prefix, buf, BUFSIZ), p->prefixlen);
+		inet_ntop(p->family, &p->u.prefix, buf, sizeof(buf)),
+		p->prefixlen);
 
 	memset(&p_firstbpi_old, 0, sizeof(p_firstbpi_old));
 	memset(&p_firstbpi_new, 0, sizeof(p_firstbpi_new));
@@ -4243,10 +4257,7 @@ void bgp_rfapi_destroy(struct bgp *bgp, struct rfapi *h)
 		h->resolve_nve_nexthop = NULL;
 	}
 
-	agg_table_finish(h->it_ce->imported_vpn[AFI_IP]);
-	agg_table_finish(h->it_ce->imported_vpn[AFI_IP6]);
-	agg_table_finish(h->it_ce->imported_encap[AFI_IP]);
-	agg_table_finish(h->it_ce->imported_encap[AFI_IP6]);
+	rfapiImportTableFlush(h->it_ce);
 
 	if (h->import_mac) {
 		struct rfapi_import_table *it;

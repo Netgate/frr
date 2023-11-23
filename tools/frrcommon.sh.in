@@ -24,6 +24,7 @@ PATH=/bin:/usr/bin:/sbin:/usr/sbin
 D_PATH="@CFG_SBIN@" # /usr/lib/frr
 C_PATH="@CFG_SYSCONF@${suffix}" # /etc/frr
 V_PATH="@CFG_STATE@${suffix}" # /var/run/frr
+B_PATH="@CFG_BIN@"
 VTYSH="@vtysh_bin@" # /usr/bin/vtysh
 FRR_USER="@enable_user@" # frr
 FRR_GROUP="@enable_group@" # frr
@@ -43,6 +44,10 @@ RELOAD_SCRIPT="$D_PATH/frr-reload.py"
 #
 
 is_user_root () {
+	if [[ ! -z $FRR_NO_ROOT  &&  "${FRR_NO_ROOT}" == "yes" ]]; then
+		return 0
+	fi
+
 	[ "${EUID:-$(id -u)}" -eq 0 ] || {
 		log_failure_msg "Only users having EUID=0 can start/stop daemons"
 		return 1
@@ -202,8 +207,8 @@ daemon_stop() {
 	[ -z "$fail" -a -z "$pid" ] && fail="pid file is empty"
 	[ -n "$fail" ] || kill -0 "$pid" 2>/dev/null || fail="pid $pid not running"
 
-	if [ -n "$fail" ] && [ "$2" != "--quiet" ]; then
-		log_failure_msg "Cannot stop $dmninst: $fail"
+	if [ -n "$fail" ]; then
+		[ "$2" = "--quiet" ] || log_failure_msg "Cannot stop $dmninst: $fail"
 		return 1
 	fi
 
@@ -215,11 +220,11 @@ daemon_stop() {
 		[ $(( cnt -= 1 )) -gt 0 ] || break
 	done
 	if kill -0 "$pid" 2>/dev/null; then
-		log_failure_msg "Failed to stop $dmninst, pid $pid still running"
+		[ "$2" = "--quiet" ] || log_failure_msg "Failed to stop $dmninst, pid $pid still running"
 		still_running=1
 		return 1
 	else
-		log_success_msg "Stopped $dmninst"
+		[ "$2" = "--quiet" ] || log_success_msg "Stopped $dmninst"
 		rm -f "$pidfile"
 		return 0
 	fi
@@ -262,7 +267,7 @@ all_start() {
 }
 
 all_stop() {
-	local pids reversed need_zebra
+	local pids reversed
 
 	daemon_list enabled_daemons disabled_daemons
 	[ "$1" = "--reallyall" ] && enabled_daemons="$enabled_daemons $disabled_daemons"
@@ -272,23 +277,13 @@ all_stop() {
 		reversed="$dmninst $reversed"
 	done
 
-	# Stop zebra last, after trying to stop the other daemons
 	for dmninst in $reversed; do
-		if [ "$dmninst" = "zebra" ]; then
-			need_zebra="yes"
-			continue
-		fi
-
 		daemon_stop "$dmninst" "$1" &
 		pids="$pids $!"
 	done
 	for pid in $pids; do
 		wait $pid
 	done
-
-	if [ -n "$need_zebra" ]; then
-		daemon_stop "zebra"
-	fi
 }
 
 all_status() {

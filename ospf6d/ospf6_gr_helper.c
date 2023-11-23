@@ -49,9 +49,7 @@
 #include "ospf6d.h"
 #include "ospf6_gr.h"
 #include "lib/json.h"
-#ifndef VTYSH_EXTRACT_PL
 #include "ospf6d/ospf6_gr_helper_clippy.c"
-#endif
 
 DEFINE_MTYPE_STATIC(OSPF6D, OSPF6_GR_HELPER, "OSPF6 Graceful restart helper");
 
@@ -297,8 +295,9 @@ int ospf6_process_grace_lsa(struct ospf6 *ospf6, struct ospf6_lsa *lsa,
 
 	if (IS_DEBUG_OSPF6_GR)
 		zlog_debug(
-			"%s, Grace LSA received from  %pI4, grace interval:%u, restart reason :%s",
-			__func__, &restarter->router_id, grace_interval,
+			"%s, Grace LSA received from %s(%pI4), grace interval:%u, restart reason:%s",
+			__func__, restarter->name, &restarter->router_id,
+			grace_interval,
 			ospf6_restart_reason_desc[restart_reason]);
 
 	/* Verify Helper enabled globally */
@@ -965,22 +964,18 @@ static void show_ospf6_gr_helper_details(struct vty *vty, struct ospf6 *ospf6,
 			json, "supportedGracePeriod",
 			ospf6->ospf6_helper_cfg.supported_grace_time);
 
-#if CONFDATE > 20230131
-CPP_NOTICE("Remove JSON object commands with keys starting with capital")
-#endif
 		if (ospf6->ospf6_helper_cfg.last_exit_reason !=
-		    OSPF6_GR_HELPER_EXIT_NONE) {
-			json_object_string_add(
-				json, "LastExitReason",
-				ospf6_exit_reason_desc
-					[ospf6->ospf6_helper_cfg
-						 .last_exit_reason]);
+		    OSPF6_GR_HELPER_EXIT_NONE)
 			json_object_string_add(
 				json, "lastExitReason",
 				ospf6_exit_reason_desc
 					[ospf6->ospf6_helper_cfg
 						 .last_exit_reason]);
-		}
+
+		if (ospf6->ospf6_helper_cfg.active_restarter_cnt)
+			json_object_int_add(
+				json, "activeRestarterCnt",
+				ospf6->ospf6_helper_cfg.active_restarter_cnt);
 
 		if (OSPF6_HELPER_ENABLE_RTR_COUNT(ospf6)) {
 			struct json_object *json_rid_array =
@@ -1007,17 +1002,11 @@ CPP_NOTICE("Remove JSON object commands with keys starting with capital")
 
 				if (uj) {
 					json_object_object_get_ex(
-						json, "Neighbors",
-						&json_neighbors);
-					json_object_object_get_ex(
 						json, "neighbors",
 						&json_neighbors);
 					if (!json_neighbors) {
 						json_neighbors =
 						json_object_new_object();
-						json_object_object_add(
-							json, "Neighbors",
-							json_neighbors);
 						json_object_object_add(
 							json, "neighbors",
 							json_neighbors);

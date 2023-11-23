@@ -89,6 +89,25 @@ static int ospf_network_match_iface(const struct connected *,
 				    const struct prefix *);
 static void ospf_finish_final(struct ospf *);
 
+/* API to clean refresh queues and LSAs */
+static void ospf_free_refresh_queue(struct ospf *ospf)
+{
+	for (int i = 0; i < OSPF_LSA_REFRESHER_SLOTS; i++) {
+		struct list *list = ospf->lsa_refresh_queue.qs[i];
+		struct listnode *node, *nnode;
+		struct ospf_lsa *lsa;
+
+		if (list) {
+			for (ALL_LIST_ELEMENTS(list, node, nnode, lsa)) {
+				listnode_delete(list, lsa);
+				lsa->refresh_list = -1;
+				ospf_lsa_unlock(&lsa);
+			}
+			list_delete(&list);
+			ospf->lsa_refresh_queue.qs[i] = NULL;
+		}
+	}
+}
 #define OSPF_EXTERNAL_LSA_ORIGINATE_DELAY 1
 
 int p_spaces_compare_func(const struct p_space *a, const struct p_space *b)
@@ -790,24 +809,6 @@ static void ospf_finish_final(struct ospf *ospf)
 		ospf_area_free(area);
 	}
 
-	/* Cancel all timers. */
-	THREAD_OFF(ospf->t_read);
-	THREAD_OFF(ospf->t_write);
-	THREAD_OFF(ospf->t_spf_calc);
-	THREAD_OFF(ospf->t_ase_calc);
-	THREAD_OFF(ospf->t_maxage);
-	THREAD_OFF(ospf->t_maxage_walker);
-	THREAD_OFF(ospf->t_abr_task);
-	THREAD_OFF(ospf->t_asbr_check);
-	THREAD_OFF(ospf->t_asbr_nssa_redist_update);
-	THREAD_OFF(ospf->t_distribute_update);
-	THREAD_OFF(ospf->t_lsa_refresher);
-	THREAD_OFF(ospf->t_opaque_lsa_self);
-	THREAD_OFF(ospf->t_sr_update);
-	THREAD_OFF(ospf->t_default_routemap_timer);
-	THREAD_OFF(ospf->t_external_aggr);
-	THREAD_OFF(ospf->gr_info.t_grace_period);
-
 	LSDB_LOOP (OPAQUE_AS_LSDB(ospf), rn, lsa)
 		ospf_discard_from_db(ospf, ospf->lsdb, lsa);
 	LSDB_LOOP (EXTERNAL_LSDB(ospf), rn, lsa)
@@ -832,6 +833,10 @@ static void ospf_finish_final(struct ospf *ospf)
 			ospf_route_delete(ospf, ospf->new_table);
 		ospf_route_table_free(ospf->new_table);
 	}
+	if (ospf->oall_rtrs)
+		ospf_rtrs_free(ospf->oall_rtrs);
+	if (ospf->all_rtrs)
+		ospf_rtrs_free(ospf->all_rtrs);
 	if (ospf->old_rtrs)
 		ospf_rtrs_free(ospf->old_rtrs);
 	if (ospf->new_rtrs)
@@ -891,8 +896,27 @@ static void ospf_finish_final(struct ospf *ospf)
 		}
 	}
 
+	/* Cancel all timers. */
+	THREAD_OFF(ospf->t_read);
+	THREAD_OFF(ospf->t_write);
+	THREAD_OFF(ospf->t_spf_calc);
+	THREAD_OFF(ospf->t_ase_calc);
+	THREAD_OFF(ospf->t_maxage);
+	THREAD_OFF(ospf->t_maxage_walker);
+	THREAD_OFF(ospf->t_abr_task);
+	THREAD_OFF(ospf->t_asbr_check);
+	THREAD_OFF(ospf->t_asbr_redist_update);
+	THREAD_OFF(ospf->t_distribute_update);
+	THREAD_OFF(ospf->t_lsa_refresher);
+	THREAD_OFF(ospf->t_opaque_lsa_self);
+	THREAD_OFF(ospf->t_sr_update);
+	THREAD_OFF(ospf->t_default_routemap_timer);
+	THREAD_OFF(ospf->t_external_aggr);
+	THREAD_OFF(ospf->gr_info.t_grace_period);
+
 	route_table_finish(ospf->rt_aggr_tbl);
 
+	ospf_free_refresh_queue(ospf);
 
 	list_delete(&ospf->areas);
 	list_delete(&ospf->oi_write_q);
@@ -1202,8 +1226,9 @@ int ospf_network_unset(struct ospf *ospf, struct prefix_ipv4 *p,
 {
 	struct route_node *rn;
 	struct ospf_network *network;
-	struct listnode *node, *nnode;
+	struct listnode *node;
 	struct ospf_interface *oi;
+	struct list *ospf_oiflist = NULL;
 
 	rn = route_node_lookup(ospf->networks, (struct prefix *)p);
 	if (rn == NULL)
@@ -1218,8 +1243,9 @@ int ospf_network_unset(struct ospf *ospf, struct prefix_ipv4 *p,
 	rn->info = NULL;
 	route_unlock_node(rn); /* initial reference */
 
-	/* Find interfaces that are not configured already.  */
-	for (ALL_LIST_ELEMENTS(ospf->oiflist, node, nnode, oi)) {
+	ospf_oiflist = list_dup(ospf->oiflist);
+	/* Find interfaces that are not configured already. */
+	for (ALL_LIST_ELEMENTS_RO(ospf_oiflist, node, oi)) {
 
 		if (oi->type == OSPF_IFTYPE_VIRTUALLINK)
 			continue;
@@ -1227,12 +1253,15 @@ int ospf_network_unset(struct ospf *ospf, struct prefix_ipv4 *p,
 		ospf_network_run_subnet(ospf, oi->connected, NULL, NULL);
 	}
 
+	list_delete(&ospf_oiflist);
+
 	/* Update connected redistribute. */
 	update_redistributed(ospf, 0); /* interfaces possibly removed */
 	ospf_area_check_free(ospf, area_id);
 
 	return 1;
 }
+
 
 /* Ensure there's an OSPF instance, as "ip ospf area" enabled OSPF means
  * there might not be any 'router ospf' config.

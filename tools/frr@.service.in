@@ -2,8 +2,9 @@
 Description=FRRouting
 Documentation=https://frrouting.readthedocs.io/en/latest/setup.html
 Wants=network.target
-After=network-pre.target systemd-sysctl.service tnsr-dataplane-netns.service vpp.service
-Requires=tnsr-dataplane-netns.service vpp.service
+After=network-pre.target systemd-sysctl.service tnsr-dataplane-netns.service
+Requires=tnsr-dataplane-netns.service
+Requisite=vpp.service
 Before=network.target
 OnFailure=heartbeat-failed@%n
 
@@ -16,7 +17,7 @@ StartLimitBurst=3
 TimeoutSec=@TIMEOUT_MIN@m
 WatchdogSec=60s
 RestartSec=5
-Restart=on-abnormal
+Restart=always
 LimitNOFILE=1024
 PIDFile=@CFG_STATE@/%I/watchfrr.pid
 ExecStart=/usr/sbin/ip netns exec %I @CFG_SBIN@/frrinit.sh start %I

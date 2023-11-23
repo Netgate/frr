@@ -106,6 +106,23 @@ struct ospf6_neighbor *ospf6_area_neighbor_lookup(struct ospf6_area *area,
 	return NULL;
 }
 
+static void ospf6_neighbor_clear_ls_lists(struct ospf6_neighbor *on)
+{
+	struct ospf6_lsa *lsa;
+	struct ospf6_lsa *lsanext;
+
+	ospf6_lsdb_remove_all(on->summary_list);
+	if (on->last_ls_req) {
+		ospf6_lsa_unlock(on->last_ls_req);
+		on->last_ls_req = NULL;
+	}
+	ospf6_lsdb_remove_all(on->request_list);
+	for (ALL_LSDB(on->retrans_list, lsa, lsanext)) {
+		ospf6_decrement_retrans_count(lsa);
+		ospf6_lsdb_remove(lsa, on->retrans_list);
+	}
+}
+
 /* create ospf6_neighbor */
 struct ospf6_neighbor *ospf6_neighbor_create(uint32_t router_id,
 					     struct ospf6_interface *oi)
@@ -147,14 +164,7 @@ struct ospf6_neighbor *ospf6_neighbor_create(uint32_t router_id,
 
 void ospf6_neighbor_delete(struct ospf6_neighbor *on)
 {
-	struct ospf6_lsa *lsa, *lsanext;
-
-	ospf6_lsdb_remove_all(on->summary_list);
-	ospf6_lsdb_remove_all(on->request_list);
-	for (ALL_LSDB(on->retrans_list, lsa, lsanext)) {
-		ospf6_decrement_retrans_count(lsa);
-		ospf6_lsdb_remove(lsa, on->retrans_list);
-	}
+	ospf6_neighbor_clear_ls_lists(on);
 
 	ospf6_lsdb_remove_all(on->dbdesc_list);
 	ospf6_lsdb_remove_all(on->lsupdate_list);
@@ -178,6 +188,7 @@ void ospf6_neighbor_delete(struct ospf6_neighbor *on)
 	THREAD_OFF(on->thread_send_lsack);
 	THREAD_OFF(on->thread_exchange_done);
 	THREAD_OFF(on->thread_adj_ok);
+	THREAD_OFF(on->event_loading_done);
 
 	THREAD_OFF(on->gr_helper_info.t_grace_timer);
 
@@ -201,10 +212,12 @@ static void ospf6_neighbor_state_change(uint8_t next_state,
 
 	/* log */
 	if (IS_OSPF6_DEBUG_NEIGHBOR(STATE)) {
-		zlog_debug("Neighbor state change %s: [%s]->[%s] (%s)",
-			   on->name, ospf6_neighbor_state_str[prev_state],
-			   ospf6_neighbor_state_str[next_state],
-			   ospf6_neighbor_event_string(event));
+		zlog_debug(
+			"Neighbor state change %s (Router-ID: %pI4): [%s]->[%s] (%s)",
+			on->name, &on->router_id,
+			ospf6_neighbor_state_str[prev_state],
+			ospf6_neighbor_state_str[next_state],
+			ospf6_neighbor_event_string(event));
 	}
 
 	/* Optionally notify about adjacency changes */
@@ -214,10 +227,13 @@ static void ospf6_neighbor_state_change(uint8_t next_state,
 			   OSPF6_LOG_ADJACENCY_DETAIL)
 		|| (next_state == OSPF6_NEIGHBOR_FULL)
 		|| (next_state < prev_state)))
-		zlog_notice("AdjChg: Nbr %s: %s -> %s (%s)", on->name,
-			    ospf6_neighbor_state_str[prev_state],
-			    ospf6_neighbor_state_str[next_state],
-			    ospf6_neighbor_event_string(event));
+		zlog_notice(
+			"AdjChg: Nbr %pI4(%s) on %s: %s -> %s (%s)",
+			&on->router_id,
+			vrf_id_to_name(on->ospf6_if->interface->vrf->vrf_id),
+			on->name, ospf6_neighbor_state_str[prev_state],
+			ospf6_neighbor_state_str[next_state],
+			ospf6_neighbor_event_string(event));
 
 	if (prev_state == OSPF6_NEIGHBOR_FULL
 	    || next_state == OSPF6_NEIGHBOR_FULL) {
@@ -339,12 +355,7 @@ void negotiation_done(struct thread *thread)
 		zlog_debug("Neighbor Event %s: *NegotiationDone*", on->name);
 
 	/* clear ls-list */
-	ospf6_lsdb_remove_all(on->summary_list);
-	ospf6_lsdb_remove_all(on->request_list);
-	for (ALL_LSDB(on->retrans_list, lsa, lsanext)) {
-		ospf6_decrement_retrans_count(lsa);
-		ospf6_lsdb_remove(lsa, on->retrans_list);
-	}
+	ospf6_neighbor_clear_ls_lists(on);
 
 	/* Interface scoped LSAs */
 	for (ALL_LSDB(on->ospf6_if->lsdb, lsa, lsanext)) {
@@ -433,7 +444,8 @@ void ospf6_check_nbr_loading(struct ospf6_neighbor *on)
 	if ((on->state == OSPF6_NEIGHBOR_LOADING)
 	    || (on->state == OSPF6_NEIGHBOR_EXCHANGE)) {
 		if (on->request_list->count == 0)
-			thread_add_event(master, loading_done, on, 0, NULL);
+			thread_add_event(master, loading_done, on, 0,
+					 &on->event_loading_done);
 		else if (on->last_ls_req == NULL) {
 			THREAD_OFF(on->thread_send_lsreq);
 			thread_add_event(master, ospf6_lsreq_send, on, 0,
@@ -464,7 +476,6 @@ void loading_done(struct thread *thread)
 void adj_ok(struct thread *thread)
 {
 	struct ospf6_neighbor *on;
-	struct ospf6_lsa *lsa, *lsanext;
 
 	on = (struct ospf6_neighbor *)THREAD_ARG(thread);
 	assert(on);
@@ -486,19 +497,13 @@ void adj_ok(struct thread *thread)
 	} else if (on->state >= OSPF6_NEIGHBOR_EXSTART && !need_adjacency(on)) {
 		ospf6_neighbor_state_change(OSPF6_NEIGHBOR_TWOWAY, on,
 					    OSPF6_NEIGHBOR_EVENT_ADJ_OK);
-		ospf6_lsdb_remove_all(on->summary_list);
-		ospf6_lsdb_remove_all(on->request_list);
-		for (ALL_LSDB(on->retrans_list, lsa, lsanext)) {
-			ospf6_decrement_retrans_count(lsa);
-			ospf6_lsdb_remove(lsa, on->retrans_list);
-		}
+		ospf6_neighbor_clear_ls_lists(on);
 	}
 }
 
 void seqnumber_mismatch(struct thread *thread)
 {
 	struct ospf6_neighbor *on;
-	struct ospf6_lsa *lsa, *lsanext;
 
 	on = (struct ospf6_neighbor *)THREAD_ARG(thread);
 	assert(on);
@@ -515,12 +520,7 @@ void seqnumber_mismatch(struct thread *thread)
 	SET_FLAG(on->dbdesc_bits, OSPF6_DBDESC_MBIT);
 	SET_FLAG(on->dbdesc_bits, OSPF6_DBDESC_IBIT);
 
-	ospf6_lsdb_remove_all(on->summary_list);
-	ospf6_lsdb_remove_all(on->request_list);
-	for (ALL_LSDB(on->retrans_list, lsa, lsanext)) {
-		ospf6_decrement_retrans_count(lsa);
-		ospf6_lsdb_remove(lsa, on->retrans_list);
-	}
+	ospf6_neighbor_clear_ls_lists(on);
 
 	THREAD_OFF(on->thread_send_dbdesc);
 	on->dbdesc_seqnum++; /* Incr seqnum as per RFC2328, sec 10.3 */
@@ -532,7 +532,6 @@ void seqnumber_mismatch(struct thread *thread)
 void bad_lsreq(struct thread *thread)
 {
 	struct ospf6_neighbor *on;
-	struct ospf6_lsa *lsa, *lsanext;
 
 	on = (struct ospf6_neighbor *)THREAD_ARG(thread);
 	assert(on);
@@ -549,12 +548,7 @@ void bad_lsreq(struct thread *thread)
 	SET_FLAG(on->dbdesc_bits, OSPF6_DBDESC_MBIT);
 	SET_FLAG(on->dbdesc_bits, OSPF6_DBDESC_IBIT);
 
-	ospf6_lsdb_remove_all(on->summary_list);
-	ospf6_lsdb_remove_all(on->request_list);
-	for (ALL_LSDB(on->retrans_list, lsa, lsanext)) {
-		ospf6_decrement_retrans_count(lsa);
-		ospf6_lsdb_remove(lsa, on->retrans_list);
-	}
+	ospf6_neighbor_clear_ls_lists(on);
 
 	THREAD_OFF(on->thread_send_dbdesc);
 	on->dbdesc_seqnum++; /* Incr seqnum as per RFC2328, sec 10.3 */
@@ -567,7 +561,6 @@ void bad_lsreq(struct thread *thread)
 void oneway_received(struct thread *thread)
 {
 	struct ospf6_neighbor *on;
-	struct ospf6_lsa *lsa, *lsanext;
 
 	on = (struct ospf6_neighbor *)THREAD_ARG(thread);
 	assert(on);
@@ -582,12 +575,7 @@ void oneway_received(struct thread *thread)
 				    OSPF6_NEIGHBOR_EVENT_ONEWAY_RCVD);
 	thread_add_event(master, neighbor_change, on->ospf6_if, 0, NULL);
 
-	ospf6_lsdb_remove_all(on->summary_list);
-	ospf6_lsdb_remove_all(on->request_list);
-	for (ALL_LSDB(on->retrans_list, lsa, lsanext)) {
-		ospf6_decrement_retrans_count(lsa);
-		ospf6_lsdb_remove(lsa, on->retrans_list);
-	}
+	ospf6_neighbor_clear_ls_lists(on);
 
 	THREAD_OFF(on->thread_send_dbdesc);
 	THREAD_OFF(on->thread_send_lsreq);

@@ -30,6 +30,7 @@
 #include "command.h"
 #include "stream.h"
 #include "log.h"
+#include "network.h"
 #include "zclient.h"
 #include "bfd.h"
 #include "ldp_sync.h"
@@ -115,6 +116,9 @@ int ospf_if_get_output_cost(struct ospf_interface *oi)
 			cost = 1;
 		else if (cost > 65535)
 			cost = 65535;
+
+		if (if_is_loopback(oi->ifp))
+			cost = 0;
 	}
 
 	return cost;
@@ -274,7 +278,7 @@ struct ospf_interface *ospf_if_new(struct ospf *ospf, struct interface *ifp,
 	oi->t_ls_upd_event = NULL;
 	oi->t_ls_ack_direct = NULL;
 
-	oi->crypt_seqnum = time(NULL);
+	oi->crypt_seqnum = frr_sequence32_next();
 
 	ospf_opaque_type9_lsa_init(oi);
 
@@ -991,7 +995,6 @@ static void ospf_vl_if_delete(struct ospf_vl_data *vl_data)
 	if_delete(&ifp);
 	if (!vrf_is_enabled(vrf))
 		vrf_delete(vrf);
-	vlink_count--;
 }
 
 /* for a defined area, count the number of configured vl
@@ -1342,18 +1345,28 @@ static int ospf_ifp_create(struct interface *ifp)
 
 	if (IS_DEBUG_OSPF(zebra, ZEBRA_INTERFACE))
 		zlog_debug(
-			"Zebra: interface add %s vrf %s[%u] index %d flags %llx metric %d mtu %d speed %u",
+			"Zebra: interface add %s vrf %s[%u] index %d flags %llx metric %d mtu %d speed %u status 0x%x",
 			ifp->name, ifp->vrf->name, ifp->vrf->vrf_id,
 			ifp->ifindex, (unsigned long long)ifp->flags,
-			ifp->metric, ifp->mtu, ifp->speed);
+			ifp->metric, ifp->mtu, ifp->speed, ifp->status);
 
 	assert(ifp->info);
 
 	oii = ifp->info;
 	oii->curr_mtu = ifp->mtu;
 
-	if (IF_DEF_PARAMS(ifp)
-	    && !OSPF_IF_PARAM_CONFIGURED(IF_DEF_PARAMS(ifp), type)) {
+	/* Change ospf type param based on following
+	 * condition:
+	 * ospf type params is not set (first creation),
+	 * OR ospf param type is changed based on
+	 * link event, currently only handle for
+	 * loopback interface type, for other ospf interface,
+	 * type can be set from user config which needs to be
+	 * preserved.
+	 */
+	if (IF_DEF_PARAMS(ifp) &&
+	    (!OSPF_IF_PARAM_CONFIGURED(IF_DEF_PARAMS(ifp), type) ||
+	     if_is_loopback(ifp))) {
 		SET_IF_PARAM(IF_DEF_PARAMS(ifp), type);
 		IF_DEF_PARAMS(ifp)->type = ospf_default_iftype(ifp);
 	}

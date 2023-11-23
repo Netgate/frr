@@ -105,7 +105,7 @@ AM_CONDITIONAL([ONLY_CLIPPY], [test "$enable_clippy_only" = "yes"])
 
 # Disable portability warnings -- our automake code (in particular
 # common.am) uses some constructs specific to gmake.
-AM_INIT_AUTOMAKE([1.12 -Wno-portability foreign])
+AM_INIT_AUTOMAKE([1.12 -Wno-portability foreign tar-ustar])
 m4_ifndef([AM_SILENT_RULES], [m4_define([AM_SILENT_RULES],[])])
 AM_SILENT_RULES([yes])
 AC_CONFIG_HEADERS([config.h])
@@ -373,6 +373,8 @@ AC_C_FLAG([-fno-omit-frame-pointer])
 AC_C_FLAG([-funwind-tables])
 AC_C_FLAG([-Wall])
 AC_C_FLAG([-Wextra])
+AC_C_FLAG([-Wformat-nonliteral])
+AC_C_FLAG([-Wformat-security])
 AC_C_FLAG([-Wstrict-prototypes])
 AC_C_FLAG([-Wmissing-prototypes])
 AC_C_FLAG([-Wmissing-declarations])
@@ -660,7 +662,7 @@ AC_ARG_ENABLE([isisd],
 AC_ARG_ENABLE([pimd],
   AS_HELP_STRING([--disable-pimd], [do not build pimd]))
 AC_ARG_ENABLE([pim6d],
-  AS_HELP_STRING([--enable-pim6d], [build pim6d]))
+  AS_HELP_STRING([--disable-pim6d], [do not build pim6d]))
 AC_ARG_ENABLE([pbrd],
   AS_HELP_STRING([--disable-pbrd], [do not build pbrd]))
 AC_ARG_ENABLE([sharpd],
@@ -736,6 +738,8 @@ AC_ARG_ENABLE([cpu-time],
   AS_HELP_STRING([--disable-cpu-time], [disable cpu usage data gathering]))
 AC_ARG_ENABLE([pcreposix],
   AS_HELP_STRING([--enable-pcreposix], [enable using PCRE Posix libs for regex functions]))
+AC_ARG_ENABLE([pcre2posix],
+  AS_HELP_STRING([--enable-pcre2posix], [enable using PCRE2 Posix libs for regex functions]))
 AC_ARG_ENABLE([fpm],
   AS_HELP_STRING([--enable-fpm], [enable Forwarding Plane Manager support]))
 AC_ARG_ENABLE([werror],
@@ -1683,6 +1687,16 @@ if test "$enable_pcreposix" = "yes"; then
 fi
 AC_SUBST([HAVE_LIBPCREPOSIX])
 
+dnl ---------------------------
+dnl check system has PCRE2 regexp
+dnl ---------------------------
+if test "$enable_pcre2posix" = "yes"; then
+  AC_CHECK_LIB([pcre2-posix], [regexec], [], [
+    AC_MSG_ERROR([--enable-pcre2posix given but unable to find libpcre2-posix])
+  ])
+fi
+AC_SUBST([HAVE_LIBPCRE2_POSIX])
+
 dnl ##########################################################################
 dnl test "$enable_clippy_only" != "yes"
 fi
@@ -1777,7 +1791,7 @@ AS_IF([test "$enable_pimd" != "no"], [
   AC_DEFINE([HAVE_PIMD], [1], [pimd])
 ])
 
-AS_IF([test "$enable_pim6d" = "yes"], [
+AS_IF([test "$enable_pim6d" != "no"], [
   AC_DEFINE([HAVE_PIM6D], [1], [pim6d])
 ])
 
@@ -2090,7 +2104,7 @@ if test "$enable_rpki" = "yes"; then
 fi
 
 dnl ------------------------------------
-dnl pimd is not supported on OpenBSD and MacOS
+dnl pimd and pim6d not supported on OpenBSD and MacOS
 dnl ------------------------------------
 if test "$enable_pimd" != "no"; then
 AC_MSG_CHECKING([for pimd OS support])
@@ -2105,6 +2119,19 @@ case "$host_os" in
     ;;
   *)
     AC_MSG_RESULT([yes])
+    ;;
+esac
+fi
+
+if test "$enable_pim6d" != "no"; then
+AC_MSG_CHECKING([for pim6d OS support])
+case "$host_os" in
+  linux*)
+    AC_MSG_RESULT([yes])
+    ;;
+  *)
+    AC_MSG_RESULT([no])
+    enable_pim6d="no"
     ;;
 esac
 fi
@@ -2655,6 +2682,7 @@ AC_DEFINE_UNQUOTED([ZEBRA_SERV_PATH], ["$frr_statedir%s%s/zserv.api"], [zebra ap
 AC_DEFINE_UNQUOTED([BFDD_CONTROL_SOCKET], ["$frr_statedir%s%s/bfdd.sock"], [bfdd control socket])
 AC_DEFINE_UNQUOTED([OSPFD_GR_STATE], ["$frr_statedir%s/ospfd-gr.json"], [ospfd GR state information])
 AC_DEFINE_UNQUOTED([OSPF6D_GR_STATE], ["$frr_statedir/ospf6d-gr.json"], [ospf6d GR state information])
+AC_DEFINE_UNQUOTED([ISISD_RESTART], ["$frr_statedir%s/isid-restart.json"], [isisd restart information])
 AC_DEFINE_UNQUOTED([OSPF6_AUTH_SEQ_NUM_FILE], ["$frr_statedir/ospf6d-at-seq-no.dat"], [ospf6d AT Sequence number information])
 AC_DEFINE_UNQUOTED([DAEMON_VTY_DIR], ["$frr_statedir%s%s"], [daemon vty directory])
 AC_DEFINE_UNQUOTED([DAEMON_DB_DIR], ["$frr_statedir"], [daemon database directory])
@@ -2673,6 +2701,7 @@ AC_SUBST([vtysh_bin])
 
 CFG_SYSCONF="$sysconfdir"
 CFG_SBIN="$sbindir"
+CFG_BIN="$bindir"
 CFG_STATE="$frr_statedir"
 CFG_MODULE="$moduledir"
 CFG_YANGMODELS="$yangmodelsdir"
@@ -2680,6 +2709,7 @@ CFG_SCRIPT="$scriptdir"
 for I in 1 2 3 4 5 6 7 8 9 10; do
 	eval CFG_SYSCONF="\"$CFG_SYSCONF\""
 	eval CFG_SBIN="\"$CFG_SBIN\""
+	eval CFG_BIN="\"$CFG_BIN\""
 	eval CFG_STATE="\"$CFG_STATE\""
 	eval CFG_MODULE="\"$CFG_MODULE\""
 	eval CFG_YANGMODELS="\"$CFG_YANGMODELS\""
@@ -2687,6 +2717,7 @@ for I in 1 2 3 4 5 6 7 8 9 10; do
 done
 AC_SUBST([CFG_SYSCONF])
 AC_SUBST([CFG_SBIN])
+AC_SUBST([CFG_BIN])
 AC_SUBST([CFG_STATE])
 AC_SUBST([CFG_MODULE])
 AC_SUBST([CFG_SCRIPT])
@@ -2741,7 +2772,7 @@ AM_CONDITIONAL([BABELD], [test "$enable_babeld" != "no"])
 AM_CONDITIONAL([OSPF6D], [test "$enable_ospf6d" != "no"])
 AM_CONDITIONAL([ISISD], [test "$enable_isisd" != "no"])
 AM_CONDITIONAL([PIMD], [test "$enable_pimd" != "no"])
-AM_CONDITIONAL([PIM6D], [test "$enable_pim6d" = "yes"])
+AM_CONDITIONAL([PIM6D], [test "$enable_pim6d" != "no"])
 AM_CONDITIONAL([PBRD], [test "$enable_pbrd" != "no"])
 AM_CONDITIONAL([SHARPD], [test "$enable_sharpd" = "yes"])
 AM_CONDITIONAL([STATICD], [test "$enable_staticd" != "no"])
@@ -2770,7 +2801,6 @@ AC_CONFIG_FILES([
 	  pkgsrc/ripd.sh pkgsrc/ripngd.sh pkgsrc/zebra.sh
 	  pkgsrc/eigrpd.sh])
 
-AC_CONFIG_FILES([vtysh/extract.pl], [chmod +x vtysh/extract.pl])
 AC_CONFIG_FILES([tools/frr], [chmod +x tools/frr])
 AC_CONFIG_FILES([tools/watchfrr.sh], [chmod +x tools/watchfrr.sh])
 AC_CONFIG_FILES([tools/frrinit.sh], [chmod +x tools/frrinit.sh])

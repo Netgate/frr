@@ -40,9 +40,7 @@
 #include "zebra/zebra_rnh.h"
 #include "zebra/zebra_routemap.h"
 
-#ifndef VTYSH_EXTRACT_PL
 #include "zebra/zebra_routemap_clippy.c"
-#endif
 
 static uint32_t zebra_rmap_update_timer = ZEBRA_RMAP_DEFAULT_UPDATE_TIMER;
 static struct thread *zebra_t_rmap_update = NULL;
@@ -145,26 +143,48 @@ static void show_vrf_proto_rm(struct vty *vty, struct zebra_vrf *zvrf,
 }
 
 static void show_vrf_nht_rm(struct vty *vty, struct zebra_vrf *zvrf,
-			    int af_type)
+			    int af_type, json_object *json)
 {
 	int i;
 
-	vty_out(vty, "Protocol                  : route-map\n");
-	vty_out(vty, "-------------------------------------\n");
-
-	for (i = 0; i < ZEBRA_ROUTE_MAX; i++) {
-		if (NHT_RM_NAME(zvrf, af_type, i))
-			vty_out(vty, "%-24s  : %-10s\n", zebra_route_string(i),
-				NHT_RM_NAME(zvrf, af_type, i));
-		else
-			vty_out(vty, "%-24s  : none\n", zebra_route_string(i));
+	if (!json) {
+		vty_out(vty, "Protocol                  : route-map\n");
+		vty_out(vty, "-------------------------------------\n");
 	}
 
-	if (NHT_RM_NAME(zvrf, af_type, i))
-		vty_out(vty, "%-24s  : %-10s\n", "any",
-			NHT_RM_NAME(zvrf, af_type, i));
-	else
-		vty_out(vty, "%-24s  : none\n", "any");
+	for (i = 0; i < ZEBRA_ROUTE_MAX; i++) {
+		if (json) {
+			if (NHT_RM_NAME(zvrf, af_type, i))
+				json_object_string_add(
+					json, zebra_route_string(i),
+					NHT_RM_NAME(zvrf, af_type, i));
+			else
+				json_object_string_add(
+					json, zebra_route_string(i), "none");
+		} else {
+			if (NHT_RM_NAME(zvrf, af_type, i))
+				vty_out(vty, "%-24s  : %-10s\n",
+					zebra_route_string(i),
+					NHT_RM_NAME(zvrf, af_type, i));
+			else
+				vty_out(vty, "%-24s  : none\n",
+					zebra_route_string(i));
+		}
+	}
+
+	if (json) {
+		if (NHT_RM_NAME(zvrf, af_type, i))
+			json_object_string_add(json, "any",
+					       NHT_RM_NAME(zvrf, af_type, i));
+		else
+			json_object_string_add(json, "any", "none");
+	} else {
+		if (NHT_RM_NAME(zvrf, af_type, i))
+			vty_out(vty, "%-24s  : %-10s\n", "any",
+				NHT_RM_NAME(zvrf, af_type, i));
+		else
+			vty_out(vty, "%-24s  : none\n", "any");
+	}
 }
 
 static int show_proto_rm(struct vty *vty, int af_type, const char *vrf_all,
@@ -200,34 +220,77 @@ static int show_proto_rm(struct vty *vty, int af_type, const char *vrf_all,
 }
 
 static int show_nht_rm(struct vty *vty, int af_type, const char *vrf_all,
-		       const char *vrf_name)
+		       const char *vrf_name, bool use_json)
 {
 	struct zebra_vrf *zvrf;
+	json_object *json = NULL;
+	json_object *json_vrfs = NULL;
+
+	if (use_json) {
+		json = json_object_new_object();
+		json_vrfs = json_object_new_object();
+		json_object_string_add(json, "afi",
+				       (af_type == AFI_IP) ? "ipv4" : "ipv6");
+	}
 
 	if (vrf_all) {
 		struct vrf *vrf;
+
+		if (use_json)
+			json_object_object_add(json, "vrfs", json_vrfs);
 
 		RB_FOREACH (vrf, vrf_name_head, &vrfs_by_name) {
 			zvrf = (struct zebra_vrf *)vrf->info;
 			if (zvrf == NULL)
 				continue;
 
-			vty_out(vty, "VRF: %s\n", zvrf->vrf->name);
-			show_vrf_nht_rm(vty, zvrf, af_type);
+			if (use_json) {
+				json_object *json_proto = NULL;
+				json_object *json_vrf = NULL;
+				json_vrf = json_object_new_object();
+				json_object_object_add(
+					json_vrfs, zvrf->vrf->name, json_vrf);
+				json_proto = json_object_new_object();
+				json_object_object_add(json_vrf, "protocols",
+						       json_proto);
+				show_vrf_nht_rm(vty, zvrf, af_type, json_proto);
+			} else {
+				vty_out(vty, "VRF: %s\n", zvrf->vrf->name);
+				show_vrf_nht_rm(vty, zvrf, af_type, NULL);
+			}
 		}
 	} else {
+		json_object *json_proto = NULL;
+		json_object *json_vrf = NULL;
 		vrf_id_t vrf_id = VRF_DEFAULT;
 
 		if (vrf_name)
 			VRF_GET_ID(vrf_id, vrf_name, false);
 
 		zvrf = zebra_vrf_lookup_by_id(vrf_id);
-		if (!zvrf)
+		if (!zvrf) {
+			json_object_free(json);
+			json_object_free(json_vrfs);
 			return CMD_SUCCESS;
+		}
 
-		vty_out(vty, "VRF: %s\n", zvrf->vrf->name);
-		show_vrf_nht_rm(vty, zvrf, af_type);
+		if (use_json) {
+			json_object_object_add(json, "vrfs", json_vrfs);
+			json_vrf = json_object_new_object();
+			json_object_object_add(json_vrfs, zvrf->vrf->name,
+					       json_vrf);
+			json_proto = json_object_new_object();
+			json_object_object_add(json_vrf, "protocols",
+					       json_proto);
+			show_vrf_nht_rm(vty, zvrf, af_type, json_proto);
+		} else {
+			vty_out(vty, "VRF: %s\n", zvrf->vrf->name);
+			show_vrf_nht_rm(vty, zvrf, af_type, NULL);
+		}
 	}
+
+	if (use_json)
+		vty_json(vty, json);
 
 	return CMD_SUCCESS;
 }
@@ -319,7 +382,7 @@ static int ip_nht_rm_add(struct zebra_vrf *zvrf, const char *rmap, int rtype,
 	route_map_counter_increment(NHT_RM_MAP(zvrf, afi, rtype));
 
 	if (NHT_RM_MAP(zvrf, afi, rtype))
-		zebra_evaluate_rnh(zvrf, AFI_IP, 1, NULL, SAFI_UNICAST);
+		zebra_evaluate_rnh(zvrf, afi, 1, NULL, SAFI_UNICAST);
 
 	return CMD_SUCCESS;
 }
@@ -340,7 +403,7 @@ static int ip_nht_rm_del(struct zebra_vrf *zvrf, const char *rmap, int rtype,
 					zvrf->vrf->vrf_id, rtype);
 			NHT_RM_MAP(zvrf, afi, rtype) = NULL;
 
-			zebra_evaluate_rnh(zvrf, AFI_IP, 1, NULL, SAFI_UNICAST);
+			zebra_evaluate_rnh(zvrf, afi, 1, NULL, SAFI_UNICAST);
 		}
 		XFREE(MTYPE_ROUTE_MAP_NAME, NHT_RM_NAME(zvrf, afi, rtype));
 	}
@@ -856,14 +919,19 @@ DEFPY_YANG (no_ip_protocol_nht_rmap,
 
 DEFPY_YANG (show_ip_protocol_nht,
        show_ip_protocol_nht_cmd,
-       "show ip nht route-map [vrf <NAME$vrf_name|all$vrf_all>]",
+       "show ip nht route-map [vrf <NAME$vrf_name|all$vrf_all>] [json]",
        SHOW_STR
        IP_STR
-       "IP nexthop tracking table\n"
-       "IP Next Hop tracking filtering status\n"
-       VRF_FULL_CMD_HELP_STR)
+       "IPv4 nexthop tracking table\n"
+       "IPv4 Next Hop tracking filtering status\n"
+       VRF_CMD_HELP_STR
+       "All VRFs\n"
+       JSON_STR)
 {
-	int ret = show_nht_rm(vty, AFI_IP, vrf_all, vrf_name);
+	int ret;
+	bool uj = use_json(argc, argv);
+
+	ret = show_nht_rm(vty, AFI_IP, vrf_all, vrf_name, uj);
 
 	return ret;
 }
@@ -938,14 +1006,19 @@ DEFPY_YANG (no_ipv6_protocol_nht_rmap,
 
 DEFPY_YANG (show_ipv6_protocol_nht,
        show_ipv6_protocol_nht_cmd,
-       "show ipv6 nht route-map [vrf <NAME$vrf_name|all$vrf_all>]",
+       "show ipv6 nht route-map [vrf <NAME$vrf_name|all$vrf_all>] [json]",
        SHOW_STR
        IP6_STR
-       "Next Hop filtering status\n"
-       "Route-map\n"
-       VRF_FULL_CMD_HELP_STR)
+       "IPv6 nexthop tracking table\n"
+       "IPv6 Next Hop tracking filtering status\n"
+       VRF_CMD_HELP_STR
+       "All VRFs\n"
+       JSON_STR)
 {
-	int ret = show_nht_rm(vty, AFI_IP6, vrf_all, vrf_name);
+	int ret;
+	bool uj = use_json(argc, argv);
+
+	ret = show_nht_rm(vty, AFI_IP6, vrf_all, vrf_name, uj);
 
 	return ret;
 }
@@ -1619,7 +1692,7 @@ static void zebra_nht_rm_update(const char *rmap)
 						afi_ipv6 = 1;
 
 						zebra_evaluate_rnh(
-							zvrf, AFI_IP, 1, NULL,
+							zvrf, AFI_IP6, 1, NULL,
 							SAFI_UNICAST);
 					}
 				}
@@ -1818,6 +1891,23 @@ static void zebra_route_map_event(const char *rmap_name)
 		zebra_route_map_mark_update(rmap_name);
 
 	route_map_notify_dependencies(rmap_name, RMAP_EVENT_MATCH_ADDED);
+}
+
+void zebra_routemap_vrf_delete(struct zebra_vrf *zvrf)
+{
+	afi_t afi;
+	uint8_t type;
+
+	for (afi = AFI_IP; afi < AFI_MAX; afi++) {
+		for (type = 0; type <= ZEBRA_ROUTE_MAX; type++) {
+			if (PROTO_RM_NAME(zvrf, afi, type))
+				XFREE(MTYPE_ROUTE_MAP_NAME,
+				      PROTO_RM_NAME(zvrf, afi, type));
+			if (NHT_RM_NAME(zvrf, afi, type))
+				XFREE(MTYPE_ROUTE_MAP_NAME,
+				      NHT_RM_NAME(zvrf, afi, type));
+		}
+	}
 }
 
 /* ip protocol configuration write function */

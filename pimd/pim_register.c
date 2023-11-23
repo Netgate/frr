@@ -36,7 +36,6 @@
 #include "pim_rp.h"
 #include "pim_register.h"
 #include "pim_upstream.h"
-#include "pim_br.h"
 #include "pim_rpf.h"
 #include "pim_oil.h"
 #include "pim_zebra.h"
@@ -508,6 +507,7 @@ int pim_register_recv(struct interface *ifp, pim_addr dest_addr,
 	struct pim_interface *pim_ifp = ifp->info;
 	struct pim_instance *pim = pim_ifp->pim;
 	pim_addr rp_addr;
+	struct pim_rpf *rpg;
 
 	if (pim_ifp->pim_passive_enable) {
 		if (PIM_DEBUG_PIM_PACKETS)
@@ -616,7 +616,14 @@ int pim_register_recv(struct interface *ifp, pim_addr dest_addr,
 		}
 	}
 
-	rp_addr = (RP(pim, sg.grp))->rpf_addr;
+	rpg = RP(pim, sg.grp);
+	if (!rpg) {
+		zlog_warn("%s: Received Register Message %pSG from %pPA on %s where the RP could not be looked up",
+			  __func__, &sg, &src_addr, ifp->name);
+		return 0;
+	}
+
+	rp_addr = rpg->rpf_addr;
 	if (i_am_rp && (!pim_addr_cmp(dest_addr, rp_addr))) {
 		sentRegisterStop = 0;
 
@@ -643,24 +650,13 @@ int pim_register_recv(struct interface *ifp, pim_addr dest_addr,
 		}
 
 		if (*bits & PIM_REGISTER_BORDER_BIT) {
-			pim_addr pimbr = pim_br_get_pmbr(&sg);
 			if (PIM_DEBUG_PIM_PACKETS)
 				zlog_debug(
-					"%s: Received Register message with Border bit set",
+					"%s: Received Register message with Border bit set, ignoring",
 					__func__);
 
-			if (pim_addr_is_any(pimbr))
-				pim_br_set_pmbr(&sg, src_addr);
-			else if (pim_addr_cmp(src_addr, pimbr)) {
-				pim_register_stop_send(ifp, &sg, dest_addr,
-						       src_addr);
-				if (PIM_DEBUG_PIM_PACKETS)
-					zlog_debug(
-						"%s: Sending register-Stop to %s and dropping mr. packet",
-						__func__, "Sender");
 				/* Drop Packet Silently */
-				return 0;
-			}
+			return 0;
 		}
 
 		struct pim_upstream *upstream = pim_upstream_find(pim, &sg);

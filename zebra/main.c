@@ -213,6 +213,8 @@ static void sigint(void)
 	 */
 	zebra_routemap_finish();
 
+	rib_update_finish();
+
 	list_delete(&zrouter.client_list);
 
 	/* Indicate that all new dplane work has been enqueued. When that
@@ -230,11 +232,11 @@ void zebra_finalize(struct thread *dummy)
 {
 	zlog_info("Zebra final shutdown");
 
-	/* Final shutdown of ns resources */
-	ns_walk_func(zebra_ns_final_shutdown, NULL, NULL);
-
 	/* Stop dplane thread and finish any cleanup */
 	zebra_dplane_shutdown();
+
+	/* Final shutdown of ns resources */
+	ns_walk_func(zebra_ns_final_shutdown, NULL, NULL);
 
 	zebra_router_terminate();
 

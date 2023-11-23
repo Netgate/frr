@@ -520,6 +520,8 @@ static const char *ecommunity_gettoken(const char *str,
 	uint8_t ecomm_type;
 	char buf[INET_ADDRSTRLEN + 1];
 	struct ecommunity_val *eval = (struct ecommunity_val *)eval_ptr;
+	uint64_t tmp_as = 0;
+
 	/* Skip white space. */
 	while (isspace((unsigned char)*p)) {
 		p++;
@@ -598,9 +600,18 @@ static const char *ecommunity_gettoken(const char *str,
 			goto error;
 
 		endptr++;
-		as = strtoul(endptr, &endptr, 10);
-		if (*endptr != '\0' || as == BGP_AS4_MAX)
+		errno = 0;
+		tmp_as = strtoul(endptr, &endptr, 10);
+		/* 'unsigned long' is a uint64 on 64-bit
+		 * systems, and uint32 on 32-bit systems. So for
+		 * 64-bit we can just directly check the value
+		 * against BGP_AS4_MAX/UINT32_MAX, and for
+		 * 32-bit we can check for errno (set to ERANGE
+		 * upon overflow).
+		 */
+		if (*endptr != '\0' || tmp_as == BGP_AS4_MAX || errno)
 			goto error;
+		as = (as_t)tmp_as;
 
 		memcpy(buf, p, (limit - p));
 		buf[limit - p] = '\0';
@@ -642,9 +653,19 @@ static const char *ecommunity_gettoken(const char *str,
 					goto error;
 			} else {
 				/* ASN */
-				as = strtoul(buf, &endptr, 10);
-				if (*endptr != '\0' || as == BGP_AS4_MAX)
+				errno = 0;
+				tmp_as = strtoul(buf, &endptr, 10);
+				/* 'unsigned long' is a uint64 on 64-bit
+				 * systems, and uint32 on 32-bit systems. So for
+				 * 64-bit we can just directly check the value
+				 * against BGP_AS4_MAX/UINT32_MAX, and for
+				 * 32-bit we can check for errno (set to ERANGE
+				 * upon overflow).
+				 */
+				if (*endptr != '\0' || tmp_as > BGP_AS4_MAX ||
+				    errno)
 					goto error;
+				as = (as_t)tmp_as;
 			}
 		} else if (*p == '.') {
 			if (separator)
@@ -699,6 +720,7 @@ static struct ecommunity *ecommunity_str2com_internal(const char *str, int type,
 	while ((str = ecommunity_gettoken(str, (void *)&eval, &token))) {
 		switch (token) {
 		case ecommunity_token_rt:
+		case ecommunity_token_rt6:
 		case ecommunity_token_soo:
 			if (!keyword_included || keyword) {
 				if (ecom)
@@ -746,7 +768,6 @@ static struct ecommunity *ecommunity_str2com_internal(const char *str, int type,
 						    ecom->unit_size);
 			break;
 		case ecommunity_token_unknown:
-		default:
 			if (ecom)
 				ecommunity_free(&ecom);
 			return NULL;
@@ -988,13 +1009,8 @@ char *ecommunity_ecom2str(struct ecommunity *ecom, int format, int filter)
 				    type == ECOMMUNITY_ENCODE_IP) {
 					struct in_addr *ipv4 =
 						(struct in_addr *)pnt;
-					char ipv4str[INET_ADDRSTRLEN];
-
-					inet_ntop(AF_INET, ipv4,
-						  ipv4str,
-						  INET_ADDRSTRLEN);
-					snprintf(encbuf, sizeof(encbuf),
-						 "NH:%s:%d", ipv4str, pnt[5]);
+					snprintfrr(encbuf, sizeof(encbuf),
+						   "NH:%pI4:%d", ipv4, pnt[5]);
 				} else if (sub_type ==
 					   ECOMMUNITY_LINK_BANDWIDTH &&
 					   type == ECOMMUNITY_ENCODE_AS) {

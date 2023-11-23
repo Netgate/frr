@@ -178,6 +178,17 @@ static int zebra_ns_delete(char *name)
 			if_down(ifp);
 		}
 
+		if (IS_ZEBRA_IF_BOND(ifp))
+			zebra_l2if_update_bond(ifp, false);
+		if (IS_ZEBRA_IF_BOND_SLAVE(ifp))
+			zebra_l2if_update_bond_slave(ifp, IFINDEX_INTERNAL,
+						     false);
+		/* Special handling for bridge or VxLAN interfaces. */
+		if (IS_ZEBRA_IF_BRIDGE(ifp))
+			zebra_l2_bridge_del(ifp);
+		else if (IS_ZEBRA_IF_VXLAN(ifp))
+			zebra_l2_vxlanif_del(ifp);
+
 		UNSET_FLAG(ifp->flags, IFF_UP);
 		if_delete_update(&ifp);
 	}
@@ -288,6 +299,7 @@ static void zebra_ns_notify_read(struct thread *t)
 	struct inotify_event *event;
 	char buf[BUFSIZ];
 	ssize_t len;
+	char event_name[NAME_MAX + 1];
 
 	thread_add_read(zrouter.master, zebra_ns_notify_read, NULL, fd_monitor,
 			&zebra_netns_notify_current);
@@ -320,11 +332,41 @@ static void zebra_ns_notify_read(struct thread *t)
 			break;
 		}
 
+		/*
+		 * Coverity Scan extra steps to satisfy `STRING_NULL` warning:
+		 * - Make sure event name is present by checking `len != 0`
+		 * - Event name length must be at most `NAME_MAX + 1`
+		 *   (null byte inclusive)
+		 * - Copy event name to a stack buffer to make sure it
+		 *   includes the null byte. `event->name` includes at least
+		 *   one null byte and `event->len` accounts the null bytes,
+		 *   so the operation after `memcpy` will look like a
+		 *   truncation to satisfy Coverity Scan null byte ending.
+		 *
+		 *   Example:
+		 *   if `event->name` is `abc\0` and `event->len` is 4,
+		 *   `memcpy` will copy the 4 bytes and then we set the
+		 *   null byte again at the position 4.
+		 *
+		 * For more information please read inotify(7) man page.
+		 */
+		if (event->len == 0)
+			continue;
+
+		if (event->len > sizeof(event_name)) {
+			flog_err(EC_ZEBRA_NS_NOTIFY_READ,
+				 "NS notify error: unexpected big event name");
+			break;
+		}
+
+		memcpy(event_name, event->name, event->len);
+		event_name[event->len - 1] = 0;
+
 		if (event->mask & IN_DELETE) {
-			zebra_ns_delete(event->name);
+			zebra_ns_delete(event_name);
 			continue;
 		}
-		netnspath = ns_netns_pathname(NULL, event->name);
+		netnspath = ns_netns_pathname(NULL, event_name);
 		if (!netnspath)
 			continue;
 		netnspath = XSTRDUP(MTYPE_NETNS_MISC, netnspath);

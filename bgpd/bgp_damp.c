@@ -327,7 +327,8 @@ void bgp_damp_info_free(struct bgp_damp_info *bdi, int withdraw, afi_t afi,
 	XFREE(MTYPE_BGP_DAMP_INFO, bdi);
 }
 
-static void bgp_damp_parameter_set(int hlife, int reuse, int sup, int maxsup,
+static void bgp_damp_parameter_set(time_t hlife, unsigned int reuse,
+				   unsigned int sup, time_t maxsup,
 				   struct bgp_damp_config *bdc)
 {
 	double reuse_max_ratio;
@@ -572,7 +573,7 @@ void bgp_damp_info_vty(struct vty *vty, struct bgp_path_info *path, afi_t afi,
 {
 	struct bgp_damp_info *bdi;
 	time_t t_now, t_diff;
-	char timebuf[BGP_UPTIME_LEN];
+	char timebuf[BGP_UPTIME_LEN] = {};
 	int penalty;
 	struct bgp_damp_config *bdc = &damp[afi][safi];
 
@@ -584,7 +585,9 @@ void bgp_damp_info_vty(struct vty *vty, struct bgp_path_info *path, afi_t afi,
 
 	/* If dampening is not enabled or there is no dampening information,
 	   return immediately.  */
-	if (!bdc || !bdi)
+	if (!CHECK_FLAG(path->peer->bgp->af_flags[afi][safi],
+			BGP_CONFIG_DAMPENING) ||
+	    !bdi)
 		return;
 
 	/* Calculate new penalty.  */
@@ -638,7 +641,9 @@ const char *bgp_damp_reuse_time_vty(struct vty *vty, struct bgp_path_info *path,
 
 	/* If dampening is not enabled or there is no dampening information,
 	   return immediately.  */
-	if (!bdc || !bdi)
+	if (!CHECK_FLAG(path->peer->bgp->af_flags[afi][safi],
+			BGP_CONFIG_DAMPENING) ||
+	    !bdi)
 		return NULL;
 
 	/* Calculate new penalty.  */
