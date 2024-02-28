@@ -1,22 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /* PIM support for VxLAN BUM flooding
  *
  * Copyright (C) 2019 Cumulus Networks, Inc.
- *
- * This file is part of FRR.
- *
- * FRR is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2, or (at your option) any
- * later version.
- *
- * FRR is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 #include <zebra.h>
@@ -46,6 +31,41 @@ struct pim_vxlan vxlan_info, *pim_vxlan_p = &vxlan_info;
 static void pim_vxlan_work_timer_setup(bool start);
 static void pim_vxlan_set_peerlink_rif(struct pim_instance *pim,
 			struct interface *ifp);
+
+/*
+ * The rp info has gone from no path to having a
+ * path.  Let's immediately send out the null pim register
+ * as that else we will be sitting for up to 60 seconds waiting
+ * for it too pop.  Which is not cool.
+ */
+void pim_vxlan_rp_info_is_alive(struct pim_instance *pim,
+				struct pim_rpf *rpg_changed)
+{
+	struct listnode *listnode;
+	struct pim_vxlan_sg *vxlan_sg;
+	struct pim_rpf *rpg;
+
+	/*
+	 * No vxlan here, move along, nothing to see
+	 */
+	if (!vxlan_info.work_list)
+		return;
+
+	for (listnode = vxlan_info.work_list->head; listnode;
+	     listnode = listnode->next) {
+		vxlan_sg = listgetdata(listnode);
+
+		rpg = RP(pim, vxlan_sg->up->sg.grp);
+
+		/*
+		 * If the rp is the same we should send
+		 */
+		if (rpg == rpg_changed) {
+			zlog_debug("VXLAN RP INFO is alive sending");
+			pim_null_register_send(vxlan_sg->up);
+		}
+	}
+}
 
 /*************************** vxlan work list **********************************
  * A work list is maintained for staggered generation of pim null register
@@ -81,6 +101,7 @@ static void pim_vxlan_do_reg_work(void)
 
 	for (; listnode; listnode = listnode->next) {
 		vxlan_sg = (struct pim_vxlan_sg *)listnode->data;
+
 		if (vxlan_sg->up && (vxlan_sg->up->reg_state == PIM_REG_JOIN)) {
 			if (PIM_DEBUG_VXLAN)
 				zlog_debug("vxlan SG %s periodic NULL register",
@@ -184,7 +205,7 @@ void pim_vxlan_update_sg_reg_state(struct pim_instance *pim,
 		pim_vxlan_del_work(vxlan_sg);
 }
 
-static void pim_vxlan_work_timer_cb(struct thread *t)
+static void pim_vxlan_work_timer_cb(struct event *t)
 {
 	pim_vxlan_do_reg_work();
 	pim_vxlan_work_timer_setup(true /* start */);
@@ -193,10 +214,10 @@ static void pim_vxlan_work_timer_cb(struct thread *t)
 /* global 1second timer used for periodic processing */
 static void pim_vxlan_work_timer_setup(bool start)
 {
-	THREAD_OFF(vxlan_info.work_timer);
+	EVENT_OFF(vxlan_info.work_timer);
 	if (start)
-		thread_add_timer(router->master, pim_vxlan_work_timer_cb, NULL,
-			PIM_VXLAN_WORK_TIME, &vxlan_info.work_timer);
+		event_add_timer(router->master, pim_vxlan_work_timer_cb, NULL,
+				PIM_VXLAN_WORK_TIME, &vxlan_info.work_timer);
 }
 
 /**************************** vxlan origination mroutes ***********************
@@ -240,7 +261,7 @@ static void pim_vxlan_orig_mr_up_del(struct pim_vxlan_sg *vxlan_sg)
 		 * if there are no other references.
 		 */
 		if (PIM_UPSTREAM_FLAG_TEST_SRC_STREAM(up->flags)) {
-			THREAD_OFF(up->t_ka_timer);
+			EVENT_OFF(up->t_ka_timer);
 			up = pim_upstream_keep_alive_timer_proc(up);
 		} else {
 			/* this is really unexpected as we force vxlan
@@ -1187,12 +1208,8 @@ void pim_vxlan_init(struct pim_instance *pim)
 
 void pim_vxlan_exit(struct pim_instance *pim)
 {
-	if (pim->vxlan.sg_hash) {
-		hash_clean(pim->vxlan.sg_hash,
-			   (void (*)(void *))pim_vxlan_sg_del_item);
-		hash_free(pim->vxlan.sg_hash);
-		pim->vxlan.sg_hash = NULL;
-	}
+	hash_clean_and_free(&pim->vxlan.sg_hash,
+			    (void (*)(void *))pim_vxlan_sg_del_item);
 }
 
 void pim_vxlan_terminate(void)

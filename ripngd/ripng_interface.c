@@ -1,22 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Interface related function for RIPng.
  * Copyright (C) 1998 Kunihiro Ishiguro
- *
- * This file is part of GNU Zebra.
- *
- * GNU Zebra is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2, or (at your option) any
- * later version.
- *
- * GNU Zebra is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; see the file COPYING; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #include <zebra.h>
@@ -32,7 +17,7 @@
 #include "zclient.h"
 #include "command.h"
 #include "agg_table.h"
-#include "thread.h"
+#include "frrevent.h"
 #include "privs.h"
 #include "vrf.h"
 #include "lib_errors.h"
@@ -151,8 +136,8 @@ static int ripng_if_ipv6_lladdress_check(struct interface *ifp)
 		struct prefix *p;
 		p = connected->address;
 
-		if ((p->family == AF_INET6)
-		    && IN6_IS_ADDR_LINKLOCAL(&p->u.prefix6))
+		if ((p->family == AF_INET6) &&
+		    IN6_IS_ADDR_LINKLOCAL(&p->u.prefix6))
 			count++;
 	}
 
@@ -170,7 +155,7 @@ static int ripng_if_down(struct interface *ifp)
 
 	ri = ifp->info;
 
-	THREAD_OFF(ri->t_wakeup);
+	EVENT_OFF(ri->t_wakeup);
 
 	ripng = ri->ripng;
 
@@ -279,31 +264,6 @@ static int ripng_ifp_destroy(struct interface *ifp)
 	return 0;
 }
 
-/* VRF update for an interface. */
-int ripng_interface_vrf_update(ZAPI_CALLBACK_ARGS)
-{
-	struct interface *ifp;
-	vrf_id_t new_vrf_id;
-
-	ifp = zebra_interface_vrf_update_read(zclient->ibuf, vrf_id,
-					      &new_vrf_id);
-	if (!ifp)
-		return 0;
-
-	if (IS_RIPNG_DEBUG_ZEBRA) {
-		struct vrf *nvrf = vrf_lookup_by_id(new_vrf_id);
-
-		zlog_debug("interface %s VRF change vrf %s(%u) new vrf %s(%u)",
-			   ifp->name, ifp->vrf->name, vrf_id, VRF_LOGNAME(nvrf),
-			   new_vrf_id);
-	}
-
-	if_update_to_new_vrf(ifp, new_vrf_id);
-	ripng_interface_sync(ifp);
-
-	return 0;
-}
-
 void ripng_interface_clean(struct ripng *ripng)
 {
 	struct interface *ifp;
@@ -316,7 +276,7 @@ void ripng_interface_clean(struct ripng *ripng)
 		ri->enable_interface = 0;
 		ri->running = 0;
 
-		THREAD_OFF(ri->t_wakeup);
+		EVENT_OFF(ri->t_wakeup);
 	}
 }
 
@@ -601,13 +561,13 @@ int ripng_enable_if_delete(struct ripng *ripng, const char *ifname)
 }
 
 /* Wake up interface. */
-static void ripng_interface_wakeup(struct thread *t)
+static void ripng_interface_wakeup(struct event *t)
 {
 	struct interface *ifp;
 	struct ripng_interface *ri;
 
 	/* Get interface. */
-	ifp = THREAD_ARG(t);
+	ifp = EVENT_ARG(t);
 
 	ri = ifp->info;
 
@@ -649,9 +609,9 @@ static void ripng_connect_set(struct interface *ifp, int set)
 		if (set) {
 			/* Check once more whether this prefix is within a
 			 * "network IF_OR_PREF" one */
-			if ((ripng_enable_if_lookup(ripng, connected->ifp->name)
-			     >= 0)
-			    || (ripng_enable_network_lookup2(connected) >= 0))
+			if ((ripng_enable_if_lookup(
+				     ripng, connected->ifp->name) >= 0) ||
+			    (ripng_enable_network_lookup2(connected) >= 0))
 				ripng_redistribute_add(
 					ripng, ZEBRA_ROUTE_CONNECT,
 					RIPNG_ROUTE_INTERFACE, &address,
@@ -713,8 +673,8 @@ void ripng_enable_apply(struct interface *ifp)
 		zlog_info("RIPng INTERFACE ON %s", ifp->name);
 
 		/* Add interface wake up thread. */
-		thread_add_timer(master, ripng_interface_wakeup, ifp, 1,
-				 &ri->t_wakeup);
+		event_add_timer(master, ripng_interface_wakeup, ifp, 1,
+				&ri->t_wakeup);
 
 		ripng_connect_set(ifp, 1);
 	} else {

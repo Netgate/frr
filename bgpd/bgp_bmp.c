@@ -1,20 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /* BMP support.
  * Copyright (C) 2018 Yasuhiro Ohara
  * Copyright (C) 2019 David Lamparter for NetDEF, Inc.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the Free
- * Software Foundation; either version 2 of the License, or (at your option)
- * any later version.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; see the file COPYING; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #include <zebra.h>
@@ -24,7 +11,7 @@
 #include "sockunion.h"
 #include "command.h"
 #include "prefix.h"
-#include "thread.h"
+#include "frrevent.h"
 #include "linklist.h"
 #include "queue.h"
 #include "pullwr.h"
@@ -277,7 +264,7 @@ static void bmp_per_peer_hdr(struct stream *s, struct peer *peer,
 	stream_putc(s, BMP_PEER_TYPE_GLOBAL_INSTANCE);
 
 	/* Peer Flags */
-	if (peer->su.sa.sa_family == AF_INET6)
+	if (peer->connection->su.sa.sa_family == AF_INET6)
 		SET_FLAG(flags, BMP_PEER_FLAG_V);
 	else
 		UNSET_FLAG(flags, BMP_PEER_FLAG_V);
@@ -288,13 +275,13 @@ static void bmp_per_peer_hdr(struct stream *s, struct peer *peer,
 	stream_put(s, &peer_distinguisher[0], 8);
 
 	/* Peer Address */
-	if (peer->su.sa.sa_family == AF_INET6)
-		stream_put(s, &peer->su.sin6.sin6_addr, 16);
-	else if (peer->su.sa.sa_family == AF_INET) {
+	if (peer->connection->su.sa.sa_family == AF_INET6)
+		stream_put(s, &peer->connection->su.sin6.sin6_addr, 16);
+	else if (peer->connection->su.sa.sa_family == AF_INET) {
 		stream_putl(s, 0);
 		stream_putl(s, 0);
 		stream_putl(s, 0);
-		stream_put_in_addr(s, &peer->su.sin.sin_addr);
+		stream_put_in_addr(s, &peer->connection->su.sin.sin_addr);
 	} else {
 		stream_putl(s, 0);
 		stream_putl(s, 0);
@@ -383,7 +370,7 @@ static struct stream *bmp_peerstate(struct peer *peer, bool down)
 #define BGP_BMP_MAX_PACKET_SIZE	1024
 	s = stream_new(BGP_MAX_PACKET_SIZE);
 
-	if (peer_established(peer) && !down) {
+	if (peer_established(peer->connection) && !down) {
 		struct bmp_bgp_peer *bbpeer;
 
 		bmp_common_hdr(s, BMP_VERSION_3,
@@ -716,7 +703,7 @@ static int bmp_peer_status_changed(struct peer *peer)
 	if (!bmpbgp)
 		return 0;
 
-	if (peer->status == Deleted) {
+	if (peer->connection->status == Deleted) {
 		bbpeer = bmp_bgp_peer_find(peer->qobj_node.nid);
 		if (bbpeer) {
 			XFREE(MTYPE_BMP_OPEN, bbpeer->open_rx);
@@ -728,10 +715,12 @@ static int bmp_peer_status_changed(struct peer *peer)
 	}
 
 	/* Check if this peer just went to Established */
-	if ((peer->ostatus != OpenConfirm) || !(peer_established(peer)))
+	if ((peer->connection->ostatus != OpenConfirm) ||
+	    !(peer_established(peer->connection)))
 		return 0;
 
-	if (peer->doppelganger && (peer->doppelganger->status != Deleted)) {
+	if (peer->doppelganger &&
+	    (peer->doppelganger->connection->status != Deleted)) {
 		bbpeer = bmp_bgp_peer_get(peer);
 		bbdopp = bmp_bgp_peer_find(peer->doppelganger->qobj_node.nid);
 		if (bbdopp) {
@@ -1181,15 +1170,15 @@ static bool bmp_wrqueue(struct bmp *bmp, struct pullwr *pullwr)
 		zlog_info("bmp: skipping queued item for deleted peer");
 		goto out;
 	}
-	if (!peer_established(peer))
+	if (!peer_established(peer->connection))
 		goto out;
 
 	bool is_vpn = (bqe->afi == AFI_L2VPN && bqe->safi == SAFI_EVPN) ||
 		      (bqe->safi == SAFI_MPLS_VPN);
 
 	struct prefix_rd *prd = is_vpn ? &bqe->rd : NULL;
-	bn = bgp_afi_node_lookup(bmp->targets->bgp->rib[afi][safi], afi, safi,
-				 &bqe->p, prd);
+	bn = bgp_safi_node_lookup(bmp->targets->bgp->rib[afi][safi], safi,
+				  &bqe->p, prd);
 
 
 	if (bmp->targets->afimon[afi][safi] & BMP_MON_POSTPOLICY) {
@@ -1318,7 +1307,7 @@ static int bmp_process(struct bgp *bgp, afi_t afi, safi_t safi,
 	if (frrtrace_enabled(frr_bgp, bmp_process)) {
 		char pfxprint[PREFIX2STR_BUFFER];
 
-		prefix2str(&bn->p, pfxprint, sizeof(pfxprint));
+		prefix2str(&bn->rn->p, pfxprint, sizeof(pfxprint));
 		frrtrace(5, frr_bgp, bmp_process, peer, pfxprint, afi, safi,
 			 withdraw);
 	}
@@ -1348,17 +1337,17 @@ static void bmp_stat_put_u32(struct stream *s, size_t *cnt, uint16_t type,
 	(*cnt)++;
 }
 
-static void bmp_stats(struct thread *thread)
+static void bmp_stats(struct event *thread)
 {
-	struct bmp_targets *bt = THREAD_ARG(thread);
+	struct bmp_targets *bt = EVENT_ARG(thread);
 	struct stream *s;
 	struct peer *peer;
 	struct listnode *node;
 	struct timeval tv;
 
 	if (bt->stat_msec)
-		thread_add_timer_msec(bm->master, bmp_stats, bt, bt->stat_msec,
-				&bt->t_stats);
+		event_add_timer_msec(bm->master, bmp_stats, bt, bt->stat_msec,
+				     &bt->t_stats);
 
 	gettimeofday(&tv, NULL);
 
@@ -1366,7 +1355,7 @@ static void bmp_stats(struct thread *thread)
 	for (ALL_LIST_ELEMENTS_RO(bt->bgp->peer, node, peer)) {
 		size_t count = 0, count_pos, len;
 
-		if (!peer_established(peer))
+		if (!peer_established(peer->connection))
 			continue;
 
 		s = stream_new(BGP_MAX_PACKET_SIZE);
@@ -1401,9 +1390,9 @@ static void bmp_stats(struct thread *thread)
 }
 
 /* read from the BMP socket to detect session termination */
-static void bmp_read(struct thread *t)
+static void bmp_read(struct event *t)
 {
-	struct bmp *bmp = THREAD_ARG(t);
+	struct bmp *bmp = EVENT_ARG(t);
 	char buf[1024];
 	ssize_t n;
 
@@ -1422,7 +1411,7 @@ static void bmp_read(struct thread *t)
 		return;
 	}
 
-	thread_add_read(bm->master, bmp_read, bmp, bmp->socket, &bmp->t_read);
+	event_add_read(bm->master, bmp_read, bmp, bmp->socket, &bmp->t_read);
 }
 
 static struct bmp *bmp_open(struct bmp_targets *bt, int bmp_sock)
@@ -1498,21 +1487,21 @@ static struct bmp *bmp_open(struct bmp_targets *bt, int bmp_sock)
 	bmp->state = BMP_PeerUp;
 	bmp->pullwr = pullwr_new(bm->master, bmp_sock, bmp, bmp_wrfill,
 			bmp_wrerr);
-	thread_add_read(bm->master, bmp_read, bmp, bmp_sock, &bmp->t_read);
+	event_add_read(bm->master, bmp_read, bmp, bmp_sock, &bmp->t_read);
 	bmp_send_initiation(bmp);
 
 	return bmp;
 }
 
 /* Accept BMP connection. */
-static void bmp_accept(struct thread *thread)
+static void bmp_accept(struct event *thread)
 {
 	union sockunion su;
-	struct bmp_listener *bl = THREAD_ARG(thread);
+	struct bmp_listener *bl = EVENT_ARG(thread);
 	int bmp_sock;
 
 	/* We continue hearing BMP socket. */
-	thread_add_read(bm->master, bmp_accept, bl, bl->sock, &bl->t_accept);
+	event_add_read(bm->master, bmp_accept, bl, bl->sock, &bl->t_accept);
 
 	memset(&su, 0, sizeof(union sockunion));
 
@@ -1530,7 +1519,7 @@ static void bmp_close(struct bmp *bmp)
 	struct bmp_queue_entry *bqe;
 	struct bmp_mirrorq *bmq;
 
-	THREAD_OFF(bmp->t_read);
+	EVENT_OFF(bmp->t_read);
 
 	if (bmp->active)
 		bmp_active_disconnected(bmp->active);
@@ -1542,7 +1531,7 @@ static void bmp_close(struct bmp *bmp)
 		if (!bqe->refcount)
 			XFREE(MTYPE_BMP_QUEUE, bqe);
 
-	THREAD_OFF(bmp->t_read);
+	EVENT_OFF(bmp->t_read);
 	pullwr_del(bmp->pullwr);
 	close(bmp->socket);
 }
@@ -1657,7 +1646,7 @@ static void bmp_targets_put(struct bmp_targets *bt)
 	struct bmp *bmp;
 	struct bmp_active *ba;
 
-	THREAD_OFF(bt->t_stats);
+	EVENT_OFF(bt->t_stats);
 
 	frr_each_safe (bmp_actives, &bt->actives, ba)
 		bmp_active_put(ba);
@@ -1734,7 +1723,7 @@ static void bmp_listener_start(struct bmp_listener *bl)
 		goto out_sock;
 
 	bl->sock = sock;
-	thread_add_read(bm->master, bmp_accept, bl, sock, &bl->t_accept);
+	event_add_read(bm->master, bmp_accept, bl, sock, &bl->t_accept);
 	return;
 out_sock:
 	close(sock);
@@ -1742,7 +1731,7 @@ out_sock:
 
 static void bmp_listener_stop(struct bmp_listener *bl)
 {
-	THREAD_OFF(bl->t_accept);
+	EVENT_OFF(bl->t_accept);
 
 	if (bl->sock != -1)
 		close(bl->sock);
@@ -1781,9 +1770,9 @@ static struct bmp_active *bmp_active_get(struct bmp_targets *bt,
 
 static void bmp_active_put(struct bmp_active *ba)
 {
-	THREAD_OFF(ba->t_timer);
-	THREAD_OFF(ba->t_read);
-	THREAD_OFF(ba->t_write);
+	EVENT_OFF(ba->t_timer);
+	EVENT_OFF(ba->t_read);
+	EVENT_OFF(ba->t_write);
 
 	bmp_actives_del(&ba->targets->actives, ba);
 
@@ -1915,18 +1904,18 @@ static void bmp_active_resolved(struct resolver_query *resq, const char *errstr,
 	bmp_active_connect(ba);
 }
 
-static void bmp_active_thread(struct thread *t)
+static void bmp_active_thread(struct event *t)
 {
-	struct bmp_active *ba = THREAD_ARG(t);
+	struct bmp_active *ba = EVENT_ARG(t);
 	socklen_t slen;
 	int status, ret;
 	vrf_id_t vrf_id;
 
 	/* all 3 end up here, though only timer or read+write are active
 	 * at a time */
-	THREAD_OFF(ba->t_timer);
-	THREAD_OFF(ba->t_read);
-	THREAD_OFF(ba->t_write);
+	EVENT_OFF(ba->t_timer);
+	EVENT_OFF(ba->t_read);
+	EVENT_OFF(ba->t_write);
 
 	ba->last_err = NULL;
 
@@ -1980,9 +1969,9 @@ static void bmp_active_disconnected(struct bmp_active *ba)
 
 static void bmp_active_setup(struct bmp_active *ba)
 {
-	THREAD_OFF(ba->t_timer);
-	THREAD_OFF(ba->t_read);
-	THREAD_OFF(ba->t_write);
+	EVENT_OFF(ba->t_timer);
+	EVENT_OFF(ba->t_read);
+	EVENT_OFF(ba->t_write);
 
 	if (ba->bmp)
 		return;
@@ -1993,12 +1982,12 @@ static void bmp_active_setup(struct bmp_active *ba)
 		ba->curretry = ba->maxretry;
 
 	if (ba->socket == -1)
-		thread_add_timer_msec(bm->master, bmp_active_thread, ba,
-				      ba->curretry, &ba->t_timer);
+		event_add_timer_msec(bm->master, bmp_active_thread, ba,
+				     ba->curretry, &ba->t_timer);
 	else {
-		thread_add_read(bm->master, bmp_active_thread, ba, ba->socket,
-				&ba->t_read);
-		thread_add_write(bm->master, bmp_active_thread, ba, ba->socket,
+		event_add_read(bm->master, bmp_active_thread, ba, ba->socket,
+			       &ba->t_read);
+		event_add_write(bm->master, bmp_active_thread, ba, ba->socket,
 				&ba->t_write);
 	}
 }
@@ -2203,7 +2192,7 @@ DEFPY(bmp_stats_cfg,
 {
 	VTY_DECLVAR_CONTEXT_SUB(bmp_targets, bt);
 
-	THREAD_OFF(bt->t_stats);
+	EVENT_OFF(bt->t_stats);
 	if (no)
 		bt->stat_msec = 0;
 	else if (interval_str)
@@ -2212,8 +2201,8 @@ DEFPY(bmp_stats_cfg,
 		bt->stat_msec = BMP_STAT_DEFAULT_TIMER;
 
 	if (bt->stat_msec)
-		thread_add_timer_msec(bm->master, bmp_stats, bt, bt->stat_msec,
-				      &bt->t_stats);
+		event_add_timer_msec(bm->master, bmp_stats, bt, bt->stat_msec,
+				     &bt->t_stats);
 	return CMD_SUCCESS;
 }
 
@@ -2421,7 +2410,7 @@ DEFPY(show_bmp,
 				uptime[0] = '\0';
 
 				if (ba->t_timer) {
-					long trem = thread_timer_remain_second(
+					long trem = event_timer_remain_second(
 						ba->t_timer);
 
 					peer_uptime(monotime(NULL) - trem,
@@ -2539,7 +2528,7 @@ static int bmp_config_write(struct bgp *bgp, struct vty *vty)
 	return 0;
 }
 
-static int bgp_bmp_init(struct thread_master *tm)
+static int bgp_bmp_init(struct event_loop *tm)
 {
 	install_node(&bmp_node);
 	install_default(BMP_NODE);

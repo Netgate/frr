@@ -31,7 +31,7 @@ else
         CMT=$(echo ${vstring} | cut -s -d- -f3,4)
     fi
 
-    TNSR_VER=$(git tag --merged HEAD --list 'tnsr-v*' | sort | tail -n 1)
+    TNSR_VER=$(git tag --list 'tnsr-v*' | sort | tail -n 1)
     if [ -n "${TNSR_VER}" ]; then
         TNSR_VER="+${TNSR_VER}+${VERSION_CODENAME}"
     fi

@@ -1,23 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Static daemon BFD integration.
  *
  * Copyright (C) 2020-2022 Network Device Education Foundation, Inc. ("NetDEF")
  *                         Rafael Zalamena
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301 USA.
  */
 
 #include <zebra.h>
@@ -102,6 +88,7 @@ void static_next_hop_bfd_monitor_enable(struct static_nexthop *sn,
 	bool mhop;
 	int family;
 	struct ipaddr source;
+	struct vrf *vrf = NULL;
 
 	use_interface = false;
 	use_source = yang_dnode_exists(dnode, "./source");
@@ -109,7 +96,7 @@ void static_next_hop_bfd_monitor_enable(struct static_nexthop *sn,
 	onlink = yang_dnode_exists(dnode, "../onlink") &&
 		 yang_dnode_get_bool(dnode, "../onlink");
 	mhop = yang_dnode_get_bool(dnode, "./multi-hop");
-
+	vrf = vrf_lookup_by_name(yang_dnode_get_string(dnode, "../vrf"));
 
 	family = static_next_hop_type_to_family(sn);
 	if (family == AF_UNSPEC)
@@ -147,6 +134,8 @@ void static_next_hop_bfd_monitor_enable(struct static_nexthop *sn,
 	bfd_sess_set_profile(sn->bsp, use_profile ? yang_dnode_get_string(
 							    dnode, "./profile")
 						  : NULL);
+	if (vrf && vrf->vrf_id != VRF_UNKNOWN)
+		bfd_sess_set_vrf(sn->bsp, vrf->vrf_id);
 
 	bfd_sess_set_hop_count(sn->bsp, (onlink || mhop == false) ? 1 : 254);
 
@@ -215,7 +204,7 @@ void static_next_hop_bfd_profile(struct static_nexthop *sn, const char *name)
 	bfd_sess_install(sn->bsp);
 }
 
-void static_bfd_initialize(struct zclient *zc, struct thread_master *tm)
+void static_bfd_initialize(struct zclient *zc, struct event_loop *tm)
 {
 	/* Initialize BFD integration library. */
 	bfd_protocol_integration_init(zc, tm);

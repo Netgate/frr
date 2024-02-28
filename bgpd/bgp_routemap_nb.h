@@ -1,20 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (C) 2020        Vmware
  *                           Sarita Patra
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the Free
- * Software Foundation; either version 2 of the License, or (at your option)
- * any later version.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; see the file COPYING; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #ifndef _FRR_BGP_ROUTEMAP_NB_H_
@@ -42,6 +29,10 @@ int lib_route_map_entry_match_condition_rmap_match_condition_rpki_destroy(struct
 int lib_route_map_entry_match_condition_rmap_match_condition_rpki_extcommunity_modify(
 	struct nb_cb_modify_args *args);
 int lib_route_map_entry_match_condition_rmap_match_condition_rpki_extcommunity_destroy(
+	struct nb_cb_destroy_args *args);
+int lib_route_map_entry_match_condition_rmap_match_condition_source_protocol_modify(
+	struct nb_cb_modify_args *args);
+int lib_route_map_entry_match_condition_rmap_match_condition_source_protocol_destroy(
 	struct nb_cb_destroy_args *args);
 int lib_route_map_entry_match_condition_rmap_match_condition_probability_modify(struct nb_cb_modify_args *args);
 int lib_route_map_entry_match_condition_rmap_match_condition_probability_destroy(struct nb_cb_destroy_args *args);
@@ -74,6 +65,10 @@ int lib_route_map_entry_match_condition_rmap_match_condition_comm_list_comm_list
 int lib_route_map_entry_match_condition_rmap_match_condition_comm_list_comm_list_name_destroy(struct nb_cb_destroy_args *args);
 int lib_route_map_entry_match_condition_rmap_match_condition_comm_list_comm_list_name_exact_match_modify(struct nb_cb_modify_args *args);
 int lib_route_map_entry_match_condition_rmap_match_condition_comm_list_comm_list_name_exact_match_destroy(struct nb_cb_destroy_args *args);
+int lib_route_map_entry_match_condition_rmap_match_condition_comm_list_comm_list_name_any_modify(
+	struct nb_cb_modify_args *args);
+int lib_route_map_entry_match_condition_rmap_match_condition_comm_list_comm_list_name_any_destroy(
+	struct nb_cb_destroy_args *args);
 int lib_route_map_entry_match_condition_rmap_match_condition_ipv4_address_modify(struct nb_cb_modify_args *args);
 int lib_route_map_entry_match_condition_rmap_match_condition_ipv4_address_destroy(struct nb_cb_destroy_args *args);
 int lib_route_map_entry_match_condition_rmap_match_condition_ipv6_address_modify(struct nb_cb_modify_args *args);
@@ -82,6 +77,10 @@ int lib_route_map_entry_set_action_rmap_set_action_distance_modify(struct nb_cb_
 int lib_route_map_entry_set_action_rmap_set_action_distance_destroy(struct nb_cb_destroy_args *args);
 int lib_route_map_entry_set_action_rmap_set_action_extcommunity_rt_modify(struct nb_cb_modify_args *args);
 int lib_route_map_entry_set_action_rmap_set_action_extcommunity_rt_destroy(struct nb_cb_destroy_args *args);
+int lib_route_map_entry_set_action_rmap_set_action_extcommunity_nt_modify(
+	struct nb_cb_modify_args *args);
+int lib_route_map_entry_set_action_rmap_set_action_extcommunity_nt_destroy(
+	struct nb_cb_destroy_args *args);
 int lib_route_map_entry_set_action_rmap_set_action_extcommunity_soo_modify(struct nb_cb_modify_args *args);
 int lib_route_map_entry_set_action_rmap_set_action_extcommunity_soo_destroy(struct nb_cb_destroy_args *args);
 int lib_route_map_entry_set_action_rmap_set_action_ipv4_address_modify(struct nb_cb_modify_args *args);
@@ -157,6 +156,10 @@ int lib_route_map_entry_set_action_rmap_set_action_evpn_gateway_ip_ipv4_destroy(
 int lib_route_map_entry_set_action_rmap_set_action_evpn_gateway_ip_ipv6_modify(
 	struct nb_cb_modify_args *args);
 int lib_route_map_entry_set_action_rmap_set_action_evpn_gateway_ip_ipv6_destroy(
+	struct nb_cb_destroy_args *args);
+int lib_route_map_entry_set_action_rmap_set_action_extcommunity_color_modify(
+	struct nb_cb_modify_args *args);
+int lib_route_map_entry_set_action_rmap_set_action_extcommunity_color_destroy(
 	struct nb_cb_destroy_args *args);
 int lib_route_map_entry_set_action_rmap_set_action_l3vpn_nexthop_encapsulation_modify(
 	struct nb_cb_modify_args *args);

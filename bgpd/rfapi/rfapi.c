@@ -1,21 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *
  * Copyright 2009-2016, LabN Consulting, L.L.C.
  *
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; see the file COPYING; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #include "lib/zebra.h"
@@ -378,7 +365,7 @@ void del_vnc_route(struct rfapi_descriptor *rfd,
 	bn = bgp_afi_node_get(bgp->rib[afi][safi], afi, safi, p, prd);
 
 	vnc_zlog_debug_verbose(
-		"%s: peer=%p, prefix=%pFX, prd=%pRD afi=%d, safi=%d bn=%p, bn->info=%p",
+		"%s: peer=%p, prefix=%pFX, prd=%pRDP afi=%d, safi=%d bn=%p, bn->info=%p",
 		__func__, peer, p, prd, afi, safi, bn,
 		(bn ? bgp_dest_get_bgp_path_info(bn) : NULL));
 
@@ -1068,7 +1055,7 @@ void add_vnc_route(struct rfapi_descriptor *rfd, /* cookie, VPN UN addr, peer */
 	bgp_process(bgp, bn, afi, safi);
 
 	vnc_zlog_debug_any(
-		"%s: Added route (safi=%s) at prefix %s (bn=%p, prd=%pRD)",
+		"%s: Added route (safi=%s) at prefix %s (bn=%p, prd=%pRDP)",
 		__func__, safi2str(safi), buf, bn, prd);
 
 done:
@@ -1249,30 +1236,9 @@ static int rfapi_open_inner(struct rfapi_descriptor *rfd, struct bgp *bgp,
 	 * Fill in BGP peer structure
 	 */
 	rfd->peer = peer_new(bgp);
-	rfd->peer->status = Established; /* keep bgp core happy */
-	bgp_sync_delete(rfd->peer);      /* don't need these */
+	rfd->peer->connection->status = Established; /* keep bgp core happy */
 
-	/*
-	 * since this peer is not on the I/O thread, this lock is not strictly
-	 * necessary, but serves as a reminder to those who may meddle...
-	 */
-	frr_with_mutex (&rfd->peer->io_mtx) {
-		// we don't need any I/O related facilities
-		if (rfd->peer->ibuf)
-			stream_fifo_free(rfd->peer->ibuf);
-		if (rfd->peer->obuf)
-			stream_fifo_free(rfd->peer->obuf);
-
-		if (rfd->peer->ibuf_work)
-			ringbuf_del(rfd->peer->ibuf_work);
-		if (rfd->peer->obuf_work)
-			stream_free(rfd->peer->obuf_work);
-
-		rfd->peer->ibuf = NULL;
-		rfd->peer->obuf = NULL;
-		rfd->peer->obuf_work = NULL;
-		rfd->peer->ibuf_work = NULL;
-	}
+	bgp_peer_connection_buffers_free(rfd->peer->connection);
 
 	{ /* base code assumes have valid host pointer */
 		char buf[INET6_ADDRSTRLEN];
@@ -3752,7 +3718,7 @@ int rfapi_set_autord_from_vn(struct prefix_rd *rd, struct rfapi_ip_addr *vn)
 		memcpy(rd->val + 2, &vn->addr.v6.s6_addr32[3],
 		       4); /* low order 4 bytes */
 	}
-	vnc_zlog_debug_verbose("%s: auto-RD is set to %pRD", __func__, rd);
+	vnc_zlog_debug_verbose("%s: auto-RD is set to %pRDP", __func__, rd);
 	return 0;
 }
 

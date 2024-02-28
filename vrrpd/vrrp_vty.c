@@ -1,21 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * VRRP CLI commands.
  * Copyright (C) 2018-2019 Cumulus Networks, Inc.
  * Quentin Young
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the Free
- * Software Foundation; either version 2 of the License, or (at your option)
- * any later version.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; see the file COPYING; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
  */
 #include <zebra.h>
 
@@ -411,6 +398,7 @@ static struct json_object *vrrp_build_json(struct vrrp_vrouter *vr)
 	json_object_string_add(j, "interface", vr->ifp->name);
 	json_object_int_add(j, "advertisementInterval",
 			    vr->advertisement_interval * CS2MS);
+	json_object_int_add(j, "priority", vr->priority);
 	/* v4 */
 	json_object_string_add(v4, "interface",
 			       vr->v4->mvl_ifp ? vr->v4->mvl_ifp->name : "");

@@ -1,21 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *
  * Copyright 2009-2016, LabN Consulting, L.L.C.
  *
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; see the file COPYING; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 /*
@@ -130,7 +117,6 @@ void rfapiRibCheckCounts(
 	struct bgp *bgp = bgp_get_default();
 
 	uint32_t t_pfx_active = 0;
-	uint32_t t_pfx_deleted = 0;
 
 	uint32_t t_ri_active = 0;
 	uint32_t t_ri_deleted = 0;
@@ -145,7 +131,6 @@ void rfapiRibCheckCounts(
 
 		afi_t afi;
 		uint32_t pfx_active = 0;
-		uint32_t pfx_deleted = 0;
 
 		for (afi = AFI_IP; afi < AFI_MAX; ++afi) {
 
@@ -170,8 +155,6 @@ void rfapiRibCheckCounts(
 				if (dsl) {
 					ri_deleted = skiplist_count(dsl);
 					t_ri_deleted += ri_deleted;
-					++pfx_deleted;
-					++t_pfx_deleted;
 				}
 			}
 			for (rn = agg_route_top(rfd->rib_pending[afi]); rn;
@@ -269,8 +252,8 @@ static void rfapi_info_free(struct rfapi_info *goner)
 		if (goner->timer) {
 			struct rfapi_rib_tcb *tcb;
 
-			tcb = THREAD_ARG(goner->timer);
-			THREAD_OFF(goner->timer);
+			tcb = EVENT_ARG(goner->timer);
+			EVENT_OFF(goner->timer);
 			XFREE(MTYPE_RFAPI_RECENT_DELETE, tcb);
 		}
 		XFREE(MTYPE_RFAPI_INFO, goner);
@@ -292,9 +275,9 @@ struct rfapi_rib_tcb {
 /*
  * remove route from rib
  */
-static void rfapiRibExpireTimer(struct thread *t)
+static void rfapiRibExpireTimer(struct event *t)
 {
-	struct rfapi_rib_tcb *tcb = THREAD_ARG(t);
+	struct rfapi_rib_tcb *tcb = EVENT_ARG(t);
 
 	RFAPI_RIB_CHECK_COUNTS(1, 0);
 
@@ -339,8 +322,8 @@ static void rfapiRibStartTimer(struct rfapi_descriptor *rfd,
 	struct rfapi_rib_tcb *tcb = NULL;
 
 	if (ri->timer) {
-		tcb = THREAD_ARG(ri->timer);
-		THREAD_OFF(ri->timer);
+		tcb = EVENT_ARG(ri->timer);
+		EVENT_OFF(ri->timer);
 	} else {
 		tcb = XCALLOC(MTYPE_RFAPI_RECENT_DELETE,
 			      sizeof(struct rfapi_rib_tcb));
@@ -364,8 +347,8 @@ static void rfapiRibStartTimer(struct rfapi_descriptor *rfd,
 	vnc_zlog_debug_verbose("%s: rfd %p pfx %pRN life %u", __func__, rfd, rn,
 			       ri->lifetime);
 
-	thread_add_timer(bm->master, rfapiRibExpireTimer, tcb, ri->lifetime,
-			 &ri->timer);
+	event_add_timer(bm->master, rfapiRibExpireTimer, tcb, ri->lifetime,
+			&ri->timer);
 }
 
 extern void rfapi_rib_key_init(struct prefix *prefix, /* may be NULL */
@@ -533,9 +516,9 @@ void rfapiRibClear(struct rfapi_descriptor *rfd)
 							struct rfapi_rib_tcb
 								*tcb;
 
-							tcb = THREAD_ARG(
+							tcb = EVENT_ARG(
 								ri->timer);
-							THREAD_OFF(ri->timer);
+							EVENT_OFF(ri->timer);
 							XFREE(MTYPE_RFAPI_RECENT_DELETE,
 							      tcb);
 						}
@@ -932,8 +915,8 @@ static void process_pending_node(struct bgp *bgp, struct rfapi_descriptor *rfd,
 				if (ri->timer) {
 					struct rfapi_rib_tcb *tcb;
 
-					tcb = THREAD_ARG(ri->timer);
-					THREAD_OFF(ri->timer);
+					tcb = EVENT_ARG(ri->timer);
+					EVENT_OFF(ri->timer);
 					XFREE(MTYPE_RFAPI_RECENT_DELETE, tcb);
 				}
 
@@ -1017,8 +1000,8 @@ static void process_pending_node(struct bgp *bgp, struct rfapi_descriptor *rfd,
 				if (ori->timer) {
 					struct rfapi_rib_tcb *tcb;
 
-					tcb = THREAD_ARG(ori->timer);
-					THREAD_OFF(ori->timer);
+					tcb = EVENT_ARG(ori->timer);
+					EVENT_OFF(ori->timer);
 					XFREE(MTYPE_RFAPI_RECENT_DELETE, tcb);
 				}
 
@@ -1146,7 +1129,7 @@ static void process_pending_node(struct bgp *bgp, struct rfapi_descriptor *rfd,
 				skiplist_insert(slRibPt, &ori->rk, ori);
 
 				vnc_zlog_debug_verbose(
-					"%s:   nomatch lPendCost item %p in slRibPt, added (rd=%pRD)",
+					"%s:   nomatch lPendCost item %p in slRibPt, added (rd=%pRDP)",
 					__func__, ri, &ori->rk.rd);
 			}
 
@@ -1351,8 +1334,8 @@ callback:
 				if (ri->timer) {
 					struct rfapi_rib_tcb *tcb;
 
-					tcb = THREAD_ARG(ri->timer);
-					THREAD_OFF(ri->timer);
+					tcb = EVENT_ARG(ri->timer);
+					EVENT_OFF(ri->timer);
 					XFREE(MTYPE_RFAPI_RECENT_DELETE, tcb);
 				}
 				RFAPI_RIB_CHECK_COUNTS(0, delete_list->count);
@@ -1388,7 +1371,7 @@ callback:
 					ri->last_sent_time = monotime(NULL);
 #if DEBUG_RIB_SL_RD
 					vnc_zlog_debug_verbose(
-						"%s: move route to recently deleted list, rd=%pRD",
+						"%s: move route to recently deleted list, rd=%pRDP",
 						__func__, &ri->rk.rd);
 #endif
 
@@ -2284,7 +2267,7 @@ static int print_rib_sl(int (*fp)(void *, const char *, ...), struct vty *vty,
 		}
 #endif
 
-		fp(out, " %c %-20s %-15s %-15s %-4u %-8s %-8s %pRD\n",
+		fp(out, " %c %-20s %-15s %-15s %-4u %-8s %-8s %pRDP\n",
 		   deleted ? 'r' : ' ', *printedprefix ? "" : str_pfx, str_vn,
 		   str_un, ri->cost, str_lifetime, str_age, &ri->rk.rd);
 
@@ -2335,10 +2318,6 @@ void rfapiRibShowResponses(void *stream, struct prefix *pfx_match,
 	int printedheader = 0;
 	int routes_total = 0;
 	int nhs_total = 0;
-	int prefixes_total = 0;
-	int prefixes_displayed = 0;
-	int nves_total = 0;
-	int nves_with_routes = 0;
 	int nves_displayed = 0;
 	int routes_displayed = 0;
 	int nhs_displayed = 0;
@@ -2357,10 +2336,6 @@ void rfapiRibShowResponses(void *stream, struct prefix *pfx_match,
 
 		int printednve = 0;
 		afi_t afi;
-
-		++nves_total;
-		if (rfd->rib_prefix_count)
-			++nves_with_routes;
 
 		for (afi = AFI_IP; afi < AFI_MAX; ++afi) {
 
@@ -2387,13 +2362,10 @@ void rfapiRibShowResponses(void *stream, struct prefix *pfx_match,
 
 				routes_total++;
 				nhs_total += skiplist_count(sl);
-				++prefixes_total;
 
 				if (pfx_match && !prefix_match(pfx_match, p)
 				    && !prefix_match(p, pfx_match))
 					continue;
-
-				++prefixes_displayed;
 
 				if (!printedheader) {
 					++printedheader;

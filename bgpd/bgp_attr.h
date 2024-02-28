@@ -1,21 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /* BGP attributes.
  * Copyright (C) 1996, 97, 98 Kunihiro Ishiguro
- *
- * This file is part of GNU Zebra.
- *
- * GNU Zebra is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2, or (at your option) any
- * later version.
- *
- * GNU Zebra is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; see the file COPYING; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #ifndef _QUAGGA_BGP_ATTR_H
@@ -379,7 +364,7 @@ enum bgp_attr_parse_ret {
 	/* only used internally, send notify + convert to BGP_ATTR_PARSE_ERROR
 	 */
 	BGP_ATTR_PARSE_ERROR_NOTIFYPLS = -3,
-	BGP_ATTR_PARSE_EOR = -4,
+	BGP_ATTR_PARSE_MISSING_MANDATORY = -4,
 };
 
 struct bpacket_attr_vec_arr;
@@ -416,6 +401,10 @@ extern unsigned long int attr_count(void);
 extern unsigned long int attr_unknown_count(void);
 extern void bgp_path_attribute_discard_vty(struct vty *vty, struct peer *peer,
 					   const char *discard_attrs, bool set);
+extern void bgp_path_attribute_withdraw_vty(struct vty *vty, struct peer *peer,
+					    const char *withdraw_attrs,
+					    bool set);
+extern enum bgp_attr_parse_ret bgp_attr_ignore(struct peer *peer, uint8_t type);
 
 /* Cluster list prototypes. */
 extern bool cluster_loop_check(struct cluster_list *cluster,
@@ -476,6 +465,8 @@ extern void bgp_packet_mpunreach_end(struct stream *s, size_t attrlen_pnt);
 
 extern enum bgp_attr_parse_ret bgp_attr_nexthop_valid(struct peer *peer,
 						      struct attr *attr);
+
+extern uint32_t bgp_attr_get_color(struct attr *attr);
 
 static inline bool bgp_rmap_nhop_changed(uint32_t out_rmap_flags,
 					 uint32_t in_rmap_flags)
@@ -603,7 +594,7 @@ static inline void bgp_attr_set_aigp_metric(struct attr *attr, uint64_t aigp)
 	attr->aigp_metric = aigp;
 
 	if (aigp)
-		attr->flag |= ATTR_FLAG_BIT(BGP_ATTR_AIGP);
+		SET_FLAG(attr->flag, ATTR_FLAG_BIT(BGP_ATTR_AIGP));
 }
 
 static inline struct cluster_list *bgp_attr_get_cluster(const struct attr *attr)
@@ -615,6 +606,11 @@ static inline void bgp_attr_set_cluster(struct attr *attr,
 					struct cluster_list *cl)
 {
 	attr->cluster1 = cl;
+
+	if (cl)
+		SET_FLAG(attr->flag, ATTR_FLAG_BIT(BGP_ATTR_CLUSTER_LIST));
+	else
+		UNSET_FLAG(attr->flag, ATTR_FLAG_BIT(BGP_ATTR_CLUSTER_LIST));
 }
 
 static inline const struct bgp_route_evpn *
@@ -647,5 +643,7 @@ bgp_attr_set_vnc_subtlvs(struct attr *attr,
 	attr->vnc_subtlvs = vnc_subtlvs;
 #endif
 }
+
+extern bool route_matches_soo(struct bgp_path_info *pi, struct ecommunity *soo);
 
 #endif /* _QUAGGA_BGP_ATTR_H */

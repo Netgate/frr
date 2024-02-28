@@ -1,13 +1,5 @@
 #!/usr/bin/make -f
 
-ifneq ($(LIBYANG2_DIR),)
-LIBYANG_CFLAGS = \
-	 -I$(LIBYANG2_DIR)/usr/include \
-	 -L$(LIBYANG2_DIR)/usr/lib/${DEB_HOST_MULTIARCH} \
-	 -Wl,-rpath -Wl,$(LIBYANG2_DIR)/usr/lib/${DEB_HOST_MULTIARCH}
-LIBYANG_LIBS = -lyang
-endif
-
 # standard Debian options & profiles
 
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
@@ -109,8 +101,7 @@ override_dh_shlibdeps:
 		--ignore-missing-info \
 		-l${LIBVPPMGMT_DIR}/usr/lib/${DEB_HOST_MULTIARCH} \
 		-l${VPP_DIR}/build-root/install-vpp-native/vpp/lib/${DEB_HOST_MULTIARCH} \
-		-l${LIBTNSRINFRA_DIR}/usr/lib/${DEB_HOST_MULTIARCH} \
-		-l${LIBYANG2_DIR}/usr/lib/${DEB_HOST_MULTIARCH}
+		-l${LIBTNSRINFRA_DIR}/usr/lib/${DEB_HOST_MULTIARCH}
 
 override_dh_auto_build:
 	dh_auto_build -- $(MAKE_SILENT)

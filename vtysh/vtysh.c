@@ -1,21 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /* Virtual terminal interface shell.
  * Copyright (C) 2000 Kunihiro Ishiguro
- *
- * This file is part of GNU Zebra.
- *
- * GNU Zebra is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2, or (at your option) any
- * later version.
- *
- * GNU Zebra is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; see the file COPYING; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #include <zebra.h>
@@ -63,19 +48,6 @@ char *vtysh_pager_name = NULL;
 
 /* VTY should add timestamp */
 bool vtysh_add_timestamp;
-
-/* VTY shell client structure */
-struct vtysh_client {
-	int fd;
-	const char *name;
-	int flag;
-	char path[MAXPATHLEN];
-	struct vtysh_client *next;
-
-	struct thread *log_reader;
-	int log_fd;
-	uint32_t lost_msgs;
-};
 
 static bool stderr_tty;
 static bool stderr_stdout_same;
@@ -134,7 +106,12 @@ static void vtysh_pager_envdef(bool fallback)
 
 /* --- */
 
+/*
+ * When updating this array, remember to change the array size here and in
+ * vtysh.h
+ */
 struct vtysh_client vtysh_client[] = {
+	{.name = "mgmtd", .flag = VTYSH_MGMTD},
 	{.name = "zebra", .flag = VTYSH_ZEBRA},
 	{.name = "ripd", .flag = VTYSH_RIPD},
 	{.name = "ripngd", .flag = VTYSH_RIPNGD},
@@ -903,6 +880,13 @@ int vtysh_config_from_file(struct vty *vty, FILE *fp)
 		if (strmatch(vty_buf_trimmed, "end"))
 			continue;
 
+		if (strmatch(vty_buf_trimmed, "exit") &&
+		    vty->node == CONFIG_NODE) {
+			fprintf(stderr, "line %d: Warning[%d]...: %s\n", lineno,
+				vty->node, "early exit from config file");
+			break;
+		}
+
 		ret = command_config_read_one_line(vty, &cmd, lineno, 1);
 
 		switch (ret) {
@@ -1197,6 +1181,27 @@ static struct cmd_node isis_node = {
 	.node = ISIS_NODE,
 	.parent_node = CONFIG_NODE,
 	.prompt = "%s(config-router)# ",
+};
+
+static struct cmd_node isis_flex_algo_node = {
+	.name = "isis-flex-algo",
+	.node = ISIS_FLEX_ALGO_NODE,
+	.parent_node = ISIS_NODE,
+	.prompt = "%s(config-router-flex-algo)# ",
+};
+
+static struct cmd_node isis_srv6_node = {
+	.name = "isis-srv6",
+	.node = ISIS_SRV6_NODE,
+	.parent_node = ISIS_NODE,
+	.prompt = "%s(config-router-srv6)# ",
+};
+
+static struct cmd_node isis_srv6_node_msd_node = {
+	.name = "isis-srv6-node-msd",
+	.node = ISIS_SRV6_NODE_MSD_NODE,
+	.parent_node = ISIS_SRV6_NODE,
+	.prompt = "%s(config-router-srv6-node-msd)# ",
 };
 #endif /* HAVE_ISISD */
 
@@ -1647,6 +1652,7 @@ static int vtysh_end(void)
 		/* Nothing to do. */
 		break;
 	default:
+		vty->vtysh_file_locked = false;
 		vty->node = ENABLE_NODE;
 		break;
 	}
@@ -1688,10 +1694,14 @@ DEFUNSH(VTYSH_ZEBRA, srv6_locator, srv6_locator_cmd,
 
 #ifdef HAVE_BGPD
 DEFUNSH(VTYSH_BGPD, router_bgp, router_bgp_cmd,
-	"router bgp [(1-4294967295) [<view|vrf> VIEWVRFNAME]]",
+	"router bgp [ASNUM [<view|vrf> VIEWVRFNAME] [as-notation <dot|dot+|plain>]]",
 	ROUTER_STR BGP_STR AS_STR
 	"BGP view\nBGP VRF\n"
-	"View/VRF name\n")
+	"View/VRF name\n"
+	"Force the AS notation output\n"
+	"use 'AA.BB' format for AS 4 byte values\n"
+	"use 'AA.BB' format for all AS values\n"
+	"use plain format for all AS values\n")
 {
 	vty->node = BGP_NODE;
 	return CMD_SUCCESS;
@@ -2114,6 +2124,31 @@ DEFUNSH(VTYSH_ISISD, router_isis, router_isis_cmd,
 	vty->node = ISIS_NODE;
 	return CMD_SUCCESS;
 }
+
+DEFUNSH(VTYSH_ISISD, isis_flex_algo, isis_flex_algo_cmd, "flex-algo (128-255)",
+	"Flexible Algorithm\n"
+	"Flexible Algorithm Number\n")
+{
+	vty->node = ISIS_FLEX_ALGO_NODE;
+	return CMD_SUCCESS;
+}
+
+DEFUNSH(VTYSH_ISISD, isis_srv6_enable, isis_srv6_enable_cmd,
+	"segment-routing srv6",
+	SR_STR
+	"Enable Segment Routing over IPv6 (SRv6)\n")
+{
+	vty->node = ISIS_SRV6_NODE;
+	return CMD_SUCCESS;
+}
+
+DEFUNSH(VTYSH_ISISD, isis_srv6_node_msd, isis_srv6_node_msd_cmd,
+       "node-msd",
+	"Segment Routing over IPv6 (SRv6) Maximum SRv6 SID Depths\n")
+{
+	vty->node = ISIS_SRV6_NODE_MSD_NODE;
+	return CMD_SUCCESS;
+}
 #endif /* HAVE_ISISD */
 
 #ifdef HAVE_FABRICD
@@ -2216,6 +2251,29 @@ DEFUNSH(VTYSH_PATHD, pcep_cli_pcep_pce_config, pcep_cli_pcep_pce_config_cmd,
 
 #endif /* HAVE_PATHD */
 
+/* max value is EXT_ADMIN_GROUP_MAX_POSITIONS - 1 */
+DEFUNSH(VTYSH_AFFMAP, affinity_map, vtysh_affinity_map_cmd,
+	"affinity-map NAME bit-position (0-1023)",
+	"Affinity map configuration\n"
+	"Affinity attribute name\n"
+	"Bit position for affinity attribute value\n"
+	"Bit position\n")
+{
+	return CMD_SUCCESS;
+}
+
+/* max value is EXT_ADMIN_GROUP_MAX_POSITIONS - 1 */
+DEFUNSH(VTYSH_AFFMAP, no_affinity_map, vtysh_no_affinity_map_cmd,
+	"no affinity-map NAME$name [bit-position (0-1023)$position]",
+	NO_STR
+	"Affinity map configuration\n"
+	"Affinity attribute name\n"
+	"Bit position for affinity attribute value\n"
+	"Bit position\n")
+{
+	return CMD_SUCCESS;
+}
+
 DEFUNSH(VTYSH_RMAP, vtysh_route_map, vtysh_route_map_cmd,
 	"route-map RMAP_NAME <deny|permit> (1-65535)",
 	"Create route-map or enter route-map command mode\n"
@@ -2315,6 +2373,18 @@ DEFUNSH(VTYSH_REALLYALL, vtysh_config_terminal, vtysh_config_terminal_cmd,
 	return CMD_SUCCESS;
 }
 
+DEFUNSH(VTYSH_REALLYALL, vtysh_config_terminal_file_lock,
+	vtysh_config_terminal_file_lock_cmd,
+	"configure terminal file-lock",
+	"Configuration from vty interface\n"
+	"Configuration terminal\n"
+	"Configuration with locked datastores\n")
+{
+	vty->node = CONFIG_NODE;
+	vty->vtysh_file_locked = true;
+	return CMD_SUCCESS;
+}
+
 static int vtysh_exit(struct vty *vty)
 {
 	struct cmd_node *cnode = vector_lookup(cmdvec, vty->node);
@@ -2327,10 +2397,20 @@ static int vtysh_exit(struct vty *vty)
 		vty->node = cnode->parent_node;
 
 	if (vty->node == CONFIG_NODE) {
+		bool locked = vty->vtysh_file_locked;
+
 		/* resync in case one of the daemons is somewhere else */
 		vtysh_execute("end");
-		vtysh_execute("configure");
+		/* NOTE: a rather expensive thing to do, can we avoid it? */
+
+		if (locked)
+			vtysh_execute("configure terminal file-lock");
+		else
+			vtysh_execute("configure terminal");
+	} else if (vty->node == ENABLE_NODE) {
+		vty->vtysh_file_locked = false;
 	}
+
 	return CMD_SUCCESS;
 }
 
@@ -2571,6 +2651,42 @@ DEFUNSH(VTYSH_ISISD, vtysh_exit_isisd, vtysh_exit_isisd_cmd, "exit",
 
 DEFUNSH(VTYSH_ISISD, vtysh_quit_isisd, vtysh_quit_isisd_cmd, "quit",
 	"Exit current mode and down to previous mode\n")
+{
+	return vtysh_exit_isisd(self, vty, argc, argv);
+}
+
+DEFUNSH(VTYSH_ISISD, vtysh_exit_isis_flex_algo, vtysh_exit_isis_flex_algo_cmd,
+	"exit", "Exit current mode and down to previous mode\n")
+{
+	return vtysh_exit(vty);
+}
+
+DEFUNSH(VTYSH_ISISD, vtysh_quit_isis_flex_algo, vtysh_quit_isis_flex_algo_cmd,
+	"quit", "Exit current mode and down to previous mode\n")
+{
+	return vtysh_exit_isisd(self, vty, argc, argv);
+}
+
+DEFUNSH(VTYSH_ISISD, vtysh_exit_isis_srv6_enable, vtysh_exit_isis_srv6_enable_cmd,
+	"exit", "Exit current mode and down to previous mode\n")
+{
+	return vtysh_exit_isisd(self, vty, argc, argv);
+}
+
+DEFUNSH(VTYSH_ISISD, vtysh_quit_isis_srv6_enable, vtysh_quit_isis_srv6_enable_cmd,
+	"quit", "Exit current mode and down to previous mode\n")
+{
+	return vtysh_exit_isisd(self, vty, argc, argv);
+}
+
+DEFUNSH(VTYSH_ISISD, vtysh_exit_isis_srv6_node_msd, vtysh_exit_isis_srv6_node_msd_cmd,
+	"exit", "Exit current mode and down to previous mode\n")
+{
+	return vtysh_exit(vty);
+}
+
+DEFUNSH(VTYSH_ISISD, vtysh_quit_isis_srv6_node_msd, vtysh_quit_isis_srv6_node_msd_cmd,
+	"quit", "Exit current mode and down to previous mode\n")
 {
 	return vtysh_exit_isisd(self, vty, argc, argv);
 }
@@ -3280,6 +3396,63 @@ DEFUN (vtysh_show_running_config,
 	return vtysh_write_terminal(self, vty, argc, argv);
 }
 
+static void show_route_map_send(const char *route_map, bool json)
+{
+	unsigned int i;
+	bool first = true;
+	char command_line[128];
+
+	snprintf(command_line, sizeof(command_line), "show route-map ");
+	if (route_map)
+		strlcat(command_line, route_map, sizeof(command_line));
+	if (json)
+		strlcat(command_line, " json", sizeof(command_line));
+
+	if (json)
+		vty_out(vty, "{");
+
+	for (i = 0; i < array_size(vtysh_client); i++) {
+		const struct vtysh_client *client = &vtysh_client[i];
+		bool is_connected = true;
+
+		if (!CHECK_FLAG(client->flag, VTYSH_RMAP))
+			continue;
+
+		for (; client; client = client->next)
+			if (client->fd < 0)
+				is_connected = false;
+
+		if (!is_connected)
+			continue;
+
+		if (json && !first)
+			vty_out(vty, ",");
+		else
+			first = false;
+
+		if (json)
+			vty_out(vty, "\"%s\":", vtysh_client[i].name);
+
+		vtysh_client_execute_name(vtysh_client[i].name, command_line);
+	}
+
+	if (json)
+		vty_out(vty, "}\n");
+}
+
+DEFPY (show_route_map,
+       show_route_map_cmd,
+       "show route-map [WORD]$route_map [json]$json",
+       SHOW_STR
+       "route-map information\n"
+       "route-map name\n"
+       JSON_STR)
+{
+	show_route_map_send(route_map, !!json);
+
+	return CMD_SUCCESS;
+}
+
 DEFUN (vtysh_integrated_config,
        vtysh_integrated_config_cmd,
        "service integrated-vtysh-config",
@@ -3532,7 +3705,7 @@ DEFUN (vtysh_copy_to_running,
 	int ret;
 	const char *fname = argv[1]->arg;
 
-	ret = vtysh_read_config(fname, true);
+	ret = vtysh_apply_config(fname, true, false);
 
 	/* Return to enable mode - the 'read_config' api leaves us up a level */
 	vtysh_execute_no_pager("enable");
@@ -3715,9 +3888,9 @@ static void vtysh_log_print(struct vtysh_client *vclient,
 		text + textpos);
 }
 
-static void vtysh_log_read(struct thread *thread)
+static void vtysh_log_read(struct event *thread)
 {
-	struct vtysh_client *vclient = THREAD_ARG(thread);
+	struct vtysh_client *vclient = EVENT_ARG(thread);
 	struct {
 		struct zlog_live_hdr hdr;
 		char text[4096];
@@ -3725,8 +3898,8 @@ static void vtysh_log_read(struct thread *thread)
 	const char *text;
 	ssize_t ret;
 
-	thread_add_read(master, vtysh_log_read, vclient, vclient->log_fd,
-			&vclient->log_reader);
+	event_add_read(master, vtysh_log_read, vclient, vclient->log_fd,
+		       &vclient->log_reader);
 
 	ret = recv(vclient->log_fd, &buf, sizeof(buf), 0);
 
@@ -3756,7 +3929,7 @@ static void vtysh_log_read(struct thread *thread)
 				"log monitor connection closed unexpectedly");
 		buf.hdr.textlen = strlen(buf.text);
 
-		THREAD_OFF(vclient->log_reader);
+		EVENT_OFF(vclient->log_reader);
 		close(vclient->log_fd);
 		vclient->log_fd = -1;
 
@@ -3822,9 +3995,9 @@ DEFPY (vtysh_terminal_monitor,
 			if (fd != -1) {
 				set_nonblocking(fd);
 				vclient->log_fd = fd;
-				thread_add_read(master, vtysh_log_read, vclient,
-						vclient->log_fd,
-						&vclient->log_reader);
+				event_add_read(master, vtysh_log_read, vclient,
+					       vclient->log_fd,
+					       &vclient->log_reader);
 			}
 			if (ret != CMD_SUCCESS) {
 				vty_out(vty, "%% failed to enable logs on %s\n",
@@ -3878,7 +4051,7 @@ DEFPY (no_vtysh_terminal_monitor,
 			 * a close notification...
 			 */
 			if (vclient->log_fd != -1) {
-				THREAD_OFF(vclient->log_reader);
+				EVENT_OFF(vclient->log_reader);
 
 				close(vclient->log_fd);
 				vclient->log_fd = -1;
@@ -4698,6 +4871,25 @@ void vtysh_init_vty(void)
 	install_element(ISIS_NODE, &vtysh_exit_isisd_cmd);
 	install_element(ISIS_NODE, &vtysh_quit_isisd_cmd);
 	install_element(ISIS_NODE, &vtysh_end_all_cmd);
+
+	install_node(&isis_flex_algo_node);
+	install_element(ISIS_NODE, &isis_flex_algo_cmd);
+	install_element(ISIS_FLEX_ALGO_NODE, &vtysh_exit_isis_flex_algo_cmd);
+	install_element(ISIS_FLEX_ALGO_NODE, &vtysh_quit_isis_flex_algo_cmd);
+	install_element(ISIS_FLEX_ALGO_NODE, &vtysh_end_all_cmd);
+
+	install_node(&isis_srv6_node);
+	install_element(ISIS_NODE, &isis_srv6_enable_cmd);
+	install_element(ISIS_SRV6_NODE, &isis_srv6_node_msd_cmd);
+	install_element(ISIS_SRV6_NODE, &vtysh_exit_isis_srv6_enable_cmd);
+	install_element(ISIS_SRV6_NODE, &vtysh_quit_isis_srv6_enable_cmd);
+	install_element(ISIS_SRV6_NODE, &vtysh_end_all_cmd);
+	install_node(&isis_srv6_node_msd_node);
+	install_element(ISIS_SRV6_NODE_MSD_NODE,
+			&vtysh_exit_isis_srv6_node_msd_cmd);
+	install_element(ISIS_SRV6_NODE_MSD_NODE,
+			&vtysh_quit_isis_srv6_node_msd_cmd);
+	install_element(ISIS_SRV6_NODE_MSD_NODE, &vtysh_end_all_cmd);
 #endif /* HAVE_ISISD */
 
 	/* fabricd */
@@ -4850,6 +5042,9 @@ void vtysh_init_vty(void)
 	install_element(VRF_NODE, &vtysh_exit_vrf_cmd);
 	install_element(VRF_NODE, &vtysh_quit_vrf_cmd);
 
+	install_element(CONFIG_NODE, &vtysh_affinity_map_cmd);
+	install_element(CONFIG_NODE, &vtysh_no_affinity_map_cmd);
+
 	install_node(&rmap_node);
 	install_element(CONFIG_NODE, &vtysh_route_map_cmd);
 	install_element(RMAP_NODE, &vtysh_exit_rmap_cmd);
@@ -4876,6 +5071,7 @@ void vtysh_init_vty(void)
 	if (!user_mode)
 		install_element(VIEW_NODE, &vtysh_enable_cmd);
 	install_element(ENABLE_NODE, &vtysh_config_terminal_cmd);
+	install_element(ENABLE_NODE, &vtysh_config_terminal_file_lock_cmd);
 	install_element(ENABLE_NODE, &vtysh_disable_cmd);
 
 	/* "exit" command. */
@@ -4907,6 +5103,8 @@ void vtysh_init_vty(void)
 	install_element(ENABLE_NODE, &vtysh_show_running_config_cmd);
 	install_element(ENABLE_NODE, &vtysh_copy_running_config_cmd);
 	install_element(ENABLE_NODE, &vtysh_copy_to_running_cmd);
+
+	install_element(ENABLE_NODE, &show_route_map_cmd);
 
 	/* "write terminal" command. */
 	install_element(ENABLE_NODE, &vtysh_write_terminal_cmd);

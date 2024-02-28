@@ -1,25 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Zebra connect code.
  * Copyright (C) 2018 Cumulus Networks, Inc.
  *               Donald Sharp
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the Free
- * Software Foundation; either version 2 of the License, or (at your option)
- * any later version.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; see the file COPYING; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
  */
 #include <zebra.h>
 
-#include "thread.h"
+#include "frrevent.h"
 #include "command.h"
 #include "network.h"
 #include "prefix.h"
@@ -511,6 +498,21 @@ extern void static_zebra_route_add(struct static_path *pn, bool install)
 			api_nh->label_num = nh->snh_label.num_labels;
 			for (i = 0; i < api_nh->label_num; i++)
 				api_nh->labels[i] = nh->snh_label.label[i];
+		}
+		if (nh->snh_seg.num_segs) {
+			int i;
+
+			api_nh->seg6local_action =
+				ZEBRA_SEG6_LOCAL_ACTION_UNSPEC;
+			SET_FLAG(api_nh->flags, ZAPI_NEXTHOP_FLAG_SEG6);
+			SET_FLAG(api.flags, ZEBRA_FLAG_ALLOW_RECURSION);
+			api.safi = SAFI_UNICAST;
+
+			api_nh->seg_num = nh->snh_seg.num_segs;
+			for (i = 0; i < api_nh->seg_num; i++)
+				memcpy(&api_nh->seg6_segs[i],
+				       &nh->snh_seg.seg[i],
+				       sizeof(struct in6_addr));
 		}
 		nh_num++;
 	}

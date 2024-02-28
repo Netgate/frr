@@ -92,9 +92,6 @@ Basic Config Commands
    of some routine in FRR mistakenly blocking/hogging the processing loop and
    should be reported as a FRR bug.
 
-   The default limit is 5 seconds (i.e. 5000), but this can be changed by the
-   deprecated ``--enable-time-check=...`` compile-time option.
-
    This command has no effect if :clicmd:`service cputime-stats` is disabled.
 
 .. clicmd:: service walltime-warning (1-4294967295)
@@ -105,9 +102,6 @@ Basic Config Commands
    warnings if the system is overloaded.  (This may still be useful to
    provide an immediate sign that FRR is not operating correctly due to
    externally caused starvation.)
-
-   The default limit is 5 seconds as above, including the same deprecated
-   ``--enable-time-check=...`` compile-time option.
 
 .. clicmd:: log trap LEVEL
 
@@ -294,6 +288,12 @@ Basic Config Commands
       log files to quickly balloon in size.  Remember to disable backtraces
       when they're no longer needed.
 
+.. clicmd:: debug routemap [detail]
+
+   This command turns on debugging of routemaps.  When detail is specified
+   more data is provided to the operator about the reasoning about what
+   is going on in the routemap code.
+
 .. clicmd:: service password-encryption
 
    Encrypt password.
@@ -342,6 +342,10 @@ Basic Config Commands
 
    Allow using IPv4 reserved (Class E) IP ranges for daemons. E.g.: setting
    IPv4 addresses for interfaces or allowing reserved ranges in BGP next-hops.
+
+   If you need multiple FRR instances (or FRR + any other daemon) running in a
+   single router and peering via 127.0.0.0/8, it's also possible to use this
+   knob if turned on.
 
    Default: off.
 
@@ -674,8 +678,7 @@ Terminal Mode Commands
    This command displays system run statistics for all the different event
    types. If no options is specified all different run types are displayed
    together.  Additionally you can ask to look at (r)ead, (w)rite, (t)imer,
-   (e)vent and e(x)ecute thread event types.  If you have compiled with
-   disable-cpu-time then this command will not show up.
+   (e)vent and e(x)ecute thread event types.
 
 .. clicmd:: show thread poll
 

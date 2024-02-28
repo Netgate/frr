@@ -1,21 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * PIM for Quagga
  * Copyright (C) 2017 Cumulus Networks, Inc.
  * Chirag Shah
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; see the file COPYING; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
  */
 #include <zebra.h>
 #include "network.h"
@@ -44,6 +31,8 @@
 #include "pim_zlookup.h"
 #include "pim_rp.h"
 #include "pim_addr.h"
+#include "pim_register.h"
+#include "pim_vxlan.h"
 
 /**
  * pim_sendmsg_zebra_rnh -- Format and send a nexthop register/Unregister
@@ -353,6 +342,9 @@ bool pim_nht_bsr_rpf_check(struct pim_instance *pim, pim_addr bsr_addr,
 		case NEXTHOP_TYPE_IPV4_IFINDEX:
 			nhaddr = nh->gate.ipv4;
 			break;
+		case NEXTHOP_TYPE_IPV6:
+		case NEXTHOP_TYPE_IPV6_IFINDEX:
+			continue;
 #else
 		case NEXTHOP_TYPE_IPV6:
 			if (nh->ifindex == IFINDEX_INTERNAL)
@@ -362,12 +354,15 @@ bool pim_nht_bsr_rpf_check(struct pim_instance *pim, pim_addr bsr_addr,
 		case NEXTHOP_TYPE_IPV6_IFINDEX:
 			nhaddr = nh->gate.ipv6;
 			break;
+		case NEXTHOP_TYPE_IPV4:
+		case NEXTHOP_TYPE_IPV4_IFINDEX:
+			continue;
 #endif
 		case NEXTHOP_TYPE_IFINDEX:
 			nhaddr = bsr_addr;
 			break;
 
-		default:
+		case NEXTHOP_TYPE_BLACKHOLE:
 			continue;
 		}
 
@@ -406,17 +401,28 @@ static void pim_update_rp_nh(struct pim_instance *pim,
 {
 	struct listnode *node = NULL;
 	struct rp_info *rp_info = NULL;
+	struct interface *ifp;
 
 	/*Traverse RP list and update each RP Nexthop info */
 	for (ALL_LIST_ELEMENTS_RO(pnc->rp_list, node, rp_info)) {
 		if (pim_rpf_addr_is_inaddr_any(&rp_info->rp))
 			continue;
 
+		ifp = rp_info->rp.source_nexthop.interface;
 		// Compute PIM RPF using cached nexthop
 		if (!pim_ecmp_nexthop_lookup(pim, &rp_info->rp.source_nexthop,
 					     rp_info->rp.rpf_addr,
 					     &rp_info->group, 1))
 			pim_rp_nexthop_del(rp_info);
+
+		/*
+		 * If we transition from no path to a path
+		 * we need to search through all the vxlan's
+		 * that use this rp and send NULL registers
+		 * for all the vxlan S,G streams
+		 */
+		if (!ifp && rp_info->rp.source_nexthop.interface)
+			pim_vxlan_rp_info_is_alive(pim, &rp_info->rp);
 	}
 }
 
@@ -443,17 +449,27 @@ static int pim_update_upstream_nh_helper(struct hash_bucket *bucket, void *arg)
 		(rpf_result == PIM_RPF_FAILURE && old.source_nexthop.interface))
 		pim_zebra_upstream_rpf_changed(pim, up, &old);
 
+	/*
+	 * If we are a VXLAN source and we are transitioning from not
+	 * having an outgoing interface to having an outgoing interface
+	 * let's immediately send the null pim register
+	 */
+	if (!old.source_nexthop.interface && up->rpf.source_nexthop.interface &&
+	    PIM_UPSTREAM_FLAG_TEST_SRC_VXLAN_ORIG(up->flags) &&
+	    (up->reg_state == PIM_REG_NOINFO || up->reg_state == PIM_REG_JOIN)) {
+		pim_null_register_send(up);
+	}
 
 	if (PIM_DEBUG_PIM_NHT) {
-		zlog_debug(
-			"%s: NHT upstream %s(%s) old ifp %s new ifp %s",
-			__func__, up->sg_str, pim->vrf->name,
-			old.source_nexthop.interface ? old.source_nexthop
-							       .interface->name
-						     : "Unknown",
-			up->rpf.source_nexthop.interface ? up->rpf.source_nexthop
-								   .interface->name
-							 : "Unknown");
+		zlog_debug("%s: NHT upstream %s(%s) old ifp %s new ifp %s rpf_result: %d",
+			   __func__, up->sg_str, pim->vrf->name,
+			   old.source_nexthop.interface ? old.source_nexthop
+								  .interface->name
+							: "Unknown",
+			   up->rpf.source_nexthop.interface ? up->rpf.source_nexthop
+								      .interface->name
+							    : "Unknown",
+			   rpf_result);
 	}
 
 	return HASHWALK_CONTINUE;
@@ -731,27 +747,20 @@ int pim_parse_nexthop_update(ZAPI_CALLBACK_ARGS)
 		return 0;
 	}
 
-	if (cmd == ZEBRA_NEXTHOP_UPDATE) {
-		rpf.rpf_addr = pim_addr_from_prefix(&match);
-		pnc = pim_nexthop_cache_find(pim, &rpf);
-		if (!pnc) {
-			if (PIM_DEBUG_PIM_NHT)
-				zlog_debug(
-					"%s: Skipping NHT update, addr %pPA is not in local cached DB.",
-					__func__, &rpf.rpf_addr);
-			return 0;
-		}
-	} else {
-		/*
-		 * We do not currently handle ZEBRA_IMPORT_CHECK_UPDATE
-		 */
+	rpf.rpf_addr = pim_addr_from_prefix(&match);
+	pnc = pim_nexthop_cache_find(pim, &rpf);
+	if (!pnc) {
+		if (PIM_DEBUG_PIM_NHT)
+			zlog_debug(
+				"%s: Skipping NHT update, addr %pPA is not in local cached DB.",
+				__func__, &rpf.rpf_addr);
 		return 0;
 	}
 
 	pnc->last_update = pim_time_monotonic_usec();
 
 	if (nhr.nexthop_num) {
-		pnc->nexthop_num = 0; // Only increment for pim enabled rpf.
+		pnc->nexthop_num = 0;
 
 		for (i = 0; i < nhr.nexthop_num; i++) {
 			nexthop = nexthop_from_zapi_nexthop(&nhr.nexthops[i]);
@@ -869,7 +878,8 @@ int pim_parse_nexthop_update(ZAPI_CALLBACK_ARGS)
 				nhlist_tail = nexthop;
 				nhlist_head = nexthop;
 			}
-			// Only keep track of nexthops which are PIM enabled.
+
+			// Keep track of all nexthops, even PIM-disabled ones.
 			pnc->nexthop_num++;
 		}
 		/* Reset existing pnc->nexthop before assigning new list */

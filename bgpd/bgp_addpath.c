@@ -1,20 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Addpath TX ID selection, and related utilities
  * Copyright (C) 2018  Amazon.com, Inc. or its affiliates
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the Free
- * Software Foundation; either version 2 of the License, or (at your option)
- * any later version.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; see the file COPYING; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #ifdef HAVE_CONFIG_H
@@ -38,7 +25,14 @@ static const struct bgp_addpath_strategy_names strat_names[BGP_ADDPATH_MAX] = {
 		.human_description = "Advertise bestpath per AS via addpath",
 		.type_json_name = "addpathTxBestpathPerAS",
 		.id_json_name = "addpathTxIdBestPerAS"
-	}
+	},
+	{
+		.config_name = "addpath-tx-best-selected",
+		.human_name = "Best-Selected",
+		.human_description = "Advertise best N selected paths via addpath",
+		.type_json_name = "addpathTxBestSelectedPaths",
+		.id_json_name = "addpathTxIdBestSelected"
+	},
 };
 
 static const struct bgp_addpath_strategy_names unknown_names = {
@@ -174,9 +168,13 @@ bool bgp_addpath_tx_path(enum bgp_addpath_strat strat, struct bgp_path_info *pi)
 			return true;
 		else
 			return false;
-	default:
+	case BGP_ADDPATH_BEST_SELECTED:
+		return true;
+	case BGP_ADDPATH_MAX:
 		return false;
 	}
+
+	assert(!"Reached end of function we should never hit");
 }
 
 static void bgp_addpath_flush_type_rn(struct bgp *bgp, afi_t afi, safi_t safi,
@@ -367,7 +365,8 @@ void bgp_addpath_type_changed(struct bgp *bgp)
  * change take effect.
  */
 void bgp_addpath_set_peer_type(struct peer *peer, afi_t afi, safi_t safi,
-			      enum bgp_addpath_strat addpath_type)
+			       enum bgp_addpath_strat addpath_type,
+			       uint8_t paths)
 {
 	struct bgp *bgp = peer->bgp;
 	enum bgp_addpath_strat old_type;
@@ -377,6 +376,8 @@ void bgp_addpath_set_peer_type(struct peer *peer, afi_t afi, safi_t safi,
 
 	if (safi == SAFI_LABELED_UNICAST)
 		safi = SAFI_UNICAST;
+
+	peer->addpath_best_selected[afi][safi] = paths;
 
 	old_type = peer->addpath_type[afi][safi];
 	if (addpath_type == old_type)
@@ -422,10 +423,9 @@ void bgp_addpath_set_peer_type(struct peer *peer, afi_t afi, safi_t safi,
 			     tmp_peer)) {
 				if (tmp_peer->addpath_type[afi][safi] ==
 				    old_type) {
-					bgp_addpath_set_peer_type(tmp_peer,
-								 afi,
-								 safi,
-								 addpath_type);
+					bgp_addpath_set_peer_type(
+						tmp_peer, afi, safi,
+						addpath_type, paths);
 				}
 			}
 		}

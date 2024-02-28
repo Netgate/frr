@@ -1,21 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * BFD PTM adapter code
  * Copyright (C) 2018 Network Device Education Foundation, Inc. ("NetDEF")
- *
- * FRR is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2, or (at your option) any
- * later version.
- *
- * FRR is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with FRR; see the file COPYING.  If not, write to the Free
- * Software Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA
- * 02111-1307, USA.
  */
 
 #include <zebra.h>
@@ -770,20 +756,6 @@ static int bfd_ifp_destroy(struct interface *ifp)
 	return 0;
 }
 
-static int bfdd_interface_vrf_update(ZAPI_CALLBACK_ARGS)
-{
-	struct interface *ifp;
-	vrf_id_t nvrfid;
-
-	ifp = zebra_interface_vrf_update_read(zclient->ibuf, vrf_id, &nvrfid);
-	if (ifp == NULL)
-		return 0;
-
-	if_update_to_new_vrf(ifp, nvrfid);
-
-	return 0;
-}
-
 static void bfdd_sessions_enable_address(struct connected *ifc)
 {
 	struct bfd_session_observer *bso;
@@ -846,9 +818,6 @@ static zclient_handler *const bfd_handlers[] = {
 	 * avoid having to create too many handlers.
 	 */
 	[ZEBRA_BFD_DEST_REPLAY] = bfdd_replay,
-
-	/* Learn about interface VRF. */
-	[ZEBRA_INTERFACE_VRF_UPDATE] = bfdd_interface_vrf_update,
 
 	/* Learn about new addresses being registered. */
 	[ZEBRA_INTERFACE_ADDRESS_ADD] = bfdd_interface_address_update,

@@ -1,22 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /* bgpd memory type definitions
  *
  * Copyright (C) 2015  David Lamparter
- *
- * This file is part of Quagga.
- *
- * Quagga is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2, or (at your option) any
- * later version.
- *
- * Quagga is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; see the file COPYING; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #ifdef HAVE_CONFIG_H
@@ -32,6 +17,7 @@ DEFINE_MGROUP(BGPD, "bgpd");
 DEFINE_MTYPE(BGPD, BGP, "BGP instance");
 DEFINE_MTYPE(BGPD, BGP_LISTENER, "BGP listen socket details");
 DEFINE_MTYPE(BGPD, BGP_PEER, "BGP peer");
+DEFINE_MTYPE(BGPD, BGP_PEER_CONNECTION, "BGP peer connection");
 DEFINE_MTYPE(BGPD, BGP_PEER_HOST, "BGP peer hostname");
 DEFINE_MTYPE(BGPD, BGP_PEER_IFNAME, "BGP peer ifname");
 DEFINE_MTYPE(BGPD, PEER_GROUP, "Peer group");
@@ -52,6 +38,9 @@ DEFINE_MTYPE(BGPD, BGP_TABLE, "BGP table");
 DEFINE_MTYPE(BGPD, BGP_NODE, "BGP node");
 DEFINE_MTYPE(BGPD, BGP_ROUTE, "BGP route");
 DEFINE_MTYPE(BGPD, BGP_ROUTE_EXTRA, "BGP ancillary route info");
+DEFINE_MTYPE(BGPD, BGP_ROUTE_EXTRA_EVPN, "BGP extra info for EVPN");
+DEFINE_MTYPE(BGPD, BGP_ROUTE_EXTRA_FS, "BGP extra info for flowspec");
+DEFINE_MTYPE(BGPD, BGP_ROUTE_EXTRA_VRFLEAK, "BGP extra info for vrf leaking");
 DEFINE_MTYPE(BGPD, BGP_CONN, "BGP connected");
 DEFINE_MTYPE(BGPD, BGP_STATIC, "BGP static");
 DEFINE_MTYPE(BGPD, BGP_ADVERTISE_ATTR, "BGP adv attr");
@@ -139,3 +128,5 @@ DEFINE_MTYPE(BGPD, BGP_SRV6_FUNCTION, "BGP srv6 function");
 DEFINE_MTYPE(BGPD, EVPN_REMOTE_IP, "BGP EVPN Remote IP hash entry");
 
 DEFINE_MTYPE(BGPD, BGP_NOTIFICATION, "BGP Notification Message");
+
+DEFINE_MTYPE(BGPD, BGP_SOFT_VERSION, "Software Version");
