@@ -20,8 +20,7 @@ extern "C" {
 #endif
 
 FRR_CFG_DEFAULT_BOOL(ZEBRA_IP_NHT_RESOLVE_VIA_DEFAULT,
-	/* temporarily revert the default to 8.5.3 behavior */
-	{ .val_bool = false, .match_profile = "traditional", },
+	{ .val_bool = true, .match_profile = "traditional", },
 	{ .val_bool = false },
 );
 

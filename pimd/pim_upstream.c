@@ -1686,6 +1686,8 @@ const char *pim_reg_state2str(enum pim_reg_state reg_state, char *state_str,
 	return state_str;
 }
 
+static void pim_upstream_start_register_stop_timer(struct pim_upstream *up);
+
 static void pim_upstream_register_stop_timer(struct event *t)
 {
 	struct pim_interface *pim_ifp;
@@ -1733,7 +1735,7 @@ static void pim_upstream_register_stop_timer(struct event *t)
 			return;
 		}
 		up->reg_state = PIM_REG_JOIN_PENDING;
-		pim_upstream_start_register_stop_timer(up, 1);
+		pim_upstream_start_register_stop_timer(up);
 
 		if (((up->channel_oil->cc.lastused / 100)
 		     > pim->keep_alive_time)
@@ -1751,31 +1753,56 @@ static void pim_upstream_register_stop_timer(struct event *t)
 	}
 }
 
-void pim_upstream_start_register_stop_timer(struct pim_upstream *up,
-					    int null_register)
+static void pim_upstream_start_register_stop_timer(struct pim_upstream *up)
 {
 	uint32_t time;
 
 	EVENT_OFF(up->t_rs_timer);
 
-	if (!null_register) {
-		uint32_t lower = (0.5 * router->register_suppress_time);
-		uint32_t upper = (1.5 * router->register_suppress_time);
-		time = lower + (frr_weak_random() % (upper - lower + 1));
-		/* Make sure we don't wrap around */
-		if (time >= router->register_probe_time)
-			time -= router->register_probe_time;
-		else
-			time = 0;
-	} else
-		time = router->register_probe_time;
+	time = router->register_probe_time;
 
-	if (PIM_DEBUG_PIM_TRACE) {
-		zlog_debug(
-			"%s: (S,G)=%s Starting upstream register stop timer %d",
-			__func__, up->sg_str, time);
-	}
+	if (PIM_DEBUG_PIM_TRACE)
+		zlog_debug("%s: (S,G)=%s Starting upstream register stop timer %d",
+			   __func__, up->sg_str, time);
 	event_add_timer(router->master, pim_upstream_register_stop_timer, up,
+			time, &up->t_rs_timer);
+}
+
+static void pim_upstream_register_probe_timer(struct event *t)
+{
+	struct pim_upstream *up = EVENT_ARG(t);
+
+	if (!up->rpf.source_nexthop.interface ||
+	    !up->rpf.source_nexthop.interface->info) {
+		if (PIM_DEBUG_PIM_REG)
+			zlog_debug("cannot send Null register for %pSG, no path to RP",
+				   &up->sg);
+	} else
+		pim_null_register_send(up);
+
+	pim_upstream_start_register_stop_timer(up);
+}
+
+void pim_upstream_start_register_probe_timer(struct pim_upstream *up)
+{
+	uint32_t time;
+
+	EVENT_OFF(up->t_rs_timer);
+
+	uint32_t lower = (0.5 * router->register_suppress_time);
+	uint32_t upper = (1.5 * router->register_suppress_time);
+	time = lower + (frr_weak_random() % (upper - lower + 1));
+	/* Make sure we don't wrap around */
+	if (time >= router->register_probe_time)
+		time -= router->register_probe_time;
+	else
+		time = 0;
+
+	if (PIM_DEBUG_PIM_TRACE)
+		zlog_debug("%s: (S,G)=%s Starting upstream register stop null probe timer %d",
+			   __func__, up->sg_str, time);
+
+	event_add_timer(router->master, pim_upstream_register_probe_timer, up,
 			time, &up->t_rs_timer);
 }
 
@@ -1943,6 +1970,40 @@ void pim_upstream_terminate(struct pim_instance *pim)
 		wheel_delete(pim->upstream_sg_wheel);
 	pim->upstream_sg_wheel = NULL;
 }
+bool pim_sg_is_reevaluate_oil_req(struct pim_instance *pim,
+				  struct pim_upstream *up)
+{
+	struct pim_interface *pim_ifp = NULL;
+
+	/*
+	 * Attempt to retrieve the PIM interface information if the RPF
+	 * interface is present
+	 */
+	if (up->rpf.source_nexthop.interface) {
+		pim_ifp = up->rpf.source_nexthop.interface->info;
+	} else {
+		if (PIM_DEBUG_PIM_TRACE) {
+			zlog_debug("%s: up %s RPF is not present", __func__,
+				   up->sg_str);
+		}
+	}
+
+	/*
+	 * Determine if a reevaluation of the outgoing interface list (OIL) is
+	 * required. This may be necessary in scenarios such as MSDP where the
+	 * RP role for a group changes from secondary to primary. In such cases,
+	 * SGRpt may receive a prune, resulting in an S,G entry with a NULL OIL.
+	 * The S,G upstream should then inherit the OIL from *,G, which is
+	 * particularly important for VXLAN setups.
+	 */
+	if (up->channel_oil->oil_inherited_rescan ||
+	    (pim_ifp && I_am_RP(pim_ifp->pim, up->sg.grp)) ||
+	    pim_upstream_empty_inherited_olist(up)) {
+		return true;
+	}
+
+	return false;
+}
 
 bool pim_upstream_equal(const void *arg1, const void *arg2)
 {
@@ -2078,7 +2139,7 @@ static void pim_upstream_sg_running(void *arg)
 	 * only doing this at this point in time
 	 * to get us up and working for the moment
 	 */
-	if (up->channel_oil->oil_inherited_rescan) {
+	if (pim_sg_is_reevaluate_oil_req(pim, up)) {
 		if (PIM_DEBUG_TRACE)
 			zlog_debug(
 				"%s: Handling unscanned inherited_olist for %s[%s]",

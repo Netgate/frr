@@ -388,6 +388,9 @@ void vpn_leak_zebra_vrf_sid_update_per_af(struct bgp *bgp, afi_t afi)
 
 	tovpn_sid_ls = XCALLOC(MTYPE_BGP_SRV6_SID, sizeof(struct in6_addr));
 	*tovpn_sid_ls = *tovpn_sid;
+	if (bgp->vpn_policy[afi].tovpn_zebra_vrf_sid_last_sent)
+		XFREE(MTYPE_BGP_SRV6_SID,
+		      bgp->vpn_policy[afi].tovpn_zebra_vrf_sid_last_sent);
 	bgp->vpn_policy[afi].tovpn_zebra_vrf_sid_last_sent = tovpn_sid_ls;
 }
 
@@ -435,6 +438,8 @@ void vpn_leak_zebra_vrf_sid_update_per_vrf(struct bgp *bgp)
 
 	tovpn_sid_ls = XCALLOC(MTYPE_BGP_SRV6_SID, sizeof(struct in6_addr));
 	*tovpn_sid_ls = *tovpn_sid;
+	if (bgp->tovpn_zebra_vrf_sid_last_sent)
+		XFREE(MTYPE_BGP_SRV6_SID, bgp->tovpn_zebra_vrf_sid_last_sent);
 	bgp->tovpn_zebra_vrf_sid_last_sent = tovpn_sid_ls;
 }
 
@@ -482,6 +487,7 @@ void vpn_leak_zebra_vrf_sid_withdraw_per_af(struct bgp *bgp, afi_t afi)
 		bgp->vrf_id, ZEBRA_SEG6_LOCAL_ACTION_UNSPEC, NULL);
 	XFREE(MTYPE_BGP_SRV6_SID,
 	      bgp->vpn_policy[afi].tovpn_zebra_vrf_sid_last_sent);
+	bgp->vpn_policy[afi].tovpn_zebra_vrf_sid_last_sent = NULL;
 }
 
 /*
@@ -508,6 +514,7 @@ void vpn_leak_zebra_vrf_sid_withdraw_per_vrf(struct bgp *bgp)
 			      bgp->vrf_id, ZEBRA_SEG6_LOCAL_ACTION_UNSPEC,
 			      NULL);
 	XFREE(MTYPE_BGP_SRV6_SID, bgp->tovpn_zebra_vrf_sid_last_sent);
+	bgp->tovpn_zebra_vrf_sid_last_sent = NULL;
 }
 
 /*
@@ -1011,9 +1018,11 @@ static bool leak_update_nexthop_valid(struct bgp *to_bgp, struct bgp_dest *bn,
 {
 	struct bgp_path_info *bpi_ultimate;
 	struct bgp *bgp_nexthop;
+	struct bgp_table *table;
 	bool nh_valid;
 
 	bpi_ultimate = bgp_get_imported_bpi_ultimate(source_bpi);
+	table = bgp_dest_table(bpi_ultimate->net);
 
 	if (bpi->extra && bpi->extra->vrfleak && bpi->extra->vrfleak->bgp_orig)
 		bgp_nexthop = bpi->extra->vrfleak->bgp_orig;
@@ -1029,7 +1038,17 @@ static bool leak_update_nexthop_valid(struct bgp *to_bgp, struct bgp_dest *bn,
 	    is_pi_family_evpn(bpi_ultimate) ||
 	    CHECK_FLAG(bpi_ultimate->flags, BGP_PATH_ACCEPT_OWN))
 		nh_valid = true;
-	else
+	else if (bpi_ultimate->type == ZEBRA_ROUTE_BGP &&
+		 bpi_ultimate->sub_type == BGP_ROUTE_STATIC && table &&
+		 (table->safi == SAFI_UNICAST ||
+		  table->safi == SAFI_LABELED_UNICAST) &&
+		 !CHECK_FLAG(bgp_nexthop->flags, BGP_FLAG_IMPORT_CHECK)) {
+		/* if the route is defined with the "network <prefix>" command
+		 * and "no bgp network import-check" is set,
+		 * then mark the nexthop as valid.
+		 */
+		nh_valid = true;
+	} else
 		/*
 		 * TBD do we need to do anything about the
 		 * 'connected' parameter?

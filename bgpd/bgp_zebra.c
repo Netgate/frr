@@ -2605,8 +2605,12 @@ static int bgp_zebra_route_notify_owner(int command, struct zclient *zclient,
 	/* Find the bgp route node */
 	dest = bgp_safi_node_lookup(bgp->rib[afi][safi], safi, &p,
 				    &bgp->vrf_prd);
-	if (!dest)
+	if (!dest) {
+		if (BGP_DEBUG(zebra, ZEBRA))
+			zlog_debug("%s: %pFX does not exist in the BGP table, nothing to do for %u",
+				   __func__, &p, note);
 		return -1;
+	}
 
 	switch (note) {
 	case ZAPI_ROUTE_INSTALLED:
@@ -3193,11 +3197,11 @@ static int bgp_zebra_process_srv6_locator_add(ZAPI_CALLBACK_ARGS)
 	struct bgp *bgp = bgp_get_default();
 	const char *loc_name = bgp->srv6_locator_name;
 
-	if (zapi_srv6_locator_decode(zclient->ibuf, &loc) < 0)
-		return -1;
-
 	if (!bgp || !bgp->srv6_enabled)
 		return 0;
+
+	if (zapi_srv6_locator_decode(zclient->ibuf, &loc) < 0)
+		return -1;
 
 	if (bgp_zebra_srv6_manager_get_locator_chunk(loc_name) < 0)
 		return -1;
@@ -3215,6 +3219,9 @@ static int bgp_zebra_process_srv6_locator_delete(ZAPI_CALLBACK_ARGS)
 	struct bgp *bgp_vrf;
 	struct in6_addr *tovpn_sid;
 	struct prefix_ipv6 tmp_prefi;
+
+	if (!bgp)
+		return 0;
 
 	if (zapi_srv6_locator_decode(zclient->ibuf, &loc) < 0)
 		return -1;

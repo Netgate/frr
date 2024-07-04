@@ -6387,8 +6387,10 @@ int dplane_provider_work_ready(void)
 	 * enqueue the work, but the event-scheduling machinery may not be
 	 * available.
 	 */
-	event_add_event(zdplane_info.dg_master, dplane_thread_loop,
-			NULL, 0, &zdplane_info.dg_t_update);
+	if (zdplane_info.dg_run) {
+		event_add_event(zdplane_info.dg_master, dplane_thread_loop,
+				NULL, 0, &zdplane_info.dg_t_update);
+	}
 
 	return AOK;
 }
@@ -7164,14 +7166,15 @@ static void dplane_thread_loop(struct event *event)
 	/* Capture work limit per cycle */
 	limit = zdplane_info.dg_updates_per_cycle;
 
-    do {
-	reschedule = false;
-
 	/* Init temporary lists used to move contexts among providers */
 	dplane_ctx_list_init(&work_list);
 	dplane_ctx_list_init(&error_list);
 
 	error_counter = 0;
+
+	/* Check for zebra shutdown */
+	if (!zdplane_info.dg_run)
+		return;
 
 	/* Dequeue some incoming work from zebra (if any) onto the temporary
 	 * working list.
@@ -7269,6 +7272,10 @@ static void dplane_thread_loop(struct event *event)
 		 */
 		(*prov->dp_fp)(prov);
 
+		/* Check for zebra shutdown */
+		if (!zdplane_info.dg_run)
+			break;
+
 		/* Dequeue completed work from the provider */
 		dplane_provider_lock(prov);
 
@@ -7293,8 +7300,6 @@ static void dplane_thread_loop(struct event *event)
 		/* Locate next provider */
 		prov = dplane_prov_list_next(&zdplane_info.dg_providers, prov);
 	}
-
-   } while (!zdplane_info.dg_run && reschedule);
 
 	/*
 	 * We hit the work limit while processing at least one provider's
@@ -7337,9 +7342,9 @@ void zebra_dplane_shutdown(void)
 	if (IS_ZEBRA_DEBUG_DPLANE)
 		zlog_debug("Zebra dataplane shutdown called");
 
-	zdplane_info.dg_run = false;
+	/* Stop dplane thread, if it's running */
 
-	/* Wait for dplane thread to finish */
+	zdplane_info.dg_run = false;
 
 	frr_pthread_stop(zdplane_info.dg_pthread, NULL);
 

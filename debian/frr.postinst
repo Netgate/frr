@@ -15,6 +15,7 @@ adduser \
 	--no-create-home \
 	frr
 usermod -a -G frrvty frr
+usermod -a -G frr syslog
 
 if getent passwd frr >/dev/null ; then \
     /usr/sbin/groupadd -f -r vpp > /dev/null ; \
@@ -22,7 +23,8 @@ if getent passwd frr >/dev/null ; then \
     /sbin/usermod -a -G vpp,root frr || : ; \
 fi
 
-mkdir -m 0755 -p /var/log/frr
+mkdir -p /var/log/frr
+chmod 0775 /var/log/frr
 mkdir -m 0755 -p /etc/frr/dataplane/known_hosts
 
 
@@ -50,7 +52,6 @@ find \
 		:
 	else
 		chown frr: "$filename"
-		chmod o-rwx "$filename"
 	fi
 done
 

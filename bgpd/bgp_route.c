@@ -542,6 +542,15 @@ void bgp_path_info_unset_flag(struct bgp_dest *dest, struct bgp_path_info *pi,
 	bgp_pcount_adjust(dest, pi);
 }
 
+static bool use_bgp_med_value(struct attr *attr, struct bgp *bgp)
+{
+	if (attr->flag & ATTR_FLAG_BIT(BGP_ATTR_MULTI_EXIT_DISC) ||
+	    CHECK_FLAG(bgp->flags, BGP_FLAG_MED_MISSING_AS_WORST))
+		return true;
+
+	return false;
+}
+
 /* Get MED value.  If MED value is missing and "bgp bestpath
    missing-as-worst" is specified, treat it as the worst value. */
 static uint32_t bgp_med_value(struct attr *attr, struct bgp *bgp)
@@ -2956,7 +2965,7 @@ void subgroup_process_announce_selected(struct update_subgroup *subgrp,
 {
 	const struct prefix *p;
 	struct peer *onlypeer;
-	struct attr attr;
+	struct attr attr = { 0 }, *pattr = &attr;
 	struct bgp *bgp;
 	bool advertise;
 
@@ -2984,26 +2993,30 @@ void subgroup_process_announce_selected(struct update_subgroup *subgrp,
 	advertise = bgp_check_advertise(bgp, dest, safi);
 
 	if (selected) {
-		if (subgroup_announce_check(dest, selected, subgrp, p, &attr,
+		if (subgroup_announce_check(dest, selected, subgrp, p, pattr,
 					    NULL)) {
 			/* Route is selected, if the route is already installed
 			 * in FIB, then it is advertised
 			 */
 			if (advertise) {
 				if (!bgp_check_withdrawal(bgp, dest, safi)) {
-					struct attr *adv_attr =
-						bgp_attr_intern(&attr);
-
-					bgp_adj_out_set_subgroup(dest, subgrp,
-								 adv_attr,
-								 selected);
-				} else
+					if (!bgp_adj_out_set_subgroup(dest,
+								      subgrp,
+								      pattr,
+								      selected))
+						bgp_attr_flush(pattr);
+				} else {
 					bgp_adj_out_unset_subgroup(
 						dest, subgrp, 1, addpath_tx_id);
-			}
-		} else
+					bgp_attr_flush(pattr);
+				}
+			} else
+				bgp_attr_flush(pattr);
+		} else {
 			bgp_adj_out_unset_subgroup(dest, subgrp, 1,
 						   addpath_tx_id);
+			bgp_attr_flush(pattr);
+		}
 	}
 
 	/* If selected is NULL we must withdraw the path using addpath_tx_id */
@@ -3461,14 +3474,6 @@ static void bgp_process_main_one(struct bgp *bgp, struct bgp_dest *dest,
 	}
 #endif
 
-	group_announce_route(bgp, afi, safi, dest, new_select);
-
-	/* unicast routes must also be annouced to labeled-unicast update-groups
-	 */
-	if (safi == SAFI_UNICAST)
-		group_announce_route(bgp, afi, SAFI_LABELED_UNICAST, dest,
-				     new_select);
-
 	/* FIB update. */
 	if (bgp_fibupd_safi(safi) && (bgp->inst_type != BGP_INSTANCE_TYPE_VIEW)
 	    && !bgp_option_check(BGP_OPT_NO_FIB)) {
@@ -3497,6 +3502,15 @@ static void bgp_process_main_one(struct bgp *bgp, struct bgp_dest *dest,
 				bgp_zebra_withdraw(p, old_select, bgp, safi);
 		}
 	}
+
+	group_announce_route(bgp, afi, safi, dest, new_select);
+
+	/* unicast routes must also be annouced to labeled-unicast update-groups
+	 */
+	if (safi == SAFI_UNICAST)
+		group_announce_route(bgp, afi, SAFI_LABELED_UNICAST, dest,
+				     new_select);
+
 
 	bgp_process_evpn_route_injection(bgp, afi, safi, dest, new_select,
 					 old_select);
@@ -5958,10 +5972,10 @@ bool bgp_outbound_policy_exists(struct peer *peer, struct bgp_filter *filter)
 	if (peer->sort == BGP_PEER_IBGP)
 		return true;
 
-	if (peer->sort == BGP_PEER_EBGP
-	    && (ROUTE_MAP_OUT_NAME(filter) || PREFIX_LIST_OUT_NAME(filter)
-		|| FILTER_LIST_OUT_NAME(filter)
-		|| DISTRIBUTE_OUT_NAME(filter)))
+	if (peer->sort == BGP_PEER_EBGP &&
+	    (ROUTE_MAP_OUT_NAME(filter) || PREFIX_LIST_OUT_NAME(filter) ||
+	     FILTER_LIST_OUT_NAME(filter) || DISTRIBUTE_OUT_NAME(filter) ||
+	     UNSUPPRESS_MAP_NAME(filter)))
 		return true;
 	return false;
 }
@@ -9331,14 +9345,16 @@ void route_vty_out(struct vty *vty, const struct prefix *p,
 	}
 
 	/* MED/Metric */
-	if (attr->flag & ATTR_FLAG_BIT(BGP_ATTR_MULTI_EXIT_DISC))
+	if (use_bgp_med_value(attr, path->peer->bgp)) {
+		uint32_t value = bgp_med_value(attr, path->peer->bgp);
+
 		if (json_paths)
-			json_object_int_add(json_path, "metric", attr->med);
+			json_object_int_add(json_path, "metric", value);
 		else if (wide)
-			vty_out(vty, "%7u", attr->med);
+			vty_out(vty, "%7u", value);
 		else
-			vty_out(vty, "%10u", attr->med);
-	else if (!json_paths) {
+			vty_out(vty, "%10u", value);
+	} else if (!json_paths) {
 		if (wide)
 			vty_out(vty, "%*s", 7, " ");
 		else
@@ -9459,7 +9475,7 @@ void route_vty_out(struct vty *vty, const struct prefix *p,
 }
 
 /* called from terminal list command */
-void route_vty_out_tmp(struct vty *vty, struct bgp_dest *dest,
+void route_vty_out_tmp(struct vty *vty, struct bgp *bgp, struct bgp_dest *dest,
 		       const struct prefix *p, struct attr *attr, safi_t safi,
 		       bool use_json, json_object *json_ar, bool wide)
 {
@@ -9520,10 +9536,11 @@ void route_vty_out_tmp(struct vty *vty, struct bgp_dest *dest,
 					&attr->mp_nexthop_global_in);
 			}
 
-			if (attr->flag
-			    & ATTR_FLAG_BIT(BGP_ATTR_MULTI_EXIT_DISC))
-				json_object_int_add(json_net, "metric",
-						    attr->med);
+			if (use_bgp_med_value(attr, bgp)) {
+				uint32_t value = bgp_med_value(attr, bgp);
+
+				json_object_int_add(json_net, "metric", value);
+			}
 
 			if (attr->flag & ATTR_FLAG_BIT(BGP_ATTR_LOCAL_PREF))
 				json_object_int_add(json_net, "locPrf",
@@ -9568,13 +9585,15 @@ CPP_NOTICE("Drop `bgpOriginCodes` from JSON outputs")
 				else
 					vty_out(vty, "%*s", len, " ");
 			}
-			if (attr->flag
-			    & ATTR_FLAG_BIT(BGP_ATTR_MULTI_EXIT_DISC))
+
+			if (use_bgp_med_value(attr, bgp)) {
+				uint32_t value = bgp_med_value(attr, bgp);
+
 				if (wide)
-					vty_out(vty, "%7u", attr->med);
+					vty_out(vty, "%7u", value);
 				else
-					vty_out(vty, "%10u", attr->med);
-			else if (wide)
+					vty_out(vty, "%10u", value);
+			} else if (wide)
 				vty_out(vty, "       ");
 			else
 				vty_out(vty, "          ");
@@ -10578,11 +10597,13 @@ void route_vty_out_detail(struct vty *vty, struct bgp *bgp, struct bgp_dest *bn,
 		vty_out(vty, "      Origin %s",
 			bgp_origin_long_str[attr->origin]);
 
-	if (attr->flag & ATTR_FLAG_BIT(BGP_ATTR_MULTI_EXIT_DISC)) {
+	if (use_bgp_med_value(attr, bgp)) {
+		uint32_t value = bgp_med_value(attr, bgp);
+
 		if (json_paths)
-			json_object_int_add(json_path, "metric", attr->med);
+			json_object_int_add(json_path, "metric", value);
 		else
-			vty_out(vty, ", metric %u", attr->med);
+			vty_out(vty, ", metric %u", value);
 	}
 
 	if (attr->flag & ATTR_FLAG_BIT(BGP_ATTR_LOCAL_PREF)) {
@@ -14230,7 +14251,7 @@ show_adj_route(struct vty *vty, struct peer *peer, struct bgp_table *table,
 							json_ar, json_net,
 							"%pFX", rn_p);
 				} else
-					route_vty_out_tmp(vty, dest, rn_p,
+					route_vty_out_tmp(vty, bgp, dest, rn_p,
 							  &attr, safi, use_json,
 							  json_ar, wide);
 				bgp_attr_flush(&attr);
@@ -14293,11 +14314,15 @@ show_adj_route(struct vty *vty, struct peer *peer, struct bgp_table *table,
 									"%pFX",
 									rn_p);
 						} else
-							route_vty_out_tmp(
-								vty, dest, rn_p,
-								&attr, safi,
-								use_json,
-								json_ar, wide);
+							route_vty_out_tmp(vty,
+									  bgp,
+									  dest,
+									  rn_p,
+									  &attr,
+									  safi,
+									  use_json,
+									  json_ar,
+									  wide);
 						(*output_count)++;
 					} else {
 						(*filtered_count)++;
@@ -14336,9 +14361,10 @@ show_adj_route(struct vty *vty, struct peer *peer, struct bgp_table *table,
 							json_ar, json_net,
 							"%pFX", rn_p);
 				} else
-					route_vty_out_tmp(
-						vty, dest, rn_p, pi->attr, safi,
-						use_json, json_ar, wide);
+					route_vty_out_tmp(vty, bgp, dest, rn_p,
+							  pi->attr, safi,
+							  use_json, json_ar,
+							  wide);
 				(*output_count)++;
 			}
 		}

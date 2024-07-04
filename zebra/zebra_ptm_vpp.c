@@ -368,7 +368,7 @@ zebra_ptm_vpp_bfd_get_sess(vapi_type_address *peer_addr, uint32_t sw_if_index)
 	vapi_payload_bfd_udp_session_details *bfd_sessions;
 	vapi_payload_bfd_udp_session_details *bs;
 
-	bfd_sessions = vmgmt2_bfd_get_sessions_vec();
+	bfd_sessions = vmgmt2_bfd_get_sessions_vec(true /* force_refresh */);
 
 	tnsr_vec_foreach(bs, bfd_sessions) {
 		if (bs->sw_if_index != sw_if_index) {
@@ -466,7 +466,8 @@ void zebra_ptm_vpp_reroute(struct zserv *zs,
 
 void zebra_ptm_vpp_init(void)
 {
-	vmgmt2_bfd_events_register(zebra_ptm_vpp_bfd_event_add, 1);
+	vmgmt2_bfd_events_register(zebra_ptm_vpp_bfd_event_add,
+				   true /* is_enable */);
 
 	bfd_event_wq = work_queue_new(zrouter.master, "bfd_event_wq");
 	bfd_event_wq->spec.workfunc = zebra_ptm_vpp_bfd_event_process;
@@ -478,7 +479,8 @@ void zebra_ptm_vpp_init(void)
 
 void zebra_ptm_vpp_finish(void)
 {
-	vmgmt2_bfd_events_register(zebra_ptm_vpp_bfd_event_add, 0);
+	vmgmt2_bfd_events_register(zebra_ptm_vpp_bfd_event_add,
+				   false /* is_enable */);
 	tnsr_vec_free(bfd_peers_to_monitor);
 	work_queue_free_and_null(&bfd_event_wq);
 }
