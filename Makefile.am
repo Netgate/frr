@@ -36,6 +36,7 @@ AM_LDFLAGS = \
 	-export-dynamic \
 	$(AC_LDFLAGS) \
 	$(AC_LDFLAGS_EXEC) \
+	$(LIBYANG_LIBS) \
 	$(SAN_FLAGS) \
 	# end
 
@@ -56,7 +57,7 @@ MODULE_LDFLAGS = \
 	$(SAN_FLAGS) \
 	# end
 
-DEFS = @DEFS@ -DSYSCONFDIR=\"$(sysconfdir)/\" -DCONFDATE=$(CONFDATE)
+DEFS = @DEFS@ -DCONFDATE=$(CONFDATE)
 
 AR_FLAGS = @AR_FLAGS@
 ARFLAGS = @ARFLAGS@

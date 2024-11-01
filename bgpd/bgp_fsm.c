@@ -445,7 +445,7 @@ void bgp_timer_set(struct peer_connection *connection)
 
 		EVENT_OFF(peer->connection->t_pmax_restart);
 		EVENT_OFF(peer->t_refresh_stalepath);
-	/* fallthru */
+		fallthrough;
 	case Clearing:
 		EVENT_OFF(connection->t_start);
 		EVENT_OFF(connection->t_connect);
@@ -2387,6 +2387,7 @@ void bgp_fsm_nht_update(struct peer_connection *connection, struct peer *peer,
 		    && (peer->gtsm_hops == BGP_GTSM_HOPS_CONNECTED
 			|| peer->bgp->fast_convergence))
 			BGP_EVENT_ADD(connection, TCP_fatal_error);
+		break;
 	case Clearing:
 	case Deleted:
 	case BGP_STATUS_MAX:
@@ -2894,19 +2895,22 @@ int bgp_neighbor_graceful_restart(struct peer *peer,
 
 	peer_old_state = bgp_peer_gr_mode_get(peer);
 
-	if (peer_old_state == PEER_INVALID) {
-		zlog_debug("[BGP_GR] peer_old_state == Invalid state !");
+	if (BGP_DEBUG(graceful_restart, GRACEFUL_RESTART))
+		zlog_debug("%s [BGP_GR] peer_old_state: %d", __func__,
+			   peer_old_state);
+
+	if (peer_old_state == PEER_INVALID)
 		return BGP_ERR_GR_OPERATION_FAILED;
-	}
 
 	peer_state = peer->PEER_GR_FSM[peer_old_state][peer_gr_cmd];
 	peer_new_state = peer_state.next_state;
 
-	if (peer_new_state == PEER_INVALID) {
-		zlog_debug(
-			"[BGP_GR] Invalid bgp graceful restart command used !");
+	if (BGP_DEBUG(graceful_restart, GRACEFUL_RESTART))
+		zlog_debug("%s [BGP_GR] peer_new_state: %d", __func__,
+			   peer_new_state);
+
+	if (peer_new_state == PEER_INVALID)
 		return BGP_ERR_GR_INVALID_CMD;
-	}
 
 	if (peer_new_state != peer_old_state) {
 		result = peer_state.action_fun(peer, peer_old_state,

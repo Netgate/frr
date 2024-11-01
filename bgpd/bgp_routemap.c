@@ -2326,7 +2326,7 @@ static const struct route_map_rule_cmd route_set_aspath_prepend_cmd = {
 static void *route_aspath_exclude_compile(const char *arg)
 {
 	struct aspath_exclude *ase;
-	struct aspath_exclude_list *ael;
+	struct as_list *aux_aslist;
 	const char *str = arg;
 	static const char asp_acl[] = "as-path-access-list";
 
@@ -2338,17 +2338,16 @@ static void *route_aspath_exclude_compile(const char *arg)
 		while (*str == ' ')
 			str++;
 		ase->exclude_aspath_acl_name = XSTRDUP(MTYPE_TMP, str);
-		ase->exclude_aspath_acl = as_list_lookup(str);
+		aux_aslist = as_list_lookup(str);
+		if (!aux_aslist)
+			/* new orphan filter */
+			as_exclude_set_orphan(ase);
+		else
+			as_list_list_add_head(&aux_aslist->exclude_rule, ase);
+
+		ase->exclude_aspath_acl = aux_aslist;
 	} else
 		ase->aspath = aspath_str2aspath(str, bgp_get_asnotation(NULL));
-
-	if (ase->exclude_aspath_acl) {
-		ael = XCALLOC(MTYPE_ROUTE_MAP_COMPILED,
-				sizeof(struct aspath_exclude_list));
-		ael->bp_as_excl = ase;
-		ael->next = ase->exclude_aspath_acl->exclude_list;
-		ase->exclude_aspath_acl->exclude_list = ael;
-	}
 
 	return ase;
 }
@@ -2356,26 +2355,20 @@ static void *route_aspath_exclude_compile(const char *arg)
 static void route_aspath_exclude_free(void *rule)
 {
 	struct aspath_exclude *ase = rule;
-	struct aspath_exclude_list *cur_ael = NULL;
-	struct aspath_exclude_list *prev_ael = NULL;
+	struct as_list *acl;
+
+	/* manage references to that rule*/
+	if (ase->exclude_aspath_acl) {
+		acl = ase->exclude_aspath_acl;
+		as_list_list_del(&acl->exclude_rule, ase);
+	} else if (ase->exclude_aspath_acl_name) {
+		/* no ref to acl, this aspath exclude is orphan */
+		as_exclude_remove_orphan(ase);
+	}
 
 	aspath_free(ase->aspath);
 	if (ase->exclude_aspath_acl_name)
 		XFREE(MTYPE_TMP, ase->exclude_aspath_acl_name);
-	if (ase->exclude_aspath_acl)
-		cur_ael = ase->exclude_aspath_acl->exclude_list;
-	while (cur_ael) {
-		if (cur_ael->bp_as_excl == ase) {
-			if (prev_ael)
-				prev_ael->next = cur_ael->next;
-			else
-				ase->exclude_aspath_acl->exclude_list = NULL;
-			XFREE(MTYPE_ROUTE_MAP_COMPILED, cur_ael);
-			break;
-		}
-		prev_ael = cur_ael;
-		cur_ael = cur_ael->next;
-	}
 	XFREE(MTYPE_ROUTE_MAP_COMPILED, ase);
 }
 
@@ -2410,16 +2403,10 @@ route_set_aspath_exclude(void *rule, const struct prefix *dummy, void *object)
 	else if (ase->exclude_all)
 		path->attr->aspath = aspath_filter_exclude_all(new_path);
 
-	else if (ase->exclude_aspath_acl_name) {
-		if (!ase->exclude_aspath_acl)
-			ase->exclude_aspath_acl =
-				as_list_lookup(ase->exclude_aspath_acl_name);
-		if (ase->exclude_aspath_acl)
-			path->attr->aspath =
-				aspath_filter_exclude_acl(new_path,
-							  ase->exclude_aspath_acl);
-	}
-
+	else if (ase->exclude_aspath_acl)
+		path->attr->aspath =
+			aspath_filter_exclude_acl(new_path,
+						  ase->exclude_aspath_acl);
 	return RMAP_OKAY;
 }
 
@@ -4621,6 +4608,7 @@ static void bgp_route_map_process_update(struct bgp *bgp, const char *rmap_name,
 					route_map_counter_increment(map);
 
 				aggregate->rmap.map = map;
+				aggregate->rmap.changed = true;
 
 				matched = true;
 			}
@@ -4766,6 +4754,24 @@ static void bgp_route_map_delete(const char *rmap_name)
 		bgp_route_map_mark_update(rmap_name);
 
 	route_map_notify_dependencies(rmap_name, RMAP_EVENT_MATCH_DELETED);
+}
+
+bool bgp_route_map_has_extcommunity_rt(const struct route_map *map)
+{
+	struct route_map_index *index = NULL;
+	struct route_map_rule *set = NULL;
+
+	assert(map);
+
+	for (index = map->head; index; index = index->next) {
+		for (set = index->set_list.head; set; set = set->next) {
+			if (set->cmd && set->cmd->str &&
+			    (strmatch(set->cmd->str, "extcommunity rt") ||
+			     strmatch(set->cmd->str, "extended-comm-list")))
+				return true;
+		}
+	}
+	return false;
 }
 
 static void bgp_route_map_event(const char *rmap_name)

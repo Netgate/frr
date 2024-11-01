@@ -45,7 +45,8 @@ static void nhrp_peer_check_delete(struct nhrp_peer *p)
 
 	EVENT_OFF(p->t_fallback);
 	EVENT_OFF(p->t_timer);
-	hash_release(nifp->peer_hash, p);
+	if (nifp->peer_hash)
+		hash_release(nifp->peer_hash, p);
 	nhrp_interface_notify_del(p->ifp, &p->ifp_notifier);
 	nhrp_vc_notify_del(p->vc, &p->vc_notifier);
 	XFREE(MTYPE_NHRP_PEER, p);
@@ -139,7 +140,7 @@ static void nhrp_peer_ifp_notify(struct notifier_block *n, unsigned long cmd)
 					   nhrp_peer_vc_notify);
 			__nhrp_peer_check(p);
 		}
-		/* fallthru */ /* to post config update */
+		fallthrough; /* to post config update */
 	case NOTIFY_INTERFACE_ADDRESS_CHANGED:
 		notifier_call(&p->notifier_list, NOTIFY_PEER_IFCONFIG_CHANGED);
 		break;
@@ -596,6 +597,12 @@ static void nhrp_handle_resolution_req(struct nhrp_packet_parser *pp)
 				nhrp_ext_complete(zb, ext);
 			}
 			break;
+		case NHRP_EXTENSION_AUTHENTICATION:
+			/* Extensions can be copied from original packet except
+			 * authentication extension which must be regenerated
+			 * hop by hop.
+			 */
+			break;
 		default:
 			if (nhrp_ext_reply(zb, hdr, ifp, ext, &payload) < 0)
 				goto err;
@@ -1050,7 +1057,7 @@ static void nhrp_peer_forward(struct nhrp_peer *p,
 				 * append our selves to the transit NHS list
 				 */
 				goto err;
-		/* fallthru */
+			fallthrough;
 		case NHRP_EXTENSION_RESPONDER_ADDRESS:
 			/* Supported compulsory extensions, and any
 			 * non-compulsory that is not explicitly handled,
@@ -1220,7 +1227,7 @@ void nhrp_peer_recv(struct nhrp_peer *p, struct zbuf *zb)
 				/* FIXME: send error-indication */
 			}
 		}
-		/* fallthru */ /* FIXME: double check, is this correct? */
+		fallthrough; /* FIXME: double check, is this correct? */
 	case NHRP_ROUTE_OFF_NBMA:
 		if (packet_types[hdr->type].handler) {
 			packet_types[hdr->type].handler(&pp);

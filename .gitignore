@@ -117,8 +117,4 @@ refix
 /test-suite.log
 pceplib/test/*.log
 pceplib/test/*.trs
-
-### TNSR specific items
-.version
-build-root
-*.rej
+/tests/topotests/lib/mgmt_pb2.py

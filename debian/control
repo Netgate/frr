@@ -22,7 +22,6 @@ Build-Depends: bison,
                libreadline-dev,
                librtr-dev (>= 0.8.0~) <!pkg.frr.nortrlib>,
                libssh-dev <!pkg.frr.nortrlib>,
-               libyang2-dev,
                lsb-base,
                pkg-config,
                protobuf-c-compiler,
@@ -41,6 +40,7 @@ Vcs-Git: https://github.com/FRRouting/frr.git -b debian/master
 Package: netgate-frr
 Architecture: linux-any
 Depends: iproute2,
+         libyang2t64 (>= 2.1.128),
          logrotate (>= 3.2-11),
          lsof,
          tnsr-dataplane-netns,

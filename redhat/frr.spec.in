@@ -16,6 +16,7 @@
 %{!?with_cumulus:       %global  with_cumulus       0 }
 %{!?with_eigrpd:        %global  with_eigrpd        1 }
 %{!?with_fpm:           %global  with_fpm           1 }
+%{!?with_mgmtd_test_be_client: %global with_mgmtd_test_be_client 0 }
 %{!?with_ldpd:          %global  with_ldpd          1 }
 %{!?with_multipath:     %global  with_multipath     256 }
 %{!?with_nhrpd:         %global  with_nhrpd         1 }
@@ -42,8 +43,9 @@
 %define     zeb_docs    %{zeb_src}/doc
 %define     frr_tools   %{zeb_src}/tools
 
-# defines for configure
-%define     rundir  %{_localstatedir}/run/%{name}
+%if 0%{!?_runstatedir:1}
+%define _runstatedir %{_localstatedir}/run
+%endif
 
 ############################################################################
 
@@ -180,11 +182,12 @@ BuildRequires:  flex
 BuildRequires:  gcc
 BuildRequires:  json-c-devel
 BuildRequires:  libcap-devel
+BuildRequires:  protobuf-c-devel
 BuildRequires:  make
 BuildRequires:  ncurses-devel
 BuildRequires:  readline-devel
 BuildRequires:  texinfo
-BuildRequires:  libyang-devel >= 2.1.80
+BuildRequires:  libyang-devel >= 2.1.128
 %if 0%{?rhel} && 0%{?rhel} < 7
 #python27-devel is available from ius community repo for RedHat/CentOS 6
 BuildRequires:  python27-devel
@@ -316,11 +319,13 @@ routing state through standard SNMP MIBs.
 
 %configure \
     --sbindir=%{_sbindir} \
-    --sysconfdir=%{configdir} \
-    --localstatedir=%{rundir} \
+    --sysconfdir=%{_sysconfdir} \
+    --localstatedir=%{_localstatedir} \
     --disable-static \
     --disable-werror \
-    --enable-irdp \
+%if %{with_mgmtd_test_be_client}
+    --enable-mgmtd-test-be-client \
+%endif
 %if %{with_multipath}
     --enable-multipath=%{with_multipath} \
 %endif
@@ -470,7 +475,7 @@ install %{zeb_src}/tools/etc/frr/daemons %{buildroot}%{_sysconfdir}/frr
 install %{zeb_src}/tools/etc/frr/frr.conf %{buildroot}%{_sysconfdir}/frr/frr.conf.template
 install -m644 %{zeb_rh_src}/frr.pam %{buildroot}%{_sysconfdir}/pam.d/frr
 install -m644 %{zeb_src}/tools/etc/logrotate.d/frr %{buildroot}%{_sysconfdir}/logrotate.d/frr
-install -d -m750 %{buildroot}%{rundir}
+install -d -m750 %{buildroot}%{_runstatedir}/frr
 
 %if 0%{?rhel} > 7 || 0%{?fedora} > 29
 # avoid `ERROR: ambiguous python shebang in` errors
@@ -494,7 +499,7 @@ rm -f %{buildroot}%{_sbindir}/ospfclient.py
     getent passwd %{frr_user} >/dev/null || \
     useradd -r -u %{frr_uid} -g %{frr_user} \
         -s /sbin/nologin -c "FRRouting suite" \
-        -d %{rundir} %{frr_user}
+        -d %{_runstatedir}/frr %{frr_user}
 
     %if 0%{?vty_group:1}
         usermod -a -G %{vty_group} %{frr_user}
@@ -654,11 +659,11 @@ fi
 %if 0%{?frr_user:1}
     %dir %attr(751,%{frr_user},%{frr_user}) %{configdir}
     %dir %attr(755,%{frr_user},%{frr_user}) %{_localstatedir}/log/frr
-    %dir %attr(751,%{frr_user},%{frr_user}) %{rundir}
+    %dir %attr(751,%{frr_user},%{frr_user}) %{_runstatedir}/frr
 %else
     %dir %attr(750,root,root) %{configdir}
     %dir %attr(755,root,root) %{_localstatedir}/log/frr
-    %dir %attr(750,root,root) %{rundir}
+    %dir %attr(750,root,root) %{_runstatedir}/frr
 %endif
 %{_infodir}/frr.info.gz
 %{_mandir}/man*/*
@@ -668,6 +673,9 @@ fi
 %{_sbindir}/ripd
 %{_sbindir}/bgpd
 %{_sbindir}/mgmtd
+%if %{with_mgmtd_test_be_client}
+    %{_sbindir}/mgmtd_testc
+%endif
 %exclude %{_sbindir}/ssd
 %if %{with_watchfrr}
     %{_sbindir}/watchfrr
@@ -715,7 +723,6 @@ fi
 %endif
 %{_libdir}/frr/modules/zebra_cumulus_mlag.so
 %{_libdir}/frr/modules/dplane_fpm_nl.so
-%{_libdir}/frr/modules/zebra_irdp.so
 %{_libdir}/frr/modules/bgpd_bmp.so
 %{_libdir}/libfrr_pb.so*
 %{_libdir}/libfrrfpm_pb.so*
@@ -779,8 +786,6 @@ sed -i 's/ -M rpki//' %{_sysconfdir}/frr/daemons
 %{_libdir}/lib*.so
 %dir %{_includedir}/%{name}
 %{_includedir}/%{name}/*.h
-%dir %{_includedir}/%{name}/mgmtd
-%{_includedir}/%{name}/mgmtd/*.h
 %dir %{_includedir}/%{name}/ospfd
 %{_includedir}/%{name}/ospfd/*.h
 %if %{with_bfdd}
@@ -799,9 +804,147 @@ sed -i 's/ -M rpki//' %{_sysconfdir}/frr/daemons
 
 %changelog
 
-* Thu Oct 09 2023 Donatas Abraitis <donatas@opensourcerouting.org> - %{version}
+* Wed Sep 11 2024 Martin Winter <mwinter@opensourcerouting.org> - %{version}
 
-* Thu Oct 09 2023 Donatas Abraitis <donatas@opensourcerouting.org> - 9.1
+* Wed Sep 11 2024 Donatas Abraitis <donatas@opensourcerouting.org> - 10.0.2
+- bgpd
+-    Fix as-path exclude modify crash
+-    Fix, do not access peer->notify.data when it is null
+-    Fix crash at no rpki
+-    Ignore RFC8212 for BGP Confederations
+-    Fix for CVE-2024-44070
+-    Relax OAD (One-Administration-Domain) for RFC8212
+-    Fix "bgp as-pah access-list" with "set aspath exclude" set/unset issues
+-    Check if we have really enough data before doing memcpy for FQDN capability
+-    Check if we have really enough data before doing memcpy for software version
+-    Set last reset reason to admin shutdown if it was manually
+-    Fix do not use api.backup_nexthop in ZAPI message
+- isisd
+-    Fix crash when reading asla
+-    Add missing `exit` statement
+-    Fix update link params after circuit is up
+-    Fix crash at flex-algo without mpls-te
+-    Fix memory handling in isis_adj_process_threeway()
+-    Fix crash when calculating the neighbor spanning tree based on the fragmented LSP
+-    Fix crash when obtaining the next hop to calculate LFA on LAN links
+-    Fix memory leaks when the transition of neighbor state from non-UP to DOWN
+-    fix crash when displaying asla in json
+- pimd
+-    Fix crash in pimd
+-    Fix msdp setting of sa->rp
+-    Fix crash on non-existent interface
+- nhrpd
+-    Fix sending /32 shortcut
+- mgmtd
+-    Don't add implicit state data when reading config from file
+-    Fix too early daemon detach of mgmtd
+- ripd
+-    Fix show run output for distribute-list
+- lib
+-    Fix distribute-list deletion
+-    Fix crash on distribute-list delete
+-    Fix incorrect use of error checking macro
+- yang
+-    Added missed prefix to the yang file
+- ospfd
+-    Fix internal ldp-sync state flags when feature is disabled
+- ldpd
+-    Fix wrong gtsm count
+- ripd
+-    Change the start value of sequence 1 to 0
+- zebra
+-    Fix evpn mh bond member proto reinstall
+-    Fix to avoid two Vrfs with same table ids
+-    Fix missing static routes
+-    Ensure non-equal id's are not same nhg's
+
+* Thu Jun 06 2024 Jafar Al-Gharaibeh <jafar@atcorp.com> - 10.0.1
+- bgpd
+-    Fix route leaking from the default l3vrf
+-    Allow using optional table id for negative `no set table x` command
+-    Apply noop when doing negative commands for gr operations
+-    Drop newline in json output for `show bgp afi safi json detail`
+-    Fix `match peer` when switching between ipv4/ipv6/interface
+-    Fix `no set as-path prepend asnum...`
+-    Fix crash when deleting the srv6 locator
+-    Fix display when using `missing-as-worst`
+-    Fix dynamic peer graceful restart race condition
+-    Fix logging message when receiving a software version capability
+-    Fix show run of network route-distinguisher
+-    Fix srv6 memory leaks spotted by asan
+-    Fix the order of null check and zapi decode
+-    Ignore validating the attribute flags if path-attribute is configured
+-    Inherit `capability software-version` flag from the peer-group
+-    Inherit `enforce-first-as` flag from the peer-group
+-    Move srv6 cleanup functions
+-    Print old/new states of graceful restart fsm
+-    Revert "Fix pointer arithmetic in bgp snmp module"
+- debian, redhat, snapcraft
+-    Libyang min version is 2.1.128
+- isisd
+-    Fix heap-after-free with prefix sid
+-    Fix ip/ipv6 reachability tlvs
+- lib
+-    Check for not being a blackhole route
+-    Fix exit commands
+-    Remove nb/yang memory cleanup when daemonizing
+-    Replace deprecated ares_gethostbyname
+-    Replace deprecated ares_process()
+- nhrpd
+-    Fix race condition
+-    Fix core dump on shutdown
+-    Clean up shortcut cache entries on termination
+- ospf6d
+-    Accept cli `no` for point-to-multipoint
+-    Fix defun formatting wrecked by clang
+-    Fix loopback/ptp/ptmp conn. route checks
+-    Force recalculate on interface_up
+-    Prevent heap-buffer-overflow with unknown
+-    Ospfv3 route change comparision fixed for asbr-only change
+- ospfd
+-    Correct opaque lsa extended parser
+-    Fix the bug where ip_ospf_dead-interval_minimal_hello-multiplier did not reset hello timer
+-    Protect call to get_edge() in ospf_te.c
+-    Solved crash in ri parsing with ospf te
+-    Revert "Fix some dicey pointer arith in snmp module"
+- pimd
+-    Fix crash unconfiguring rp keepalive timer
+-    Fix dr-priority range
+-    Fix null register before aging out reg-stop
+-    Fix order of operations for evaluating join
+-    Fix crash when mixing ssm/any-source joins
+- tests
+-    Check if ibgp session can drop invalid aigp attribute
+- tools
+-    Frr-reload strip interface vrf ctx line
+-    Handle seq num for bgp as-path in frr-reload.py
+- topotests
+-    Do not check table version
+- vtysh
+-    Check if bgpd is enabled before installing vtysh commands for rpki
+-    Fix `show route-map` command when calling via `do`
+-    Show `ip ospf network ...` even if it's not the same as the interface type
+- zebra
+-    Deny the routes if ip protocol cli refers to an undefined rmap
+-    Fix encoded dnssl length
+-    Fix evpn svd based remote nh neigh del
+-    Fix mpls command
+
+* Mon Apr 08 2024 Jafar Al-Gharaibeh <jafar@atcorp.com> - 10.0
+- Major highlights:
+-   Introduce local host routes
+-   Require libyang 2.1.128
+-   Add suport to configire a log file per daemon
+-   BGP BMP Loc-RIB (RFC9069) support
+-   eBGP-OAD (One Administrative Domain) support
+-   BGP RPKI VRF support
+-   BGP SNMP traps for BGP4-MIBV2
+-   Management (mgmtd) daemon "replace" operation support
+-   BGP dynamic capabilities for addpath, fqdn, orf capabilities
+-   SRv6 encapsulation source address feature
+-   OSPFv3 Point-To-Multipoint mode
+
+* Mon Oct 09 2023 Donatas Abraitis <donatas@opensourcerouting.org> - 9.1
 - Major highlights:
 -   OSPFv2 HMAC-SHA Cryptographic Authentication
 -   BGP MAC-VRF Site-Of-Origin support
@@ -821,18 +964,20 @@ sed -i 's/ -M rpki//' %{_sysconfdir}/frr/daemons
 -   Memory footprint for BGP reduced drastically
 -   Add BGP `neighbor path-attribute treat-as-withdraw` command
 -   Add BGP ASN dot notation support (RFC 5396)
--   Add BGP Software Version capability (draft-abraitis-bgp-version-capability)
+-   Add BGP Software Version capability
 -   Allow BGP peering via 127.0.0.0/8
--   Deprecate BGP internet community - this is the Cisco-specific community, which is never been RFC-defined and confusing
+-   Deprecate BGP `internet` community - this is the Cisco-specific community, which is never been RFC-defined and confusing
 -   Implement `match source-protocol` for BGP route maps
 -   Implement BGP Node Target extended communities (draft-ietf-idr-node-target-ext-comm)
 -   Implement Flex-Algo for SR-MPLS (RFC 9350)
--   Add support for IS-IS advertise-passive-only
--   Add IS-IS affinity-map support
--   Add the graceful-restart hello-delay OSPFv2/OSPFv3 command
+-   Add support for IS-IS `advertise-passive-only`
+-   Add IS-IS `affinity-map` support
+-   Add the `graceful-restart hello-delay` OSPFv2/OSPFv3 command
 -   Add the `ipv6 mld join` PIMv6 command
 -   Add `allow-ecmp x` RIP/RIPng command
 -   Add BFD support for RIP
+- For a full list of new features and bug fixes, please refer to:
+-   https://frrouting.org/release/
 
 * Fri Mar 10 2023 Jafar Al-Gharaibeh <jafar@atcorp.com> - 8.5
 - Major Highlights:

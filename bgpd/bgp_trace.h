@@ -135,11 +135,12 @@ TRACEPOINT_LOGLEVEL(frr_bgp, bmp_mirror_packet, TRACE_INFO)
 TRACEPOINT_EVENT(
 	frr_bgp,
 	bmp_eor,
-	TP_ARGS(afi_t, afi, safi_t, safi, uint8_t, flags),
+	TP_ARGS(afi_t, afi, safi_t, safi, uint8_t, flags, uint8_t, peer_type_flag),
 	TP_FIELDS(
 		ctf_integer(afi_t, afi, afi)
 		ctf_integer(safi_t, safi, safi)
 		ctf_integer(uint8_t, flags, flags)
+		ctf_integer(uint8_t, peer_type_flag, peer_type_flag)
 	)
 )
 
@@ -307,7 +308,8 @@ TRACEPOINT_EVENT(
 		struct in_addr, vtep, esi_t *, esi),
 	TP_FIELDS(
 		ctf_string(action, add ? "add" : "del")
-		ctf_integer(vni_t, vni, vpn->vni)
+		ctf_integer(vni_t, vni, (vpn ? vpn->vni : 0))
+		ctf_integer(uint32_t, eth_tag, &pfx->prefix.macip_addr.eth_tag)
 		ctf_array(unsigned char, mac, &pfx->prefix.macip_addr.mac,
 			sizeof(struct ethaddr))
 		ctf_array(unsigned char, ip, &pfx->prefix.macip_addr.ip,
@@ -325,7 +327,7 @@ TRACEPOINT_EVENT(
 		const struct prefix_evpn *, pfx),
 	TP_FIELDS(
 		ctf_string(action, add ? "add" : "del")
-		ctf_integer(vni_t, vni, vpn->vni)
+		ctf_integer(vni_t, vni, (vpn ? vpn->vni : 0))
 		ctf_integer_network_hex(unsigned int, vtep,
 			pfx->prefix.imet_addr.ip.ipaddr_v4.s_addr)
 	)

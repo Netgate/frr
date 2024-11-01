@@ -15,7 +15,6 @@ adduser \
 	--no-create-home \
 	frr
 usermod -a -G frrvty frr
-usermod -a -G frr syslog
 
 if getent passwd frr >/dev/null ; then \
     /usr/sbin/groupadd -f -r vpp > /dev/null ; \
@@ -23,10 +22,13 @@ if getent passwd frr >/dev/null ; then \
     /sbin/usermod -a -G vpp,root frr || : ; \
 fi
 
-mkdir -p /var/log/frr
-chmod 0775 /var/log/frr
+mkdir -m 0755 -p /var/log/frr
+mkdir -m 0700 -p /var/lib/frr
+mkdir -p /etc/frr
+mkdir -p /etc/frr/dataplane
 mkdir -m 0755 -p /etc/frr/dataplane/known_hosts
 
+chown frr: /var/lib/frr
 
 # only change ownership of files when they were previously owned by root or
 # quagga; this is to ensure we don't trample over some custom user setup.
@@ -52,6 +54,7 @@ find \
 		:
 	else
 		chown frr: "$filename"
+		chmod o-rwx "$filename"
 	fi
 done
 

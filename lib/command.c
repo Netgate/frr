@@ -10,6 +10,10 @@
  */
 
 #include <zebra.h>
+#include <sys/utsname.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+
 #include <lib/version.h>
 
 #include "command.h"
@@ -38,6 +42,8 @@
 #include "routemap.h"
 
 #include "frrscript.h"
+
+#include "lib/config_paths.h"
 
 DEFINE_MTYPE_STATIC(LIB, HOST, "Host config");
 DEFINE_MTYPE(LIB, COMPLETION, "Completion item");
@@ -1350,7 +1356,7 @@ DEFUN (disable,
 }
 
 /* Down vty node level. */
-DEFUN (config_exit,
+DEFUN_YANG (config_exit,
        config_exit_cmd,
        "exit",
        "Exit current mode and down to previous mode\n")
@@ -1629,6 +1635,10 @@ static int vty_write_config(struct vty *vty)
 	return CMD_SUCCESS;
 }
 
+/* cross-reference frr_daemon_state_save in libfrr.c
+ * the code there is similar but not identical (state files always use the same
+ * name for the new write, and don't keep a backup of previous state.)
+ */
 static int file_write_config(struct vty *vty)
 {
 	int fd, dirfd;

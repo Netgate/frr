@@ -168,14 +168,14 @@ zebra_ptm_vpp_parse_msg(struct stream *msg,
 
 	/* Read field: ifname length. */
 	STREAM_GETC(msg, if_name_len);
-	if (if_name_len >= INTERFACE_NAMSIZ) {
+	if (if_name_len >= IF_NAMESIZE) {
 		zlog_err("%s: invalid if_name_len: %u", __func__, if_name_len);
 		return;
 	}
 
 	/* Read field: interface name. */
 	if (if_name_len > 0) {
-		char if_name[INTERFACE_NAMSIZ];
+		char if_name[IF_NAMESIZE];
 
 		STREAM_GET(if_name, msg, if_name_len);
 		if_name[if_name_len] = '\0';

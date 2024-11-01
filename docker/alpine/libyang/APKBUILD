@@ -1,7 +1,7 @@
 # Contributor: Sören Tempel <soeren+alpine@soeren-tempel.net>
 # Maintainer: Christian Franke <nobody@nowhere.ws>
 pkgname=libyang
-pkgver=2.1.80
+pkgver=2.1.128
 pkgrel=0
 pkgdesc="YANG data modelling language parser and toolkit"
 url="https://github.com/CESNET/libyang"
@@ -21,6 +21,7 @@ source="$pkgname-$pkgver.tar.gz::https://github.com/CESNET/libyang/archive/v$pkg
 #     - CVE-2021-28906
 
 build() {
+	export ABUILD_APK_INDEX_OPTS="--allow-untrusted"
 	if [ "$CBUILD" != "$CHOST" ]; then
 		CMAKE_CROSSOPTS="-DCMAKE_SYSTEM_NAME=Linux -DCMAKE_HOST_SYSTEM_NAME=Linux"
 	fi

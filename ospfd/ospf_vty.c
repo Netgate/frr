@@ -22,6 +22,7 @@
 #include "defaults.h"
 #include "lib/printfrr.h"
 #include "keychain.h"
+#include "frrdistance.h"
 
 #include "ospfd/ospfd.h"
 #include "ospfd/ospf_asbr.h"
@@ -1871,7 +1872,7 @@ DEFUN (no_ospf_area_import_list,
 
 DEFUN (ospf_area_filter_list,
        ospf_area_filter_list_cmd,
-       "area <A.B.C.D|(0-4294967295)> filter-list prefix PREFIXLIST_NAME <in|out>",
+       "area <A.B.C.D|(0-4294967295)> filter-list prefix PREFIXLIST4_NAME <in|out>",
        "OSPF area parameters\n"
        "OSPF area ID in IP address format\n"
        "OSPF area ID as a decimal value\n"
@@ -1916,7 +1917,7 @@ DEFUN (ospf_area_filter_list,
 
 DEFUN (no_ospf_area_filter_list,
        no_ospf_area_filter_list_cmd,
-       "no area <A.B.C.D|(0-4294967295)> filter-list prefix PREFIXLIST_NAME <in|out>",
+       "no area <A.B.C.D|(0-4294967295)> filter-list prefix PREFIXLIST4_NAME <in|out>",
        NO_STR
        "OSPF area parameters\n"
        "OSPF area ID in IP address format\n"
@@ -5709,7 +5710,7 @@ DEFPY(show_ip_ospf_neighbor_id,
 					"%% OSPF is not enabled in vrf %s\n",
 					vrf_name);
 			else
-				vty_json_empty(vty);
+				vty_json_empty(vty, NULL);
 			return CMD_SUCCESS;
 		}
 		ret = show_ip_ospf_neighbor_id_common(
@@ -6210,7 +6211,7 @@ DEFPY(show_ip_ospf_neighbor_int,
 
 	if (!ospf || !ospf->oi_running) {
 		if (json)
-			vty_json_empty(vty);
+			vty_json_empty(vty, NULL);
 		return ret;
 	}
 
@@ -6220,7 +6221,7 @@ DEFPY(show_ip_ospf_neighbor_int,
 	ifp = if_lookup_by_name(ifname, vrf_id);
 	if (!ifp) {
 		if (json)
-			vty_json_empty(vty);
+			vty_json_empty(vty, NULL);
 		else
 			vty_out(vty, "No such interface.\n");
 		return ret;
@@ -6257,7 +6258,7 @@ DEFPY(show_ip_ospf_neighbor_int_detail,
 					"%% OSPF is not enabled in vrf %s\n",
 					vrf_name);
 			else
-				vty_json_empty(vty);
+				vty_json_empty(vty, NULL);
 			return CMD_SUCCESS;
 		}
 		return show_ip_ospf_neighbor_int_detail_common(
@@ -13223,6 +13224,10 @@ static void ospf_vty_if_init(void)
 	/* "ip ospf hello-interval" commands. */
 	install_element(INTERFACE_NODE, &ip_ospf_hello_interval_cmd);
 	install_element(INTERFACE_NODE, &no_ip_ospf_hello_interval_cmd);
+
+	/* "ip ospf graceful-restart" commands. */
+	install_element(INTERFACE_NODE, &ip_ospf_gr_hdelay_cmd);
+	install_element(INTERFACE_NODE, &no_ip_ospf_gr_hdelay_cmd);
 
 	/* "ip ospf network" commands. */
 	install_element(INTERFACE_NODE, &ip_ospf_network_cmd);

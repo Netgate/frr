@@ -198,9 +198,8 @@ static int group_announce_route_walkcb(struct update_group *updgrp, void *arg)
 	addpath_capable = bgp_addpath_encode_tx(peer, afi, safi);
 
 	if (BGP_DEBUG(update, UPDATE_OUT))
-		zlog_debug("%s: afi=%s, safi=%s, p=%pRN", __func__,
-			   afi2str(afi), safi2str(safi),
-			   bgp_dest_to_rnode(ctx->dest));
+		zlog_debug("%s: afi=%s, safi=%s, p=%pBD", __func__,
+			   afi2str(afi), safi2str(safi), ctx->dest);
 
 	UPDGRP_FOREACH_SUBGRP (updgrp, subgrp) {
 		/*
@@ -737,7 +736,7 @@ void subgroup_announce_table(struct update_subgroup *subgrp,
 	if (safi != SAFI_MPLS_VPN && safi != SAFI_ENCAP && safi != SAFI_EVPN
 	    && CHECK_FLAG(peer->af_flags[afi][safi],
 			  PEER_FLAG_DEFAULT_ORIGINATE))
-		subgroup_default_originate(subgrp, 0);
+		subgroup_default_originate(subgrp, false);
 
 	subgrp->pscount = 0;
 	SET_FLAG(subgrp->sflags, SUBGRP_STATUS_TABLE_REPARSING);
@@ -829,7 +828,7 @@ void subgroup_announce_route(struct update_subgroup *subgrp)
 		}
 }
 
-void subgroup_default_originate(struct update_subgroup *subgrp, int withdraw)
+void subgroup_default_originate(struct update_subgroup *subgrp, bool withdraw)
 {
 	struct bgp *bgp;
 	struct attr attr = { 0 };
@@ -920,8 +919,8 @@ void subgroup_default_originate(struct update_subgroup *subgrp, int withdraw)
 						bgp_attr_flush(new_attr);
 						new_attr = bgp_attr_intern(
 							tmp_pi.attr);
-						bgp_attr_flush(tmp_pi.attr);
 					}
+					bgp_attr_flush(tmp_pi.attr);
 					subgroup_announce_reset_nhop(
 						(peer_cap_enhe(peer, afi, safi)
 							 ? AF_INET6
@@ -946,7 +945,7 @@ void subgroup_default_originate(struct update_subgroup *subgrp, int withdraw)
 					 SUBGRP_STATUS_DEFAULT_ORIGINATE)))
 				SET_FLAG(subgrp->sflags,
 					 SUBGRP_STATUS_DEFAULT_ORIGINATE);
-			withdraw = 1;
+			withdraw = true;
 		}
 	}
 

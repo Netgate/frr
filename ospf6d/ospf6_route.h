@@ -67,7 +67,7 @@ static inline bool ospf6_nexthop_is_same(const struct ospf6_nexthop *nha,
 	case NEXTHOP_TYPE_IPV6_IFINDEX:
 		if (nha->ifindex != nhb->ifindex)
 			return false;
-		/* FALLTHROUGH */
+		fallthrough;
 	case NEXTHOP_TYPE_IPV6:
 		if (!IN6_ARE_ADDR_EQUAL(&nha->address, &nhb->address))
 			return false;
@@ -287,6 +287,7 @@ extern const char *const ospf6_path_type_substr[OSPF6_PATH_TYPE_MAX];
 	 prefix_same(&(ra)->prefix, &(rb)->prefix) &&                          \
 	 (ra)->path.type == (rb)->path.type &&                                 \
 	 (ra)->path.cost == (rb)->path.cost &&                                 \
+	 (ra)->path.router_bits == (rb)->path.router_bits &&                   \
 	 (ra)->path.u.cost_e2 == (rb)->path.u.cost_e2 &&                       \
 	 listcount(ra->paths) == listcount(rb->paths) &&                       \
 	 ospf6_route_cmp_nexthops(ra, rb))

@@ -19,10 +19,10 @@ WatchdogSec=60s
 RestartSec=5
 Restart=always
 LimitNOFILE=1024
-PIDFile=@CFG_STATE@/%I/watchfrr.pid
-ExecStart=/usr/sbin/ip netns exec %I @CFG_SBIN@/frrinit.sh start %I
-ExecStop=/usr/sbin/ip netns exec %I @CFG_SBIN@/frrinit.sh stop %I
-ExecReload=/usr/sbin/ip netns exec %I @CFG_SBIN@/frrinit.sh reload %I
+PIDFile=@e_frr_runstatedir@/%I/watchfrr.pid
+ExecStart=/usr/sbin/ip netns exec %I @e_sbindir@/frrinit.sh start %I
+ExecStop=/usr/sbin/ip netns exec %I @e_sbindir@/frrinit.sh stop %I
+ExecReload=/usr/sbin/ip netns exec %I @e_sbindir@/frrinit.sh reload %I
 
 [Install]
 WantedBy=multi-user.target

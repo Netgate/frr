@@ -864,6 +864,7 @@ bool attrhash_cmp(const void *p1, const void *p2)
 		    attr1->df_alg == attr2->df_alg &&
 		    attr1->nh_ifindex == attr2->nh_ifindex &&
 		    attr1->nh_lla_ifindex == attr2->nh_lla_ifindex &&
+		    attr1->nh_flags == attr2->nh_flags &&
 		    attr1->distance == attr2->distance &&
 		    srv6_l3vpn_same(attr1->srv6_l3vpn, attr2->srv6_l3vpn) &&
 		    srv6_vpn_same(attr1->srv6_vpn, attr2->srv6_vpn) &&
@@ -1860,7 +1861,9 @@ bgp_attr_local_pref(struct bgp_attr_parser_args *args)
 	 * UPDATE message SHALL be handled using the approach of "treat-as-
 	 * withdraw".
 	 */
-	if (peer->sort == BGP_PEER_IBGP && length != 4) {
+	if ((peer->sort == BGP_PEER_IBGP ||
+	     peer->sub_sort == BGP_PEER_EBGP_OAD) &&
+	    length != 4) {
 		flog_err(EC_BGP_ATTR_LEN,
 			 "LOCAL_PREF attribute length isn't 4 [%u]", length);
 		return bgp_attr_malformed(args, BGP_NOTIFY_UPDATE_ATTR_LENG_ERR,
@@ -1870,7 +1873,7 @@ bgp_attr_local_pref(struct bgp_attr_parser_args *args)
 	/* If it is contained in an UPDATE message that is received from an
 	   external peer, then this attribute MUST be ignored by the
 	   receiving speaker. */
-	if (peer->sort == BGP_PEER_EBGP) {
+	if (peer->sort == BGP_PEER_EBGP && peer->sub_sort != BGP_PEER_EBGP_OAD) {
 		STREAM_FORWARD_GETP(peer->curr, length);
 		return BGP_ATTR_PARSE_PROCEED;
 	}
@@ -2342,11 +2345,8 @@ int bgp_mp_reach_parse(struct bgp_attr_parser_args *args,
 				/*
 				 * NOTE: intentional fall through
 				 * - for consistency in rx processing
-				 *
-				 * The following comment is to signal GCC this intention
-				 * and suppress the warning
 				 */
-	/* FALLTHRU */
+		fallthrough;
 	case BGP_ATTR_NHLEN_IPV4:
 		stream_get(&attr->mp_nexthop_global_in, s, IPV4_MAX_BYTELEN);
 		/* Probably needed for RFC 2283 */
@@ -2700,17 +2700,20 @@ static int bgp_attr_encap(struct bgp_attr_parser_args *args)
 		}
 	}
 
-	while (length >= 4) {
+	while (STREAM_READABLE(BGP_INPUT(peer)) >= 4) {
 		uint16_t subtype = 0;
 		uint16_t sublength = 0;
 		struct bgp_attr_encap_subtlv *tlv;
 
 		if (BGP_ATTR_ENCAP == type) {
 			subtype = stream_getc(BGP_INPUT(peer));
-			sublength = (subtype < 128)
-					    ? stream_getc(BGP_INPUT(peer))
-					    : stream_getw(BGP_INPUT(peer));
-			length -= 2;
+			if (subtype < 128) {
+				sublength = stream_getc(BGP_INPUT(peer));
+				length -= 2;
+			} else {
+				sublength = stream_getw(BGP_INPUT(peer));
+				length -= 3;
+			}
 #ifdef ENABLE_BGP_VNC
 		} else {
 			subtype = stream_getw(BGP_INPUT(peer));
@@ -2722,6 +2725,14 @@ static int bgp_attr_encap(struct bgp_attr_parser_args *args)
 		if (sublength > length) {
 			zlog_err("Tunnel Encap attribute sub-tlv length %d exceeds remaining length %d",
 				 sublength, length);
+			return bgp_attr_malformed(args,
+						  BGP_NOTIFY_UPDATE_OPT_ATTR_ERR,
+						  args->total);
+		}
+
+		if (STREAM_READABLE(BGP_INPUT(peer)) < sublength) {
+			zlog_err("Tunnel Encap attribute sub-tlv length %d exceeds remaining stream length %zu",
+				 sublength, STREAM_READABLE(BGP_INPUT(peer)));
 			return bgp_attr_malformed(args,
 						  BGP_NOTIFY_UPDATE_OPT_ATTR_ERR,
 						  args->total);
@@ -3288,7 +3299,8 @@ static enum bgp_attr_parse_ret bgp_attr_aigp(struct bgp_attr_parser_args *args)
 	 * the default value of AIGP_SESSION SHOULD be "enabled".
 	 */
 	if (peer->sort == BGP_PEER_EBGP &&
-	    !CHECK_FLAG(peer->flags, PEER_FLAG_AIGP)) {
+	    (!CHECK_FLAG(peer->flags, PEER_FLAG_AIGP) ||
+	     peer->sub_sort != BGP_PEER_EBGP_OAD)) {
 		zlog_warn(
 			"%pBP received AIGP attribute, but eBGP peer do not support it",
 			peer);
@@ -4513,7 +4525,8 @@ bgp_size_t bgp_packet_attribute(struct bgp *bgp, struct peer *peer,
 	}
 
 	/* Local preference. */
-	if (peer->sort == BGP_PEER_IBGP || peer->sort == BGP_PEER_CONFED) {
+	if (peer->sort == BGP_PEER_IBGP || peer->sort == BGP_PEER_CONFED ||
+	    peer->sub_sort == BGP_PEER_EBGP_OAD) {
 		stream_putc(s, BGP_ATTR_FLAG_TRANS);
 		stream_putc(s, BGP_ATTR_LOCAL_PREF);
 		stream_putc(s, 4);
@@ -4879,6 +4892,7 @@ bgp_size_t bgp_packet_attribute(struct bgp *bgp, struct peer *peer,
 	/* AIGP */
 	if (bpi && attr->flag & ATTR_FLAG_BIT(BGP_ATTR_AIGP) &&
 	    (CHECK_FLAG(peer->flags, PEER_FLAG_AIGP) ||
+	     peer->sub_sort == BGP_PEER_EBGP_OAD ||
 	     peer->sort != BGP_PEER_EBGP)) {
 		/* At the moment only AIGP Metric TLV exists for AIGP
 		 * attribute. If more comes in, do not forget to update

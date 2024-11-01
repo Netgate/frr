@@ -629,7 +629,7 @@ def test_isis_hello_padding_during_adjacency_formation():
     assert result is True, result
 
 
-@retry(retry_timeout=5)
+@retry(retry_timeout=10)
 def check_last_iih_packet_for_padding(router, expect_padding):
     logfilename = "{}/{}".format(router.gearlogdir, "isisd.log")
     last_hello_packet_line = None
@@ -708,9 +708,9 @@ def _check_overload_timer(router, timer_expected):
 
     tgen = get_topogen()
     router = tgen.gears[router]
-    thread_output = router.vtysh_cmd("show thread timers")
+    output = router.vtysh_cmd("show event timers")
 
-    timer_running = "set_overload_on_start_timer" in thread_output
+    timer_running = "set_overload_on_start_timer" in output
     if timer_running == timer_expected:
         return True
     return "Expected timer running status: {}".format(timer_expected)
