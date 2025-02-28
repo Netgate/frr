@@ -1784,11 +1784,10 @@ static void ospf_router_info_schedule(enum lsa_opcode opcode)
 
 DEFUN (router_info,
        router_info_area_cmd,
-       "router-info <as|area [A.B.C.D]>",
+       "router-info <as|area>",
        OSPF_RI_STR
        "Enable the Router Information functionality with AS flooding scope\n"
-       "Enable the Router Information functionality with Area flooding scope\n"
-       "OSPF area ID in IP format (deprecated)\n")
+       "Enable the Router Information functionality with Area flooding scope\n")
 {
 	int idx_mode = 1;
 	uint8_t scope;
@@ -1843,7 +1842,6 @@ DEFUN (router_info,
 	ospf_router_info_schedule(REORIGINATE_THIS_LSA);
 	return CMD_SUCCESS;
 }
-
 
 DEFUN (no_router_info,
        no_router_info_cmd,

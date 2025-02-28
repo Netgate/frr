@@ -30,6 +30,7 @@
 %{!?with_rtadv:         %global  with_rtadv         1 }
 %{!?with_watchfrr:      %global  with_watchfrr      1 }
 %{!?with_pathd:         %global  with_pathd         1 }
+%{!?with_grpc:          %global  with_grpc          0 }
 
 # user and group
 %{!?frr_user:           %global  frr_user           frr }
@@ -201,6 +202,12 @@ BuildRequires:  python3-devel
 BuildRequires:  python3-sphinx
 %endif
 %endif
+%if %{with_grpc}
+BuildRequires:  grpc-devel >= 1.16.1
+BuildRequires:  protobuf-devel >= 3.6.1
+BuildRequires:  protobuf-compiler >= 3.6.1
+BuildRequires:  protobuf-c-devel
+%endif
 %if 0%{?rhel} > 7
 #platform-python-devel is needed for /usr/bin/pathfix.py
 BuildRequires:  platform-python-devel
@@ -300,6 +307,17 @@ Adds SNMP support to FRR's daemons by attaching to net-snmp's snmpd
 through the AgentX protocol.  Provides read-only access to current
 routing state through standard SNMP MIBs.
 
+
+%if %{with_grpc}
+%package grpc
+Summary: GRPC support for FRR daemons
+Group: System Environment/Daemons
+License: GPLv3+
+Requires: %{name} = %{version}-%{release}
+
+%description grpc
+Adds GRPC support to the individual FRR daemons.
+%endif
 
 %prep
 %setup -q -n frr-%{frrversion}
@@ -424,6 +442,11 @@ routing state through standard SNMP MIBs.
     --enable-pathd \
 %else
     --disable-pathd \
+%endif
+%if %{with_grpc}
+    --enable-grpc \
+%else
+    --disable-grpc \
 %endif
     --enable-snmp
     # end
@@ -677,6 +700,7 @@ fi
     %{_sbindir}/mgmtd_testc
 %endif
 %exclude %{_sbindir}/ssd
+%exclude %{_sbindir}/fpm_listener
 %if %{with_watchfrr}
     %{_sbindir}/watchfrr
 %endif
@@ -782,6 +806,12 @@ sed -i 's/ -M rpki//' %{_sysconfdir}/frr/daemons
 %{_libdir}/frr/modules/*snmp.so
 
 
+%if %{with_grpc}
+%files grpc
+%{_libdir}/libfrrgrpc_pb.*
+%{_libdir}/frr/modules/grpc.so
+%endif
+
 %files devel
 %{_libdir}/lib*.so
 %dir %{_includedir}/%{name}
@@ -804,133 +834,70 @@ sed -i 's/ -M rpki//' %{_sysconfdir}/frr/daemons
 
 %changelog
 
-* Wed Sep 11 2024 Martin Winter <mwinter@opensourcerouting.org> - %{version}
+* Mon Dec 23 2024 Donatas Abraitis <donatas@opensourcerouting.org> - %{version}
 
-* Wed Sep 11 2024 Donatas Abraitis <donatas@opensourcerouting.org> - 10.0.2
+* Mon Dec 23 2024  Donatas Abraitis <donatas@opensourcerouting.org> - 10.2.1
+- bfdd
+-   retain remote dplane client socket
 - bgpd
--    Fix as-path exclude modify crash
--    Fix, do not access peer->notify.data when it is null
--    Fix crash at no rpki
--    Ignore RFC8212 for BGP Confederations
--    Fix for CVE-2024-44070
--    Relax OAD (One-Administration-Domain) for RFC8212
--    Fix "bgp as-pah access-list" with "set aspath exclude" set/unset issues
--    Check if we have really enough data before doing memcpy for FQDN capability
--    Check if we have really enough data before doing memcpy for software version
--    Set last reset reason to admin shutdown if it was manually
--    Fix do not use api.backup_nexthop in ZAPI message
-- isisd
--    Fix crash when reading asla
--    Add missing `exit` statement
--    Fix update link params after circuit is up
--    Fix crash at flex-algo without mpls-te
--    Fix memory handling in isis_adj_process_threeway()
--    Fix crash when calculating the neighbor spanning tree based on the fragmented LSP
--    Fix crash when obtaining the next hop to calculate LFA on LAN links
--    Fix memory leaks when the transition of neighbor state from non-UP to DOWN
--    fix crash when displaying asla in json
-- pimd
--    Fix crash in pimd
--    Fix msdp setting of sa->rp
--    Fix crash on non-existent interface
-- nhrpd
--    Fix sending /32 shortcut
-- mgmtd
--    Don't add implicit state data when reading config from file
--    Fix too early daemon detach of mgmtd
-- ripd
--    Fix show run output for distribute-list
+-   Fix to pop items off zebra_announce FIFO for few EVPN triggers
+-   Check if as_type is not specified when peer is a peer-group member
+-   Do not reset peers on suppress-fib toggling
+-   Fix bgp core with a possible Intf delete
+-   Fix `enforce-first-as` per peer-group removal
+-   Fix evpn bestpath calculation when path is not established
+-   Fix graceful-restart for peer-groups
+-   Fix memory leak when creating BMP connection with a source interface
+-   Fix memory leak when reconfiguring a route distinguisher
+-   Fix unconfigure asdot neighbor
+-   Fix use single whitespace when displaying flowspec entries
+-   Fix version attribute is an int, not a string
+-   Import allowed routes with self AS if desired
+-   Initialize as_type for peer-group as AS_UNSPECIFIED
+-   Use gracefulRestart JSON field
+-   Validate both nexthop information (NEXTHOP and NLRI)
+-   Validate only affected RPKI prefixes instead of a full RIB
+-   When calling bgp_process, prevent infinite loop
 - lib
--    Fix distribute-list deletion
--    Fix crash on distribute-list delete
--    Fix incorrect use of error checking macro
-- yang
--    Added missed prefix to the yang file
+-   Allow setsockopt functions to return size set
+-   Fix session re-establishment
+-   Take ge/le into consideration when checking the prefix with the prefix-list
+-   Use backoff setsockopt option for freebsd
 - ospfd
--    Fix internal ldp-sync state flags when feature is disabled
-- ldpd
--    Fix wrong gtsm count
-- ripd
--    Change the start value of sequence 1 to 0
-- zebra
--    Fix evpn mh bond member proto reinstall
--    Fix to avoid two Vrfs with same table ids
--    Fix missing static routes
--    Ensure non-equal id's are not same nhg's
-
-* Thu Jun 06 2024 Jafar Al-Gharaibeh <jafar@atcorp.com> - 10.0.1
-- bgpd
--    Fix route leaking from the default l3vrf
--    Allow using optional table id for negative `no set table x` command
--    Apply noop when doing negative commands for gr operations
--    Drop newline in json output for `show bgp afi safi json detail`
--    Fix `match peer` when switching between ipv4/ipv6/interface
--    Fix `no set as-path prepend asnum...`
--    Fix crash when deleting the srv6 locator
--    Fix display when using `missing-as-worst`
--    Fix dynamic peer graceful restart race condition
--    Fix logging message when receiving a software version capability
--    Fix show run of network route-distinguisher
--    Fix srv6 memory leaks spotted by asan
--    Fix the order of null check and zapi decode
--    Ignore validating the attribute flags if path-attribute is configured
--    Inherit `capability software-version` flag from the peer-group
--    Inherit `enforce-first-as` flag from the peer-group
--    Move srv6 cleanup functions
--    Print old/new states of graceful restart fsm
--    Revert "Fix pointer arithmetic in bgp snmp module"
-- debian, redhat, snapcraft
--    Libyang min version is 2.1.128
-- isisd
--    Fix heap-after-free with prefix sid
--    Fix ip/ipv6 reachability tlvs
-- lib
--    Check for not being a blackhole route
--    Fix exit commands
--    Remove nb/yang memory cleanup when daemonizing
--    Replace deprecated ares_gethostbyname
--    Replace deprecated ares_process()
-- nhrpd
--    Fix race condition
--    Fix core dump on shutdown
--    Clean up shortcut cache entries on termination
-- ospf6d
--    Accept cli `no` for point-to-multipoint
--    Fix defun formatting wrecked by clang
--    Fix loopback/ptp/ptmp conn. route checks
--    Force recalculate on interface_up
--    Prevent heap-buffer-overflow with unknown
--    Ospfv3 route change comparision fixed for asbr-only change
-- ospfd
--    Correct opaque lsa extended parser
--    Fix the bug where ip_ospf_dead-interval_minimal_hello-multiplier did not reset hello timer
--    Protect call to get_edge() in ospf_te.c
--    Solved crash in ri parsing with ospf te
--    Revert "Fix some dicey pointer arith in snmp module"
+-   OSPF multi-instance default origination fixes
 - pimd
--    Fix crash unconfiguring rp keepalive timer
--    Fix dr-priority range
--    Fix null register before aging out reg-stop
--    Fix order of operations for evaluating join
--    Fix crash when mixing ssm/any-source joins
-- tests
--    Check if ibgp session can drop invalid aigp attribute
-- tools
--    Frr-reload strip interface vrf ctx line
--    Handle seq num for bgp as-path in frr-reload.py
-- topotests
--    Do not check table version
-- vtysh
--    Check if bgpd is enabled before installing vtysh commands for rpki
--    Fix `show route-map` command when calling via `do`
--    Show `ip ospf network ...` even if it's not the same as the interface type
-- zebra
--    Deny the routes if ip protocol cli refers to an undefined rmap
--    Fix encoded dnssl length
--    Fix evpn svd based remote nh neigh del
--    Fix mpls command
+-   Fix access-list memory leak in pimd
+-   Free igmp proxy joins on interface deletion
+-   igmp proxy joins should not be written as part of config
+-   Prevent crash of pim when auto-rp's socket is not initialized
 
-* Mon Apr 08 2024 Jafar Al-Gharaibeh <jafar@atcorp.com> - 10.0
+* Tue Nov 12 2024 Jafar Al-Gharaibeh <jafar@atcorp.com> - 10.2
+-   PIM candidate BSR/RP [#16438]
+-   Static IGMP join without an IGMP report [1#6450]
+-   PIM AutoRP discovery/announcements [#16634]
+-   IGMP proxy [#16861]
+-   SRv6 SID Manager [#15604]
+-   Add `bgp ipv6-auto-ra` command [#16354]
+-   Implement `neighbor x remote-as auto` for BGP [#16345]
+-   Implement `bgp dual-as` for BGP [#16816]
+-   Implement BGP-wide configuration for graceful restart [#16099]
+-   Handle kernel routes appropriately (should fix recent NOPREFIXROUTE issue) [#16300]
+-   Add `cisco-authentication` password support for NHRP [#16172]
+
+* Fri Jul 26 2024 Jafar Al-Gharaibeh <jafar@atcorp.com> - 10.1
+- Breaking changes
+-   Enable BGP dynamic capability by default for datacenter profile
+-   Split BGP `rpki cache` command into separate per SSH/TCP
+-   Add deprecation cycle for OSPF `router-info X [A.B.C.D]` command
+- Major highlights:
+-   BGP dampening per-neighbor support
+-   BMP send-experimental stats
+-   Implement extended link-bandwidth for BGP
+-   Paths Limit for Multiple Paths in BGP
+-   New command for OSPFv2 `ip ospf neighbor-filter NAME [A.B.C.D]`
+-   Implement non-broadcast support for point-to-multipoint networks
+
+* Mon Mar 25 2024 Jafar Al-Gharaibeh <jafar@atcorp.com> - 10.0
 - Major highlights:
 -   Introduce local host routes
 -   Require libyang 2.1.128

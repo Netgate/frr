@@ -62,6 +62,7 @@
 *.cg.dot
 *.cg.svg
 *.xref
+*_tsexpand.h
 
 ### gcov outputs
 
@@ -118,3 +119,5 @@ refix
 pceplib/test/*.log
 pceplib/test/*.trs
 /tests/topotests/lib/mgmt_pb2.py
+
+build-root

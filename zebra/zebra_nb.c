@@ -803,6 +803,12 @@ const struct frr_yang_module_info frr_zebra_info = {
 			}
 		},
 		{
+			.xpath = "/frr-interface:lib/interface/frr-zebra:zebra/state/bond",
+			.cbs = {
+				.get_elem = lib_interface_zebra_state_bond_get_elem,
+			}
+		},
+		{
 			.xpath = "/frr-vrf:lib/vrf/frr-zebra:zebra/router-id",
 			.cbs = {
 				.modify = lib_vrf_zebra_router_id_modify,
@@ -875,6 +881,13 @@ const struct frr_yang_module_info frr_zebra_info = {
 			.xpath = "/frr-vrf:lib/vrf/frr-zebra:zebra/netns/table-range/end",
 			.cbs = {
 				.modify = lib_vrf_zebra_netns_table_range_end_modify,
+			}
+		},
+		{
+			.xpath = "/frr-vrf:lib/vrf/frr-zebra:zebra/mpls/fec-nexthop-resolution",
+			.cbs = {
+				.modify = lib_vrf_zebra_mpls_fec_nexthop_resolution_modify,
+				.destroy = lib_vrf_zebra_mpls_fec_nexthop_resolution_destroy,
 			}
 		},
 		{

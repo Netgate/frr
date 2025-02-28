@@ -3102,7 +3102,7 @@ int lib_interface_zebra_ipv6_router_advertisements_rdnss_rdnss_address_create(
 	struct nb_cb_create_args *args)
 {
 	struct interface *ifp;
-	struct rtadv_rdnss rdnss = {0}, *p;
+	struct rtadv_rdnss rdnss = {{{{0}}}}, *p;
 
 	if (args->event != NB_EV_APPLY)
 		return NB_OK;
@@ -3181,7 +3181,7 @@ int lib_interface_zebra_ipv6_router_advertisements_dnssl_dnssl_domain_create(
 	struct nb_cb_create_args *args)
 {
 	struct interface *ifp;
-	struct rtadv_dnssl dnssl = {0}, *p;
+	struct rtadv_dnssl dnssl = {{0}}, *p;
 	int ret;
 
 	strlcpy(dnssl.name, yang_dnode_get_string(args->dnode, "domain"),
@@ -3776,6 +3776,59 @@ int lib_vrf_zebra_netns_table_range_end_modify(struct nb_cb_modify_args *args)
 	vrf = nb_running_get_entry(args->dnode, NULL, true);
 
 	table_manager_range(true, vrf->info, start, end);
+
+	return NB_OK;
+}
+
+/*
+ * XPath: /frr-vrf:lib/vrf/frr-zebra:zebra/mpls/fec-nexthop-resolution
+ */
+int lib_vrf_zebra_mpls_fec_nexthop_resolution_modify(
+	struct nb_cb_modify_args *args)
+{
+	struct vrf *vrf;
+	struct zebra_vrf *zvrf;
+	bool fec_nexthop_resolution;
+
+	if (args->event != NB_EV_APPLY)
+		return NB_OK;
+
+	vrf = nb_running_get_entry(args->dnode, NULL, true);
+	zvrf = vrf->info;
+
+	fec_nexthop_resolution = yang_dnode_get_bool(args->dnode, NULL);
+
+	if (zvrf->zebra_mpls_fec_nexthop_resolution == fec_nexthop_resolution)
+		return NB_OK;
+
+	zvrf->zebra_mpls_fec_nexthop_resolution = fec_nexthop_resolution;
+
+	zebra_mpls_fec_nexthop_resolution_update(zvrf);
+
+	return NB_OK;
+}
+
+int lib_vrf_zebra_mpls_fec_nexthop_resolution_destroy(
+	struct nb_cb_destroy_args *args)
+{
+	struct vrf *vrf;
+	struct zebra_vrf *zvrf;
+	bool fec_nexthop_resolution;
+
+	if (args->event != NB_EV_APPLY)
+		return NB_OK;
+
+	vrf = nb_running_get_entry(args->dnode, NULL, true);
+	zvrf = vrf->info;
+
+	fec_nexthop_resolution = DFLT_ZEBRA_IP_NHT_RESOLVE_VIA_DEFAULT;
+
+	if (zvrf->zebra_mpls_fec_nexthop_resolution == fec_nexthop_resolution)
+		return NB_OK;
+
+	zvrf->zebra_mpls_fec_nexthop_resolution = fec_nexthop_resolution;
+
+	zebra_mpls_fec_nexthop_resolution_update(zvrf);
 
 	return NB_OK;
 }

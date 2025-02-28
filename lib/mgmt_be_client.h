@@ -75,6 +75,8 @@ struct mgmt_be_client_cbs {
 
 	const char **notif_xpaths;
 	uint nnotif_xpaths;
+	const char **rpc_xpaths;
+	uint nrpc_xpaths;
 };
 
 /***************************************************************
@@ -118,11 +120,6 @@ mgmt_be_client_create(const char *name, struct mgmt_be_client_cbs *cbs,
  * component in `xref2vtysh.py` as well.
  */
 extern void mgmt_be_client_lib_vty_init(void);
-
-/*
- * Print enabled debugging commands.
- */
-extern void mgmt_debug_be_client_show_debug(struct vty *vty);
 
 /*
  * [Un]-subscribe with MGMTD for one or more YANG subtree(s).

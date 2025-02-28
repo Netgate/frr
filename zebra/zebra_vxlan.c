@@ -108,10 +108,11 @@ static void zevpn_build_hash_table(void);
 static unsigned int zebra_vxlan_sg_hash_key_make(const void *p);
 static bool zebra_vxlan_sg_hash_eq(const void *p1, const void *p2);
 static void zebra_vxlan_sg_do_deref(struct zebra_vrf *zvrf,
-		struct in_addr sip, struct in_addr mcast_grp);
-static struct zebra_vxlan_sg *zebra_vxlan_sg_do_ref(struct zebra_vrf *vrf,
-						    struct in_addr sip,
-						    struct in_addr mcast_grp);
+				    const struct ipaddr *sip,
+				    const struct in_addr mcast_grp);
+static struct zebra_vxlan_sg *
+zebra_vxlan_sg_do_ref(struct zebra_vrf *vrf, const struct ipaddr *sip,
+		      const struct in_addr mcast_grp);
 static void zebra_vxlan_cleanup_sg_table(struct zebra_vrf *zvrf);
 
 bool zebra_evpn_do_dup_addr_detect(struct zebra_vrf *zvrf)
@@ -769,10 +770,6 @@ static void zl3vni_print(struct zebra_l3vni *zl3vni, void **ctx)
 		json_evpn_list = json_object_new_array();
 		json_object_int_add(json, "vni", zl3vni->vni);
 		json_object_string_add(json, "type", "L3");
-#if CONFDATE > 20240210
-CPP_NOTICE("Drop `vrf` from JSON outputs")
-#endif
-		json_object_string_add(json, "vrf", zl3vni_vrf_name(zl3vni));
 		json_object_string_add(json, "tenantVrf",
 				       zl3vni_vrf_name(zl3vni));
 		json_object_string_addf(json, "localVtepIp", "%pI4",
@@ -1359,6 +1356,18 @@ static int zl3vni_remote_rmac_add(struct zebra_l3vni *zl3vni,
 {
 	struct zebra_mac *zrmac = NULL;
 	struct ipaddr *vtep = NULL;
+	struct ipaddr ipv4_vtep;
+
+	/* vtep_ip may be v4 or v6-mapped-v4. But zrmac->fwd_info
+	 * can only contain v4 version. So convert if needed
+	 */
+	memset(&ipv4_vtep, 0, sizeof(ipv4_vtep));
+	ipv4_vtep.ipa_type = IPADDR_V4;
+	if (vtep_ip->ipa_type == IPADDR_V6)
+		ipv4_mapped_ipv6_to_ipv4(&vtep_ip->ipaddr_v6,
+					 &(ipv4_vtep.ipaddr_v4));
+	else
+		IPV4_ADDR_COPY(&(ipv4_vtep.ipaddr_v4), &vtep_ip->ipaddr_v4);
 
 	zrmac = zl3vni_rmac_lookup(zl3vni, rmac);
 	if (!zrmac) {
@@ -1372,7 +1381,7 @@ static int zl3vni_remote_rmac_add(struct zebra_l3vni *zl3vni,
 			return -1;
 		}
 		memset(&zrmac->fwd_info, 0, sizeof(zrmac->fwd_info));
-		zrmac->fwd_info.r_vtep_ip = vtep_ip->ipaddr_v4;
+		zrmac->fwd_info.r_vtep_ip = ipv4_vtep.ipaddr_v4;
 
 		vtep = XCALLOC(MTYPE_EVPN_VTEP, sizeof(struct ipaddr));
 		memcpy(vtep, vtep_ip, sizeof(struct ipaddr));
@@ -1386,14 +1395,14 @@ static int zl3vni_remote_rmac_add(struct zebra_l3vni *zl3vni,
 		/* install rmac in kernel */
 		zl3vni_rmac_install(zl3vni, zrmac);
 	} else if (!IPV4_ADDR_SAME(&zrmac->fwd_info.r_vtep_ip,
-				   &vtep_ip->ipaddr_v4)) {
+				   &(ipv4_vtep.ipaddr_v4))) {
 		if (IS_ZEBRA_DEBUG_VXLAN)
 			zlog_debug(
 				"L3VNI %u Remote VTEP change(%pI4 -> %pIA) for RMAC %pEA",
 				zl3vni->vni, &zrmac->fwd_info.r_vtep_ip,
 				vtep_ip, rmac);
 
-		zrmac->fwd_info.r_vtep_ip = vtep_ip->ipaddr_v4;
+		zrmac->fwd_info.r_vtep_ip = ipv4_vtep.ipaddr_v4;
 
 		vtep = XCALLOC(MTYPE_EVPN_VTEP, sizeof(struct ipaddr));
 		memcpy(vtep, vtep_ip, sizeof(struct ipaddr));
@@ -1413,36 +1422,29 @@ static void zl3vni_remote_rmac_del(struct zebra_l3vni *zl3vni,
 				   struct zebra_mac *zrmac,
 				   struct ipaddr *vtep_ip)
 {
-	struct ipaddr ipv4_vtep;
-
 	if (!zl3vni_nh_lookup(zl3vni, vtep_ip)) {
-		memset(&ipv4_vtep, 0, sizeof(ipv4_vtep));
-		ipv4_vtep.ipa_type = IPADDR_V4;
-		if (vtep_ip->ipa_type == IPADDR_V6)
-			ipv4_mapped_ipv6_to_ipv4(&vtep_ip->ipaddr_v6,
-						 &ipv4_vtep.ipaddr_v4);
-		else
-			memcpy(&(ipv4_vtep.ipaddr_v4), &vtep_ip->ipaddr_v4,
-			       sizeof(struct in_addr));
-
 		/* remove nh from rmac's list */
-		l3vni_rmac_nh_list_nh_delete(zl3vni, zrmac, &ipv4_vtep);
-		/* delete nh is same as current selected, fall back to
-		 * one present in the list
-		 */
-		if (IPV4_ADDR_SAME(&zrmac->fwd_info.r_vtep_ip,
-				   &ipv4_vtep.ipaddr_v4) &&
-		    listcount(zrmac->nh_list)) {
+		l3vni_rmac_nh_list_nh_delete(zl3vni, zrmac, vtep_ip);
+		/* If there are remaining entries, use IPv4 from one */
+		if (listcount(zrmac->nh_list)) {
 			struct ipaddr *vtep;
+			struct ipaddr ipv4_vtep;
 
 			vtep = listgetdata(listhead(zrmac->nh_list));
-			zrmac->fwd_info.r_vtep_ip = vtep->ipaddr_v4;
+			memset(&ipv4_vtep, 0, sizeof(ipv4_vtep));
+			ipv4_vtep.ipa_type = IPADDR_V4;
+			if (vtep->ipa_type == IPADDR_V6)
+				ipv4_mapped_ipv6_to_ipv4(&vtep->ipaddr_v6,
+							 &(ipv4_vtep.ipaddr_v4));
+			else
+				IPV4_ADDR_COPY(&(ipv4_vtep.ipaddr_v4),
+					       &vtep->ipaddr_v4);
+			zrmac->fwd_info.r_vtep_ip = ipv4_vtep.ipaddr_v4;
 			if (IS_ZEBRA_DEBUG_VXLAN)
-				zlog_debug(
-					"L3VNI %u Remote VTEP nh change(%pIA -> %pI4) for RMAC %pEA",
-					zl3vni->vni, &ipv4_vtep,
-					&zrmac->fwd_info.r_vtep_ip,
-					&zrmac->macaddr);
+				zlog_debug("L3VNI %u Remote VTEP nh change(%pIA -> %pI4) for RMAC %pEA",
+					   zl3vni->vni, vtep_ip,
+					   &zrmac->fwd_info.r_vtep_ip,
+					   &zrmac->macaddr);
 
 			/* install rmac in kernel */
 			zl3vni_rmac_install(zl3vni, zrmac);
@@ -2534,7 +2536,6 @@ void zebra_vxlan_evpn_vrf_route_add(vrf_id_t vrf_id, const struct ethaddr *rmac,
 				    const struct prefix *host_prefix)
 {
 	struct zebra_l3vni *zl3vni = NULL;
-	struct ipaddr ipv4_vtep;
 
 	zl3vni = zl3vni_from_vrf(vrf_id);
 	if (!zl3vni || !is_l3vni_oper_up(zl3vni))
@@ -2550,24 +2551,10 @@ void zebra_vxlan_evpn_vrf_route_add(vrf_id_t vrf_id, const struct ethaddr *rmac,
 	svd_remote_nh_add(zl3vni, vtep_ip, rmac, host_prefix);
 
 	/*
-	 * if the remote vtep is a ipv4 mapped ipv6 address convert it to ipv4
-	 * address. Rmac is programmed against the ipv4 vtep because we only
-	 * support ipv4 tunnels in the h/w right now
-	 */
-	memset(&ipv4_vtep, 0, sizeof(ipv4_vtep));
-	ipv4_vtep.ipa_type = IPADDR_V4;
-	if (vtep_ip->ipa_type == IPADDR_V6)
-		ipv4_mapped_ipv6_to_ipv4(&vtep_ip->ipaddr_v6,
-					 &(ipv4_vtep.ipaddr_v4));
-	else
-		memcpy(&(ipv4_vtep.ipaddr_v4), &vtep_ip->ipaddr_v4,
-		       sizeof(struct in_addr));
-
-	/*
-	 * add the rmac - remote rmac to be installed is against the ipv4
+	 * add the rmac - remote rmac to be installed is against the
 	 * nexthop address
 	 */
-	zl3vni_remote_rmac_add(zl3vni, rmac, &ipv4_vtep);
+	zl3vni_remote_rmac_add(zl3vni, rmac, vtep_ip);
 }
 
 /* handle evpn vrf route delete */
@@ -5895,7 +5882,10 @@ static int zebra_vxlan_sg_send(struct zebra_vrf *zvrf,
 
 	zclient_create_header(s, cmd, VRF_DEFAULT);
 	stream_putl(s, IPV4_MAX_BYTELEN);
-	stream_put(s, &sg->src.s_addr, IPV4_MAX_BYTELEN);
+	/*
+	 * There is currently no support for IPv6 VTEPs with PIM.
+	 */
+	stream_put(s, &sg->src.ipaddr_v4, IPV4_MAX_BYTELEN);
 	stream_put(s, &sg->grp.s_addr, IPV4_MAX_BYTELEN);
 
 	/* Write packet size. */
@@ -5918,9 +5908,17 @@ static int zebra_vxlan_sg_send(struct zebra_vrf *zvrf,
 static unsigned int zebra_vxlan_sg_hash_key_make(const void *p)
 {
 	const struct zebra_vxlan_sg *vxlan_sg = p;
+	uint32_t hash1;
 
-	return (jhash_2words(vxlan_sg->sg.src.s_addr,
-				vxlan_sg->sg.grp.s_addr, 0));
+	if (IS_IPADDR_V4(&vxlan_sg->sg.src)) {
+		return (jhash_2words(vxlan_sg->sg.src.ipaddr_v4.s_addr,
+				     vxlan_sg->sg.grp.s_addr, 0));
+	} else {
+		hash1 = jhash_1word(vxlan_sg->sg.grp.s_addr, 0);
+		return jhash2(vxlan_sg->sg.src.ipaddr_v6.s6_addr32,
+			      array_size(vxlan_sg->sg.src.ipaddr_v6.s6_addr32),
+			      hash1);
+	}
 }
 
 static bool zebra_vxlan_sg_hash_eq(const void *p1, const void *p2)
@@ -5928,8 +5926,8 @@ static bool zebra_vxlan_sg_hash_eq(const void *p1, const void *p2)
 	const struct zebra_vxlan_sg *sg1 = p1;
 	const struct zebra_vxlan_sg *sg2 = p2;
 
-	return ((sg1->sg.src.s_addr == sg2->sg.src.s_addr)
-		&& (sg1->sg.grp.s_addr == sg2->sg.grp.s_addr));
+	return (ipaddr_is_same(&sg1->sg.src, &sg2->sg.src) &&
+		(sg1->sg.grp.s_addr == sg2->sg.grp.s_addr));
 }
 
 static struct zebra_vxlan_sg *zebra_vxlan_sg_new(struct zebra_vrf *zvrf,
@@ -5965,7 +5963,7 @@ static struct zebra_vxlan_sg *zebra_vxlan_sg_add(struct zebra_vrf *zvrf,
 {
 	struct zebra_vxlan_sg *vxlan_sg;
 	struct zebra_vxlan_sg *parent = NULL;
-	struct in_addr sip;
+	struct ipaddr sip;
 
 	vxlan_sg = zebra_vxlan_sg_find(zvrf, sg);
 	if (vxlan_sg)
@@ -5976,9 +5974,9 @@ static struct zebra_vxlan_sg *zebra_vxlan_sg_add(struct zebra_vrf *zvrf,
 	 * 2. the XG entry is used by pimd to setup the
 	 * vxlan-termination-mroute
 	 */
-	if (sg->src.s_addr != INADDR_ANY) {
+	if (!ipaddr_is_zero(&sg->src)) {
 		memset(&sip, 0, sizeof(sip));
-		parent = zebra_vxlan_sg_do_ref(zvrf, sip, sg->grp);
+		parent = zebra_vxlan_sg_do_ref(zvrf, &sip, sg->grp);
 		if (!parent)
 			return NULL;
 	}
@@ -5993,7 +5991,7 @@ static struct zebra_vxlan_sg *zebra_vxlan_sg_add(struct zebra_vrf *zvrf,
 
 static void zebra_vxlan_sg_del(struct zebra_vxlan_sg *vxlan_sg)
 {
-	struct in_addr sip;
+	struct ipaddr sip;
 	struct zebra_vrf *zvrf;
 
 	zvrf = vrf_info_lookup(VRF_DEFAULT);
@@ -6001,13 +5999,13 @@ static void zebra_vxlan_sg_del(struct zebra_vxlan_sg *vxlan_sg)
 	/* On SG entry deletion remove the reference to its parent XG
 	 * entry
 	 */
-	if (vxlan_sg->sg.src.s_addr != INADDR_ANY) {
+	if (!ipaddr_is_zero(&vxlan_sg->sg.src)) {
 		memset(&sip, 0, sizeof(sip));
-		zebra_vxlan_sg_do_deref(zvrf, sip, vxlan_sg->sg.grp);
+		zebra_vxlan_sg_do_deref(zvrf, &sip, vxlan_sg->sg.grp);
 	}
 
-	zebra_vxlan_sg_send(zvrf, &vxlan_sg->sg,
-			vxlan_sg->sg_str, ZEBRA_VXLAN_SG_DEL);
+	zebra_vxlan_sg_send(zvrf, &vxlan_sg->sg, vxlan_sg->sg_str,
+			    ZEBRA_VXLAN_SG_DEL);
 
 	hash_release(vxlan_sg->zvrf->vxlan_sg_table, vxlan_sg);
 
@@ -6018,14 +6016,15 @@ static void zebra_vxlan_sg_del(struct zebra_vxlan_sg *vxlan_sg)
 }
 
 static void zebra_vxlan_sg_do_deref(struct zebra_vrf *zvrf,
-		struct in_addr sip, struct in_addr mcast_grp)
+				    const struct ipaddr *sip,
+				    const struct in_addr mcast_grp)
 {
 	struct zebra_vxlan_sg *vxlan_sg;
 	struct prefix_sg sg;
 
 	sg.family = AF_INET;
 	sg.prefixlen = IPV4_MAX_BYTELEN;
-	sg.src = sip;
+	sg.src = *sip;
 	sg.grp = mcast_grp;
 	vxlan_sg = zebra_vxlan_sg_find(zvrf, &sg);
 	if (!vxlan_sg)
@@ -6038,16 +6037,16 @@ static void zebra_vxlan_sg_do_deref(struct zebra_vrf *zvrf,
 		zebra_vxlan_sg_del(vxlan_sg);
 }
 
-static struct zebra_vxlan_sg *zebra_vxlan_sg_do_ref(struct zebra_vrf *zvrf,
-						    struct in_addr sip,
-						    struct in_addr mcast_grp)
+static struct zebra_vxlan_sg *
+zebra_vxlan_sg_do_ref(struct zebra_vrf *zvrf, const struct ipaddr *sip,
+		      const struct in_addr mcast_grp)
 {
 	struct zebra_vxlan_sg *vxlan_sg;
 	struct prefix_sg sg;
 
 	sg.family = AF_INET;
 	sg.prefixlen = IPV4_MAX_BYTELEN;
-	sg.src = sip;
+	sg.src = *sip;
 	sg.grp = mcast_grp;
 	vxlan_sg = zebra_vxlan_sg_add(zvrf, &sg);
 	if (vxlan_sg)
@@ -6056,10 +6055,10 @@ static struct zebra_vxlan_sg *zebra_vxlan_sg_do_ref(struct zebra_vrf *zvrf,
 	return vxlan_sg;
 }
 
-void zebra_vxlan_sg_deref(struct in_addr local_vtep_ip,
-			  struct in_addr mcast_grp)
+void zebra_vxlan_sg_deref(struct in_addr local_vtep_ip, struct in_addr mcast_grp)
 {
 	struct zebra_vrf *zvrf;
+	struct ipaddr local_vtep_ipaddr;
 
 	if (local_vtep_ip.s_addr == INADDR_ANY
 	    || mcast_grp.s_addr == INADDR_ANY)
@@ -6067,20 +6066,26 @@ void zebra_vxlan_sg_deref(struct in_addr local_vtep_ip,
 
 	zvrf = vrf_info_lookup(VRF_DEFAULT);
 
-	zebra_vxlan_sg_do_deref(zvrf, local_vtep_ip, mcast_grp);
+	SET_IPADDR_V4(&local_vtep_ipaddr);
+	local_vtep_ipaddr.ipaddr_v4 = local_vtep_ip;
+
+	zebra_vxlan_sg_do_deref(zvrf, &local_vtep_ipaddr, mcast_grp);
 }
 
 void zebra_vxlan_sg_ref(struct in_addr local_vtep_ip, struct in_addr mcast_grp)
 {
 	struct zebra_vrf *zvrf;
+	struct ipaddr local_vtep_ipaddr;
 
-	if (local_vtep_ip.s_addr == INADDR_ANY
-	    || mcast_grp.s_addr == INADDR_ANY)
+	if (local_vtep_ip.s_addr == INADDR_ANY || mcast_grp.s_addr == INADDR_ANY)
 		return;
 
 	zvrf = vrf_info_lookup(VRF_DEFAULT);
 
-	zebra_vxlan_sg_do_ref(zvrf, local_vtep_ip, mcast_grp);
+	SET_IPADDR_V4(&local_vtep_ipaddr);
+	local_vtep_ipaddr.ipaddr_v4 = local_vtep_ip;
+
+	zebra_vxlan_sg_do_ref(zvrf, &local_vtep_ipaddr, mcast_grp);
 }
 
 static void zebra_vxlan_xg_pre_cleanup(struct hash_bucket *bucket, void *arg)
@@ -6090,7 +6095,7 @@ static void zebra_vxlan_xg_pre_cleanup(struct hash_bucket *bucket, void *arg)
 	/* increment the ref count against (*,G) to prevent them from being
 	 * deleted
 	 */
-	if (vxlan_sg->sg.src.s_addr == INADDR_ANY)
+	if (ipaddr_is_zero(&vxlan_sg->sg.src))
 		++vxlan_sg->ref_cnt;
 }
 
@@ -6099,7 +6104,7 @@ static void zebra_vxlan_xg_post_cleanup(struct hash_bucket *bucket, void *arg)
 	struct zebra_vxlan_sg *vxlan_sg = (struct zebra_vxlan_sg *)bucket->data;
 
 	/* decrement the dummy ref count against (*,G) to delete them */
-	if (vxlan_sg->sg.src.s_addr == INADDR_ANY) {
+	if (ipaddr_is_zero(&vxlan_sg->sg.src)) {
 		if (vxlan_sg->ref_cnt)
 			--vxlan_sg->ref_cnt;
 		if (!vxlan_sg->ref_cnt)

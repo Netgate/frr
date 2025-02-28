@@ -8,6 +8,11 @@ LIBYANG_CFLAGS = \
 LIBYANG_LIBS = -lyang
 endif
 
+ifneq ($(NET_SNMP_UBUNTU_DIR),)
+NETSNMP_CONFIG = $(NET_SNMP_UBUNTU_DIR)/usr/bin/net-snmp-config
+export NETSNMP_CONFIG
+endif
+
 # standard Debian options & profiles
 
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
@@ -41,6 +46,12 @@ else
   CONF_PIM6=--disable-pim6d
 endif
 
+ifeq ($(filter pkg.frr.grpc,$(DEB_BUILD_PROFILES)),)
+  CONF_GRPC=--disable-grpc
+else
+  CONF_GRPC=--enable-grpc
+endif
+
 export PYTHON=python3
 
 %:
@@ -59,10 +70,11 @@ override_dh_auto_configure:
 		$(CONF_RPKI) \
 		$(CONF_LUA) \
 		$(CONF_PIM6) \
+		$(CONF_GRPC) \
 		--with-libpam \
 		--enable-doc \
 		--enable-doc-html \
-		--disable-snmp \
+		--enable-snmp \
 		--enable-fpm \
 		--disable-protobuf \
 		--disable-zeromq \
@@ -106,8 +118,9 @@ override_dh_shlibdeps:
 		--ignore-missing-info \
 		-l${LIBVPPMGMT_DIR}/usr/lib/${DEB_HOST_MULTIARCH} \
 		-l${VPP_DIR}/build-root/install-vpp-native/vpp/lib/${DEB_HOST_MULTIARCH} \
-		-l${LIBTNSRINFRA_DIR}/usr/lib/${DEB_HOST_MULTIARCH}
-		-l${LIBYANG2_DIR}/usr/lib/${DEB_HOST_MULTIARCH}
+		-l${LIBTNSRINFRA_DIR}/usr/lib/${DEB_HOST_MULTIARCH} \
+		-l${LIBYANG2_DIR}/usr/lib/${DEB_HOST_MULTIARCH} \
+		-l${NET_SNMP_UBUNTU_DIR}/usr/lib/${DEB_HOST_MULTIARCH}
 
 override_dh_auto_build:
 	dh_auto_build -- $(MAKE_SILENT)

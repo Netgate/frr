@@ -28,6 +28,7 @@
 #include "libfrr.h"
 #include "routemap.h"
 #include "affinitymap.h"
+#include "libagentx.h"
 
 #include "isisd/isis_affinitymap.h"
 #include "isisd/isis_constants.h"
@@ -102,6 +103,12 @@ static __attribute__((__noreturn__)) void terminate(int i)
 	isis_sr_term();
 	isis_srv6_term();
 	isis_zebra_stop();
+
+	isis_master_terminate();
+	route_map_finish();
+	vrf_terminate();
+
+	frr_fini();
 	exit(i);
 }
 
@@ -307,6 +314,7 @@ int main(int argc, char **argv, char **envp)
 	/*
 	 *  initializations
 	 */
+	libagentx_init();
 	cmd_init_config_callbacks(isis_config_start, isis_config_end);
 	isis_error_init();
 	access_list_init();

@@ -626,10 +626,17 @@ DEFPY_YANG(domain_passwd, domain_passwd_cmd,
 }
 
 DEFPY_YANG(no_area_passwd, no_area_passwd_cmd,
-      "no <area-password|domain-password>$cmd",
+      "no <area-password|domain-password>$cmd [<clear|md5>$pwd_type WORD$pwd [authenticate snp <send-only|validate>$snp]]",
       NO_STR
       "Configure the authentication password for an area\n"
-      "Set the authentication password for a routing domain\n")
+      "Set the authentication password for a routing domain\n"
+      "Clear-text authentication type\n"
+      "MD5 authentication type\n"
+      "Level-wide password\n"
+      "Authentication\n"
+      "SNP PDUs\n"
+      "Send but do not check PDUs on receiving\n"
+      "Send and check PDUs on receiving\n")
 {
 	nb_cli_enqueue_change(vty, ".", NB_OP_DESTROY, NULL);
 
@@ -2015,12 +2022,12 @@ void cli_show_isis_prefix_sid_algorithm(struct vty *vty,
 	const char *sid_value_type;
 	const char *sid_value;
 	bool n_flag_clear;
-	uint32_t algorithm;
+	uint8_t algorithm;
 
 	prefix = yang_dnode_get_string(dnode, "prefix");
 	sid_value_type = yang_dnode_get_string(dnode, "sid-value-type");
 	sid_value = yang_dnode_get_string(dnode, "sid-value");
-	algorithm = yang_dnode_get_uint32(dnode, "algo");
+	algorithm = yang_dnode_get_uint8(dnode, "algo");
 	lh_behavior = yang_dnode_get_string(dnode, "last-hop-behavior");
 	n_flag_clear = yang_dnode_get_bool(dnode, "n-flag-clear");
 

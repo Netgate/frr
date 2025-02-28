@@ -145,11 +145,12 @@ static void conf_copy(struct peer *dst, struct peer *src, afi_t afi,
 	dst->addpath_type[afi][safi] = src->addpath_type[afi][safi];
 	dst->addpath_best_selected[afi][safi] =
 		src->addpath_best_selected[afi][safi];
+	dst->addpath_paths_limit[afi][safi] =
+		src->addpath_paths_limit[afi][safi];
 	dst->local_as = src->local_as;
 	dst->change_local_as = src->change_local_as;
 	dst->shared_network = src->shared_network;
 	dst->local_role = src->local_role;
-	dst->as_path_loop_detection = src->as_path_loop_detection;
 
 	if (src->soo[afi][safi]) {
 		ecommunity_free(&dst->soo[afi][safi]);
@@ -342,12 +343,19 @@ static unsigned int updgrp_hash_key_make(const void *p)
 
 	key = 0;
 
-	key = jhash_1word(peer->sort, key); /* EBGP or IBGP */
+	/* `remote-as auto` technically uses identical peer->sort.
+	 * After OPEN message is parsed, this is updated accordingly, but
+	 * we need to call the peer_sort() here also to properly create
+	 * separate subgroups.
+	 */
+	key = jhash_1word(peer_sort((struct peer *)peer), key);
 	key = jhash_1word(peer->sub_sort, key); /* OAD */
 	key = jhash_1word((peer->flags & PEER_UPDGRP_FLAGS), key);
 	key = jhash_1word((flags & PEER_UPDGRP_AF_FLAGS), key);
 	key = jhash_1word((uint32_t)peer->addpath_type[afi][safi], key);
 	key = jhash_1word(peer->addpath_best_selected[afi][safi], key);
+	key = jhash_1word(peer->addpath_paths_limit[afi][safi].receive, key);
+	key = jhash_1word(peer->addpath_paths_limit[afi][safi].send, key);
 	key = jhash_1word((peer->cap & PEER_UPDGRP_CAP_FLAGS), key);
 	key = jhash_1word((peer->af_cap[afi][safi] & PEER_UPDGRP_AF_CAP_FLAGS),
 			  key);
@@ -356,9 +364,12 @@ static unsigned int updgrp_hash_key_make(const void *p)
 	key = jhash_1word(peer->max_packet_size, key);
 	key = jhash_1word(peer->pmax_out[afi][safi], key);
 
-	if (peer->as_path_loop_detection)
-		key = jhash_2words(peer->as, peer->as_path_loop_detection, key);
 
+	if (CHECK_FLAG(peer->flags, PEER_FLAG_AS_LOOP_DETECTION))
+		key = jhash_2words(peer->as,
+				   CHECK_FLAG(peer->flags,
+					      PEER_FLAG_AS_LOOP_DETECTION),
+				   key);
 	if (peer->group)
 		key = jhash_1word(jhash(peer->group->name,
 					strlen(peer->group->name), SEED1),
@@ -439,7 +450,7 @@ static unsigned int updgrp_hash_key_make(const void *p)
 	key = jhash_1word((peer->flags & PEER_FLAG_AIGP), key);
 
 	if (peer->soo[afi][safi]) {
-		char *soo_str = ecommunity_str(peer->soo[afi][safi]);
+		const char *soo_str = ecommunity_str(peer->soo[afi][safi]);
 
 		key = jhash_1word(jhash(soo_str, strlen(soo_str), SEED1), key);
 	}
@@ -460,7 +471,11 @@ static unsigned int updgrp_hash_key_make(const void *p)
 			   CHECK_FLAG(peer->af_cap[afi][safi],
 				      PEER_UPDGRP_AF_CAP_FLAGS),
 			   peer->v_routeadv, peer->change_local_as,
-			   peer->as_path_loop_detection);
+			   !!CHECK_FLAG(peer->flags,
+					PEER_FLAG_AS_LOOP_DETECTION));
+		zlog_debug("%pBP Update Group Hash: addpath paths-limit: (send %u, receive %u)",
+			   peer, peer->addpath_paths_limit[afi][safi].send,
+			   peer->addpath_paths_limit[afi][safi].receive);
 		zlog_debug(
 			"%pBP Update Group Hash: max packet size: %u pmax_out: %u Peer Group: %s rmap out: %s",
 			peer, peer->max_packet_size, peer->pmax_out[afi][safi],
@@ -768,8 +783,11 @@ static int update_group_show_walkcb(struct update_group *updgrp, void *arg)
 				json_updgrp, "replaceLocalAs",
 				CHECK_FLAG(updgrp->conf->flags,
 					   PEER_FLAG_LOCAL_AS_REPLACE_AS));
+			json_object_boolean_add(json_updgrp, "dualAs",
+						CHECK_FLAG(updgrp->conf->flags,
+							   PEER_FLAG_DUAL_AS));
 		} else {
-			vty_out(vty, "  Local AS %u%s%s\n",
+			vty_out(vty, "  Local AS %u%s%s%s\n",
 				updgrp->conf->change_local_as,
 				CHECK_FLAG(updgrp->conf->flags,
 					   PEER_FLAG_LOCAL_AS_NO_PREPEND)
@@ -778,6 +796,10 @@ static int update_group_show_walkcb(struct update_group *updgrp, void *arg)
 				CHECK_FLAG(updgrp->conf->flags,
 					   PEER_FLAG_LOCAL_AS_REPLACE_AS)
 					? " replace-as"
+					: "",
+				CHECK_FLAG(updgrp->conf->flags,
+					   PEER_FLAG_DUAL_AS)
+					? " dual-as"
 					: "");
 		}
 	}
@@ -1722,18 +1744,6 @@ static int update_group_walkcb(struct hash_bucket *bucket, void *arg)
 	return ret;
 }
 
-static int update_group_periodic_merge_walkcb(struct update_group *updgrp,
-					      void *arg)
-{
-	struct update_subgroup *subgrp;
-	struct update_subgroup *tmp_subgrp;
-	const char *reason = arg;
-
-	UPDGRP_FOREACH_SUBGRP_SAFE (updgrp, subgrp, tmp_subgrp)
-		update_subgroup_check_merge(subgrp, reason);
-	return UPDWALK_CONTINUE;
-}
-
 /********************
  * PUBLIC FUNCTIONS
  ********************/
@@ -2018,6 +2028,11 @@ int update_group_adjust_soloness(struct peer *peer, int set)
 		if (peer_established(peer->connection))
 			bgp_announce_route_all(peer);
 	} else {
+		if (set)
+			peer_flag_set(peer, PEER_FLAG_LONESOUL);
+		else
+			peer_flag_unset(peer, PEER_FLAG_LONESOUL);
+
 		group = peer->group;
 		for (ALL_LIST_ELEMENTS(group->peer, node, nnode, peer)) {
 			peer_lonesoul_or_not(peer, set);
@@ -2070,14 +2085,6 @@ void update_group_walk(struct bgp *bgp, updgrp_walkcb cb, void *ctx)
 	FOREACH_AFI_SAFI (afi, safi) {
 		update_group_af_walk(bgp, afi, safi, cb, ctx);
 	}
-}
-
-void update_group_periodic_merge(struct bgp *bgp)
-{
-	char reason[] = "periodic merge check";
-
-	update_group_walk(bgp, update_group_periodic_merge_walkcb,
-			  (void *)reason);
 }
 
 static int

@@ -299,7 +299,16 @@ AC_DEFUN([AC_C_FLAG], [{
     AC_CACHE_CHECK([[whether $CC supports $1]], cachename, [
 	AC_LANG_PUSH([C])
 	ac_c_flag_save="$CFLAGS"
-	CFLAGS="$CFLAGS $1"
+	dnl GCC ignores unknown -Wno-whatever flags, but errors on -Wwhatever
+	dnl except when it ignores them it prints:
+	dnl   cc1: note: unrecognized command-line option ‘-Wno-whatever’ may have been intended to silence earlier diagnostics
+	dnl which is annoying as hell.  So check for the positive flag instead.
+	flag_add="$1"
+	if test "$flag_add" != "${flag_add#-Wno-}"; then
+	    CFLAGS="$CFLAGS -W${flag_add#-Wno-}"
+	else
+	    CFLAGS="$CFLAGS $flag_add"
+	fi
 	AC_COMPILE_IFELSE(
 		[AC_LANG_PROGRAM([[$4]])],
 		[
@@ -477,6 +486,7 @@ fi
 AC_C_FLAG([-Wno-unused-parameter])
 AC_C_FLAG([-Wno-missing-field-initializers])
 dnl AC_C_FLAG([-Wno-microsoft-anon-tag])
+AC_C_FLAG([-Wno-error=deprecated-declarations])
 
 AC_C_FLAG([-Wc++-compat], [], [CXX_COMPAT_CFLAGS="-Wc++-compat"])
 AC_SUBST([CXX_COMPAT_CFLAGS])
@@ -727,6 +737,8 @@ AC_ARG_ENABLE([mgmtd_local_validations],
   AS_HELP_STRING([--enable-mgmtd-local-validations], [dev: unimplemented local validation]))
 AC_ARG_ENABLE([mgmtd_test_be_client],
   AS_HELP_STRING([--enable-mgmtd-test-be-client], [build test backend client]))
+AC_ARG_ENABLE([fpm_listener],
+  AS_HELP_STRING([--enable-fpm-listener], [build fpm listener test program]))
 AC_ARG_ENABLE([ripd],
   AS_HELP_STRING([--disable-ripd], [do not build ripd]))
 AC_ARG_ENABLE([ripngd],
@@ -773,8 +785,6 @@ AC_ARG_ENABLE([snmp],
   AS_HELP_STRING([--enable-snmp], [enable SNMP support for agentx]))
 AC_ARG_ENABLE([config_rollbacks],
   AS_HELP_STRING([--enable-config-rollbacks], [enable configuration rollbacks (requires sqlite3)]))
-AC_ARG_ENABLE([confd],
-  AS_HELP_STRING([--enable-confd=ARG], [enable confd integration]))
 AC_ARG_ENABLE([sysrepo],
   AS_HELP_STRING([--enable-sysrepo], [enable sysrepo integration]))
 AC_ARG_ENABLE([grpc],
@@ -808,8 +818,6 @@ AC_ARG_ENABLE([configfile_mask],
   AS_HELP_STRING([--enable-configfile-mask=ARG], [set mask for config files]))
 AC_ARG_ENABLE([logfile_mask],
   AS_HELP_STRING([--enable-logfile-mask=ARG], [set mask for log files]))
-AC_ARG_ENABLE([shell_access],
-  AS_HELP_STRING([--enable-shell-access], [Allow users to access shell/telnet/ssh]))
 AC_ARG_ENABLE([realms],
   AS_HELP_STRING([--enable-realms], [enable REALMS support under Linux]))
 AC_ARG_ENABLE([rtadv],
@@ -863,8 +871,11 @@ AC_ARG_WITH([crypto],
 AC_ARG_WITH([frr-format],
   AS_HELP_STRING([--with-frr-format[=<.../frr-format.so>]], [use frr-format GCC plugin]))
 
-AC_ARG_ENABLE([version-build-config],
+AC_ARG_ENABLE([version_build_config],
   AS_HELP_STRING([--disable-version-build-config], [do not include build configs in show version command]))
+
+AC_ARG_ENABLE([python_runtime],
+  AS_HELP_STRING([--disable-python-runtime], [do not install python scripts or have python runtime dependency]))
 
 #if openssl, else use the internal
 AS_IF([test "$with_crypto" = "openssl"], [
@@ -920,10 +931,6 @@ fi
 
 AC_SUBST([DFLT_NAME])
 AC_DEFINE_UNQUOTED([DFLT_NAME], ["$DFLT_NAME"], [Name of the configuration default set])
-
-if test "$enable_shell_access" = "yes"; then
-   AC_DEFINE([HAVE_SHELL_ACCESS], [1], [Allow user to use ssh/telnet/bash, be aware this is considered insecure])
-fi
 
 #
 # Python for clippy
@@ -1124,6 +1131,8 @@ dnl Check other header files.
 dnl -------------------------
 AC_CHECK_HEADERS([stropts.h sys/ksym.h \
 	linux/version.h asm/types.h endian.h sys/endian.h])
+
+AC_CHECK_LIB([atomic], [main], [LIBS="$LIBS -latomic"], [], [])
 
 ac_stdatomic_ok=false
 AC_DEFINE([FRR_AUTOCONF_ATOMIC], [1], [did autoconf checks for atomic funcs])
@@ -1856,6 +1865,10 @@ AS_IF([test "$enable_mgmtd_test_be_client" = "yes"], [
   AC_DEFINE([HAVE_MGMTD_TESTC], [1], [mgmtd_testc])
 ])
 
+AS_IF([test "$enable_fpm_listener" = "yes"], [
+  AC_DEFINE([HAVE_FPM_LISTENER], [1], [fpm_listener])
+])
+
 AS_IF([test "$enable_ripd" != "no"], [
   AC_DEFINE([HAVE_RIPD], [1], [ripd])
 ])
@@ -2040,6 +2053,11 @@ if test "$enable_snmp" != "" -a "$enable_snmp" != "no"; then
    for removelib in crypto ssl sensors pci wrap; do
      SNMP_LIBS="`echo $SNMP_LIBS | sed -e 's/\(^\|\s\)-l'$removelib'\b/ /g' -e 's/\(^\|\s\)\([^\s]*\/\)\?lib'$removelib'\.[^\s]\+\b/ /g'`"
    done
+   NET_CONFIG_DESTDIR=${NETSNMP_CONFIG%/usr/bin/net-snmp-config}
+   if test -n "$NET_CONFIG_DESTDIR"; then
+     SNMP_LIBS=`echo $SNMP_LIBS | sed -e "s,-L/usr/lib,-L$NET_CONFIG_DESTDIR/usr/lib,g"`
+     SNMP_CFLAGS="$SNMP_CFLAGS -I$NET_CONFIG_DESTDIR/usr/include"
+   fi
    AC_MSG_CHECKING([whether we can link to Net-SNMP])
    AC_LINK_IFELSE_FLAGS([$SNMP_CFLAGS], [$SNMP_LIBS], [AC_LANG_PROGRAM([
 int main(void);
@@ -2073,7 +2091,7 @@ dnl libyang
 dnl ---------------
 PKG_CHECK_MODULES([LIBYANG], [libyang >= 2.1.128], , [
 AC_MSG_ERROR([m4_normalize([libyang >= 2.1.128 is required, and was not found on your system.
-Pleaes consult doc/developer/building-libyang.rst for instructions on installing or building libyang.])])])
+Please consult doc/developer/building-libyang.rst for instructions on installing or building libyang.])])])
 ac_cflags_save="$CFLAGS"
 CFLAGS="$CFLAGS $LIBYANG_CFLAGS"
 AC_CHECK_MEMBER([struct lyd_node.priv], [], [
@@ -2103,22 +2121,6 @@ if test "$enable_config_rollbacks" = "yes"; then
   ], [
     AC_MSG_ERROR([--enable-config-rollbacks given but sqlite3 was not found on your system.])
   ])
-fi
-
-dnl ---------------
-dnl confd
-dnl ---------------
-if test "$enable_confd" != "" -a "$enable_confd" != "no"; then
-   AC_CHECK_PROG([CONFD], [confd], [confd], [/bin/false], "${enable_confd}/bin")
-   if test "$CONFD" = "/bin/false"; then
-      AC_MSG_ERROR([confd was not found on your system.])]
-   fi
-   AC_CHECK_PROG([CONFDC], [confdc], [confdc], [/bin/false], "${enable_confd}/bin")
-   CONFD_CFLAGS="-I${enable_confd}/include -L${enable_confd}/lib"
-   AC_SUBST([CONFD_CFLAGS])
-   CONFD_LIBS="-lconfd"
-   AC_SUBST([CONFD_LIBS])
-   AC_DEFINE([HAVE_CONFD], [1], [Enable confd integration])
 fi
 
 dnl ---------------
@@ -2790,7 +2792,6 @@ AM_CONDITIONAL([ENABLE_BGP_VNC], [test "$enable_bgp_vnc" != "no"])
 AM_CONDITIONAL([BGP_BMP], [$bgpd_bmp])
 dnl northbound
 AM_CONDITIONAL([SQLITE3], [$SQLITE3])
-AM_CONDITIONAL([CONFD], [test "$enable_confd" != ""])
 AM_CONDITIONAL([SYSREPO], [test "$enable_sysrepo" = "yes"])
 AM_CONDITIONAL([GRPC], [test "$enable_grpc" = "yes"])
 AM_CONDITIONAL([ZEROMQ], [test "$ZEROMQ" = "true"])
@@ -2818,6 +2819,7 @@ AM_CONDITIONAL([ZEBRA], [test "$enable_zebra" != "no"])
 AM_CONDITIONAL([BGPD], [test "$enable_bgpd" != "no"])
 AM_CONDITIONAL([MGMTD], [test "$enable_mgmtd" != "no"])
 AM_CONDITIONAL([MGMTD_TESTC], [test "$enable_mgmtd_test_be_client" = "yes"])
+AM_CONDITIONAL([FPM_LISTENER], [test "enable_fpm_listener" = "yes"])
 AM_CONDITIONAL([RIPD], [test "$enable_ripd" != "no"])
 AM_CONDITIONAL([OSPFD], [test "$enable_ospfd" != "no"])
 AM_CONDITIONAL([LDPD], [test "$enable_ldpd" != "no"])
@@ -2840,6 +2842,9 @@ AM_CONDITIONAL([VRRPD], [test "$enable_vrrpd" != "no"])
 AM_CONDITIONAL([PATHD], [test "$enable_pathd" != "no"])
 AM_CONDITIONAL([PATHD_PCEP], [test "$enable_pathd" != "no"])
 AM_CONDITIONAL([DP_DPDK], [test "$enable_dp_dpdk" = "yes"])
+
+
+AM_CONDITIONAL([PYTHON_RUNTIME_DEPENDENCY], [test "$enable_python_runtime" != "no"])
 
 AC_CONFIG_FILES([Makefile],[
 	test "$enable_dev_build" = "yes" && makefile_devbuild="--dev-build"
@@ -2943,7 +2948,8 @@ compiler                : ${CC}
 compiler flags          : ${CFLAGS} ${WERROR} ${AC_CFLAGS} ${SAN_FLAGS}
 make                    : ${MAKE-make}
 linker flags            : ${LDFLAGS} ${SAN_FLAGS} ${LIBS} ${LIBCAP} ${LIBREADLINE} ${LIBM}
-state file directory    : ${e_frr_runstatedir}
+local state file dir    : ${e_frr_libstatedir}
+run state file dir      : ${e_frr_runstatedir}
 config file directory   : ${e_frr_sysconfdir}
 module directory        : ${e_moduledir}
 script directory        : ${e_scriptdir}

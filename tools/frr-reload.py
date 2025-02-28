@@ -94,7 +94,7 @@ class Vtysh(object):
 
         output = self("configure")
 
-        if "VTY configuration is locked by other VTY" in output:
+        if "configuration is locked" in output.lower():
             log.error("vtysh 'configure' returned\n%s\n" % (output))
             return False
 
@@ -203,7 +203,7 @@ def get_normalized_es_id(line):
     """
     sub_strs = ["evpn mh es-id", "evpn mh es-sys-mac"]
     for sub_str in sub_strs:
-        obj = re.match(sub_str + " (?P<esi>\S*)", line)
+        obj = re.match(sub_str + r" (?P<esi>\S*)", line)
         if obj:
             line = "%s %s" % (sub_str, obj.group("esi").lower())
             break
@@ -228,11 +228,19 @@ def get_normalized_interface_vrf(line):
     correctly and configurations are matched appropriately.
     """
 
-    intf_vrf = re.search("interface (\S+) vrf (\S+)", line)
+    intf_vrf = re.search(r"interface (\S+) vrf (\S+)", line)
     if intf_vrf:
         old_line = "vrf %s" % intf_vrf.group(2)
         new_line = line.replace(old_line, "").strip()
         return new_line
+
+    return line
+
+
+def get_normalized_ebgp_multihop_line(line):
+    obj = re.search(r"(.*)ebgp-multihop\s+255", line)
+    if obj:
+        line = obj.group(1) + "ebgp-multihop"
 
     return line
 
@@ -261,10 +269,12 @@ ctx_keywords = {
     "router ospf6": {},
     "router eigrp ": {},
     "router babel": {},
+    "router pim": {},
+    "router pim6": {},
     "mpls ldp": {"address-family ": {"interface ": {}}},
     "l2vpn ": {"member pseudowire ": {}},
     "key chain ": {"key ": {}},
-    "vrf ": {},
+    "vrf ": {"rpki": {}},
     "interface ": {"link-params": {}},
     "pseudowire ": {},
     "segment-routing": {
@@ -273,7 +283,11 @@ ctx_keywords = {
             "policy ": {"candidate-path ": {}},
             "pcep": {"pcc": {}, "pce ": {}, "pce-config ": {}},
         },
-        "srv6": {"locators": {"locator ": {}}},
+        "srv6": {
+            "locators": {"locator ": {}},
+            "encapsulation": {},
+            "formats": {"format": {}},
+        },
     },
     "nexthop-group ": {},
     "route-map ": {},
@@ -306,11 +320,64 @@ class Config(object):
 
         file_output = self.vtysh.mark_file(filename)
 
+        vrf_context = None
+        pim_vrfs = []
+
         for line in file_output.split("\n"):
             line = line.strip()
 
             # Compress duplicate whitespaces
             line = " ".join(line.split())
+
+            # Detect when we are within a vrf context for converting legacy PIM commands
+            if vrf_context:
+                re_vrf = re.match("^(exit-vrf|exit|end)$", line)
+                if re_vrf:
+                    vrf_context = None
+            else:
+                re_vrf = re.match("^vrf ([a-z]+)$", line)
+                if re_vrf:
+                    vrf_context = re_vrf.group(1)
+
+            # Detect legacy pim commands that need to move under the router pim context
+            re_pim = re.match(
+                "^ip(v6)? pim ((ecmp|join|keep|mlag|packets|register|rp|send|spt|ssm).*)$",
+                line,
+            )
+            if re_pim and re_pim.group(2):
+                router_pim = "router pim"
+                if re_pim.group(1):
+                    router_pim += "6"
+                if vrf_context:
+                    router_pim += " vrf " + vrf_context
+
+                if vrf_context:
+                    pim_vrfs.append(router_pim)
+                    pim_vrfs.append(re_pim.group(2))
+                    pim_vrfs.append("exit")
+                    line = "# PIM VRF LINE MOVED TO ROUTER PIM"
+                else:
+                    self.lines.append(router_pim)
+                    self.lines.append(re_pim.group(2))
+                    line = "exit"
+
+            re_pim = re.match("^ip(v6)? ((ssmpingd|msdp).*)$", line)
+            if re_pim and re_pim.group(2):
+                router_pim = "router pim"
+                if re_pim.group(1):
+                    router_pim += "6"
+                if vrf_context:
+                    router_pim += " vrf " + vrf_context
+
+                if vrf_context:
+                    pim_vrfs.append(router_pim)
+                    pim_vrfs.append(re_pim.group(2))
+                    pim_vrfs.append("exit")
+                    line = "# PIM VRF LINE MOVED TO ROUTER PIM"
+                else:
+                    self.lines.append(router_pim)
+                    self.lines.append(re_pim.group(2))
+                    line = "exit"
 
             # Remove 'vrf <vrf_name>' from 'interface <x> vrf <vrf_name>'
             if line.startswith("interface ") and "vrf" in line:
@@ -318,6 +385,9 @@ class Config(object):
 
             if ":" in line:
                 line = get_normalized_mac_ip_line(line)
+
+            if "ebgp-multihop" in line:
+                line = get_normalized_ebgp_multihop_line(line)
 
             # vrf static routes can be added in two ways. The old way is:
             #
@@ -347,6 +417,9 @@ class Config(object):
                 line = "end"
 
             self.lines.append(line)
+
+        if len(pim_vrfs) > 0:
+            self.lines.append(pim_vrfs)
 
         self.load_contexts()
 
@@ -813,7 +886,7 @@ def bgp_delete_nbr_remote_as_line(lines_to_add):
             if ctx_keys[0] not in pg_dict:
                 pg_dict[ctx_keys[0]] = dict()
             # find 'neighbor <pg_name> peer-group'
-            re_pg = re.match("neighbor (\S+) peer-group$", line)
+            re_pg = re.match(r"neighbor (\S+) peer-group$", line)
             if re_pg and re_pg.group(1) not in pg_dict[ctx_keys[0]]:
                 pg_dict[ctx_keys[0]][re_pg.group(1)] = {
                     "nbr": list(),
@@ -836,13 +909,13 @@ def bgp_delete_nbr_remote_as_line(lines_to_add):
             if ctx_keys[0] in pg_dict:
                 for pg_key in pg_dict[ctx_keys[0]]:
                     # Find 'neighbor <pg_name> remote-as'
-                    pg_rmtas = "neighbor %s remote-as (\S+)" % pg_key
+                    pg_rmtas = r"neighbor %s remote-as (\S+)" % pg_key
                     re_pg_rmtas = re.search(pg_rmtas, line)
                     if re_pg_rmtas:
                         pg_dict[ctx_keys[0]][pg_key]["remoteas"] = True
 
                     # Find 'neighbor <peer> [interface] peer-group <pg_name>'
-                    nb_pg = "neighbor (\S+) peer-group %s$" % pg_key
+                    nb_pg = r"neighbor (\S+) peer-group %s$" % pg_key
                     re_nbr_pg = re.search(nb_pg, line)
                     if (
                         re_nbr_pg
@@ -860,7 +933,7 @@ def bgp_delete_nbr_remote_as_line(lines_to_add):
             and line
             and line.startswith("neighbor ")
         ):
-            nbr_rmtas = "neighbor (\S+) remote-as.*"
+            nbr_rmtas = r"neighbor (\S+) remote-as.*"
             re_nbr_rmtas = re.search(nbr_rmtas, line)
             if re_nbr_rmtas and ctx_keys[0] in pg_dict:
                 for pg in pg_dict[ctx_keys[0]]:
@@ -889,8 +962,8 @@ def bgp_remove_neighbor_cfg(lines_to_del, del_nbr_dict):
         ):
             if ctx_keys[0] in del_nbr_dict:
                 for nbr in del_nbr_dict[ctx_keys[0]]:
-                    re_nbr_pg = re.search("neighbor (\S+) .*peer-group (\S+)", line)
-                    nb_exp = "neighbor %s .*" % nbr
+                    re_nbr_pg = re.search(r"neighbor (\S+) .*peer-group (\S+)", line)
+                    nb_exp = r"neighbor %s .*" % nbr
                     if not re_nbr_pg:
                         re_nb = re.search(nb_exp, line)
                         if re_nb:
@@ -988,7 +1061,7 @@ def bgp_delete_move_lines(lines_to_add, lines_to_del):
             #  neighbor uplink1 interface remote-as internal
             #
             # 'no neighbor peer [interface] remote-as <>'
-            nb_remoteas = "neighbor (\S+) .*remote-as (\S+)"
+            nb_remoteas = r"neighbor (\S+) .*remote-as (\S+)"
             re_nb_remoteas = re.search(nb_remoteas, line)
             if re_nb_remoteas:
                 lines_to_del_to_app.append((ctx_keys, line))
@@ -996,7 +1069,7 @@ def bgp_delete_move_lines(lines_to_add, lines_to_del):
             # 'no neighbor peer [interface] peer-group <>' is in lines_to_del
             # copy the neighbor and look for all config removal lines associated
             # to neighbor and delete them from the lines_to_del
-            re_nbr_pg = re.search("neighbor (\S+) .*peer-group (\S+)", line)
+            re_nbr_pg = re.search(r"neighbor (\S+) .*peer-group (\S+)", line)
             if re_nbr_pg:
                 if ctx_keys[0] not in del_nbr_dict:
                     del_nbr_dict[ctx_keys[0]] = list()
@@ -1008,20 +1081,21 @@ def bgp_delete_move_lines(lines_to_add, lines_to_del):
             if ctx_keys[0] not in del_dict:
                 del_dict[ctx_keys[0]] = dict()
             # find 'no neighbor <pg_name> peer-group'
-            re_pg = re.match("neighbor (\S+) peer-group$", line)
+            re_pg = re.match(r"neighbor (\S+) peer-group$", line)
             if re_pg and re_pg.group(1) not in del_dict[ctx_keys[0]]:
                 del_dict[ctx_keys[0]][re_pg.group(1)] = list()
                 found_pg_del_cmd = True
+
+    # move neighbor remote-as lines at the end
+    for ctx_keys, line in lines_to_del_to_app:
+        lines_to_del.remove((ctx_keys, line))
+        lines_to_del.append((ctx_keys, line))
 
     if found_pg_del_cmd == False:
         bgp_delete_inst_move_line(lines_to_del)
         if del_nbr_dict:
             bgp_remove_neighbor_cfg(lines_to_del, del_nbr_dict)
         return (lines_to_add, lines_to_del)
-
-    for ctx_keys, line in lines_to_del_to_app:
-        lines_to_del.remove((ctx_keys, line))
-        lines_to_del.append((ctx_keys, line))
 
     # {'router bgp 65001': {'PG': ['10.1.1.2'], 'PG1': ['10.1.1.21']},
     #  'router bgp 65001 vrf vrf1': {'PG': ['10.1.1.2'], 'PG1': ['10.1.1.21']}}
@@ -1034,7 +1108,7 @@ def bgp_delete_move_lines(lines_to_add, lines_to_del):
             if ctx_keys[0] in del_dict:
                 for pg_key in del_dict[ctx_keys[0]]:
                     # 'neighbor <peer> [interface] peer-group <pg_name>'
-                    nb_pg = "neighbor (\S+) .*peer-group %s$" % pg_key
+                    nb_pg = r"neighbor (\S+) .*peer-group %s$" % pg_key
                     re_nbr_pg = re.search(nb_pg, line)
                     if (
                         re_nbr_pg
@@ -1052,7 +1126,7 @@ def bgp_delete_move_lines(lines_to_add, lines_to_del):
             if ctx_keys[0] in del_dict:
                 for pg in del_dict[ctx_keys[0]]:
                     for nbr in del_dict[ctx_keys[0]][pg]:
-                        nb_exp = "neighbor %s .*" % nbr
+                        nb_exp = r"neighbor %s .*" % nbr
                         re_nb = re.search(nb_exp, line)
                         # add peer configs to delete list.
                         if re_nb and line not in lines_to_del_to_del:
@@ -1081,20 +1155,40 @@ def pim_delete_move_lines(lines_to_add, lines_to_del):
     # they are implicitly deleted by 'no ip pim'.
     # Remove all such depdendent options from delete
     # pending list.
-    pim_disable = False
+    pim_disable = []
+    lines_to_del_to_del = []
+
+    index = -1
+    for ctx_keys, line in lines_to_del:
+        index = index + 1
+        if ctx_keys[0].startswith("interface") and line and line == "ip pim":
+            pim_disable.append(ctx_keys[0])
+
+        # no ip msdp peer <> does not accept source so strip it off.
+        if line and line.startswith("ip msdp peer "):
+            pim_msdp_peer = re.search(r"ip msdp peer (\S+) source (\S+)", line)
+            if pim_msdp_peer:
+                source_sub_str = "source %s" % pim_msdp_peer.group(2)
+                new_line = line.replace(source_sub_str, "").strip()
+                lines_to_del.remove((ctx_keys, line))
+                lines_to_del.insert(index, (ctx_keys, new_line))
 
     for ctx_keys, line in lines_to_del:
-        if ctx_keys[0].startswith("interface") and line and line == "ip pim":
-            pim_disable = True
+        if (
+            ctx_keys[0] in pim_disable
+            and ctx_keys[0].startswith("interface")
+            and line
+            and (
+                line.startswith("ip pim ")
+                or line.startswith("no ip pim ")
+                or line.startswith("ip multicast ")
+                or line.startswith("no ip multicast ")
+            )
+        ):
+            lines_to_del_to_del.append((ctx_keys, line))
 
-    if pim_disable:
-        for ctx_keys, line in lines_to_del:
-            if (
-                ctx_keys[0].startswith("interface")
-                and line
-                and line.startswith("ip pim ")
-            ):
-                lines_to_del.remove((ctx_keys, line))
+    for ctx_keys, line in lines_to_del_to_del:
+        lines_to_del.remove((ctx_keys, line))
 
     return (lines_to_add, lines_to_del)
 
@@ -1170,10 +1264,10 @@ def ignore_delete_re_add_lines(lines_to_add, lines_to_del):
                 #
                 # If so then chop the del line and the corresponding add lines
                 re_swpx_int_peergroup = re.search(
-                    "neighbor (\S+) interface peer-group (\S+)", line
+                    r"neighbor (\S+) interface peer-group (\S+)", line
                 )
                 re_swpx_int_v6only_peergroup = re.search(
-                    "neighbor (\S+) interface v6only peer-group (\S+)", line
+                    r"neighbor (\S+) interface v6only peer-group (\S+)", line
                 )
 
                 if re_swpx_int_peergroup or re_swpx_int_v6only_peergroup:
@@ -1230,7 +1324,7 @@ def ignore_delete_re_add_lines(lines_to_add, lines_to_del):
 
                 if re_nbr_bfd_timers:
                     nbr = re_nbr_bfd_timers.group(1)
-                    bfd_nbr = "neighbor %s" % nbr
+                    bfd_nbr = r"neighbor %s" % nbr
                     bfd_search_string = bfd_nbr + r" bfd (\S+) (\S+) (\S+)"
 
                     for ctx_keys, add_line in lines_to_add:
@@ -1255,13 +1349,13 @@ def ignore_delete_re_add_lines(lines_to_add, lines_to_del):
                 # they actually match and if we are going from a very old style
                 # command such that the neighbor command is under the `router
                 # bgp ..` node that we need to handle that appropriately
-                re_nbr_rm = re.search("neighbor(.*)route-map(.*)(in|out)$", line)
+                re_nbr_rm = re.search(r"neighbor(.*)route-map(.*)(in|out)$", line)
                 if re_nbr_rm:
                     adjust_for_bgp_node = 0
                     neighbor_name = re_nbr_rm.group(1)
                     rm_name_del = re_nbr_rm.group(2)
                     dir = re_nbr_rm.group(3)
-                    search = "neighbor%sroute-map(.*)%s" % (neighbor_name, dir)
+                    search = r"neighbor%sroute-map(.*)%s" % (neighbor_name, dir)
                     save_line = "EMPTY"
                     for ctx_keys_al, add_line in lines_to_add:
                         if ctx_keys_al[0].startswith("router bgp"):
@@ -1314,10 +1408,10 @@ def ignore_delete_re_add_lines(lines_to_add, lines_to_del):
                 #
                 # If so then chop the del line and the corresponding add lines
                 re_swpx_int_remoteas = re.search(
-                    "neighbor (\S+) interface remote-as (\S+)", line
+                    r"neighbor (\S+) interface remote-as (\S+)", line
                 )
                 re_swpx_int_v6only_remoteas = re.search(
-                    "neighbor (\S+) interface v6only remote-as (\S+)", line
+                    r"neighbor (\S+) interface v6only remote-as (\S+)", line
                 )
 
                 if re_swpx_int_remoteas or re_swpx_int_v6only_remoteas:
@@ -1357,7 +1451,7 @@ def ignore_delete_re_add_lines(lines_to_add, lines_to_del):
             # unnecessary session resets.
             if "multipath-relax" in line:
                 re_asrelax_new = re.search(
-                    "^bgp\s+bestpath\s+as-path\s+multipath-relax$", line
+                    r"^bgp\s+bestpath\s+as-path\s+multipath-relax$", line
                 )
                 old_asrelax_cmd = "bgp bestpath as-path multipath-relax no-as-set"
                 found_asrelax_old = line_exist(lines_to_add, ctx_keys, old_asrelax_cmd)
@@ -1382,7 +1476,7 @@ def ignore_delete_re_add_lines(lines_to_add, lines_to_del):
         # the new syntax. This causes an unnecessary 'no import-table' followed
         # by the same old 'ip import-table' which causes perturbations in
         # announced routes leading to traffic blackholes. Fix this issue.
-        re_importtbl = re.search("^ip\s+import-table\s+(\d+)$", ctx_keys[0])
+        re_importtbl = re.search(r"^ip\s+import-table\s+(\d+)$", ctx_keys[0])
         if re_importtbl:
             table_num = re_importtbl.group(1)
             for ctx in lines_to_add:
@@ -1403,7 +1497,7 @@ def ignore_delete_re_add_lines(lines_to_add, lines_to_del):
         #      access-list FOO seq 5 permit 2.2.2.2/32
         #      ipv6 access-list BAR seq 5 permit 2:2:2::2/128
         re_acl_pfxlst = re.search(
-            "^(ip |ipv6 |)(prefix-list|access-list)(\s+\S+\s+)(seq \d+\s+)(permit|deny)(.*)$",
+            r"^(ip |ipv6 |)(prefix-list|access-list)(\s+\S+\s+)(seq \d+\s+)(permit|deny)(.*)$",
             ctx_keys[0],
         )
         if re_acl_pfxlst:
@@ -1436,7 +1530,7 @@ def ignore_delete_re_add_lines(lines_to_add, lines_to_del):
         #      bgp large-community-list standard llist seq 5 permit 65001:65001:1
         #      bgp extcommunity-list standard elist seq 5 permit soo 123:123
         re_bgp_lists = re.search(
-            "^(bgp )(community-list|large-community-list|extcommunity-list)(\s+\S+\s+)(\S+\s+)(seq \d+\s+)(permit|deny)(.*)$",
+            r"^(bgp )(community-list|large-community-list|extcommunity-list)(\s+\S+\s+)(\S+\s+)(seq \d+\s+)(permit|deny)(.*)$",
             ctx_keys[0],
         )
         if re_bgp_lists:
@@ -1465,7 +1559,7 @@ def ignore_delete_re_add_lines(lines_to_add, lines_to_del):
         # Examples:
         #      bgp as-path access-list important_internet_bgp_as_numbers seq 30 permit _40841_"
         re_bgp_as_path = re.search(
-            "^(bgp )(as-path )(access-list )(\S+\s+)(seq \d+\s+)(permit|deny)(.*)$",
+            r"^(bgp )(as-path )(access-list )(\S+\s+)(seq \d+\s+)(permit|deny)(.*)$",
             ctx_keys[0],
         )
         if re_bgp_as_path:
@@ -1495,7 +1589,7 @@ def ignore_delete_re_add_lines(lines_to_add, lines_to_del):
             and ctx_keys[2].startswith("vni")
         ):
             re_route_target = (
-                re.search("^route-target import (.*)$", line)
+                re.search(r"^route-target import (.*)$", line)
                 if line is not None
                 else False
             )
@@ -1632,7 +1726,7 @@ def compare_context_objects(newconf, running):
     pcclist_to_del = []
     candidates_to_add = []
     delete_bgpd = False
-    area_stub_no_sum = "area (\S+) stub no-summary"
+    area_stub_no_sum = r"area (\S+) stub no-summary"
     deleted_keychains = []
 
     # Find contexts that are in newconf but not in running
@@ -1667,9 +1761,11 @@ def compare_context_objects(newconf, running):
                 lines_to_del.append((running_ctx_keys, None))
 
             # We cannot do 'no interface' or 'no vrf' in FRR, and so deal with it
-            elif running_ctx_keys[0].startswith("interface") or running_ctx_keys[
-                0
-            ].startswith("vrf"):
+            elif (
+                running_ctx_keys[0].startswith("interface")
+                or running_ctx_keys[0].startswith("vrf")
+                or running_ctx_keys[0].startswith("router pim")
+            ):
                 for line in running_ctx.lines:
                     lines_to_del.append((running_ctx_keys, line))
 

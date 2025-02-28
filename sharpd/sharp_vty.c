@@ -82,7 +82,7 @@ DEFPY(watch_redistribute, watch_redistribute_cmd,
 }
 
 DEFPY(watch_nexthop_v6, watch_nexthop_v6_cmd,
-      "sharp watch [vrf NAME$vrf_name] <nexthop$n X:X::X:X$nhop|import$import X:X::X:X/M$inhop>  [connected$connected]",
+      "sharp watch [vrf NAME$vrf_name] <nexthop$n X:X::X:X$nhop|import$import X:X::X:X/M$inhop>  [connected$connected] [mrib$mrib]",
       "Sharp routing Protocol\n"
       "Watch for changes\n"
       "The vrf we would like to watch if non-default\n"
@@ -91,7 +91,8 @@ DEFPY(watch_nexthop_v6, watch_nexthop_v6_cmd,
       "The v6 nexthop to signal for watching\n"
       "Watch for import check changes\n"
       "The v6 prefix to signal for watching\n"
-      "Should the route be connected\n")
+      "Should the route be connected\n"
+      "In the Multicast rib\n")
 {
 	struct vrf *vrf;
 	struct prefix p;
@@ -119,14 +120,13 @@ DEFPY(watch_nexthop_v6, watch_nexthop_v6_cmd,
 	}
 
 	sharp_nh_tracker_get(&p);
-	sharp_zebra_nexthop_watch(&p, vrf->vrf_id, type_import,
-				  true, !!connected);
+	sharp_zebra_nexthop_watch(&p, vrf->vrf_id, type_import, true, !!connected, !!mrib);
 
 	return CMD_SUCCESS;
 }
 
 DEFPY(watch_nexthop_v4, watch_nexthop_v4_cmd,
-      "sharp watch [vrf NAME$vrf_name] <nexthop$n A.B.C.D$nhop|import$import A.B.C.D/M$inhop> [connected$connected]",
+      "sharp watch [vrf NAME$vrf_name] <nexthop$n A.B.C.D$nhop|import$import A.B.C.D/M$inhop> [connected$connected] [mrib$mrib]",
       "Sharp routing Protocol\n"
       "Watch for changes\n"
       "The vrf we would like to watch if non-default\n"
@@ -135,7 +135,8 @@ DEFPY(watch_nexthop_v4, watch_nexthop_v4_cmd,
       "The v4 address to signal for watching\n"
       "Watch for import check changes\n"
       "The v4 prefix for import check to watch\n"
-      "Should the route be connected\n")
+      "Should the route be connected\n"
+      "In the Multicast rib\n")
 {
 	struct vrf *vrf;
 	struct prefix p;
@@ -164,8 +165,7 @@ DEFPY(watch_nexthop_v4, watch_nexthop_v4_cmd,
 	}
 
 	sharp_nh_tracker_get(&p);
-	sharp_zebra_nexthop_watch(&p, vrf->vrf_id, type_import,
-				  true, !!connected);
+	sharp_zebra_nexthop_watch(&p, vrf->vrf_id, type_import, true, !!connected, !!mrib);
 
 	return CMD_SUCCESS;
 }
@@ -448,6 +448,7 @@ DEFPY (install_seg6local_routes,
 	      End_X$seg6l_endx X:X::X:X$seg6l_endx_nh6|\
 	      End_T$seg6l_endt (1-4294967295)$seg6l_endt_table|\
 	      End_DX4$seg6l_enddx4 A.B.C.D$seg6l_enddx4_nh4|\
+	      End_DX6$seg6l_enddx6 X:X::X:X$seg6l_enddx6_nh6|\
 	      End_DT6$seg6l_enddt6 (1-4294967295)$seg6l_enddt6_table|\
 	      End_DT4$seg6l_enddt4 (1-4294967295)$seg6l_enddt4_table|\
 	      End_DT46$seg6l_enddt46 (1-4294967295)$seg6l_enddt46_table>\
@@ -467,6 +468,8 @@ DEFPY (install_seg6local_routes,
        "Redirect table id to use\n"
        "SRv6 End.DX4 function to use\n"
        "V4 Nexthop address to use\n"
+       "SRv6 End.DX6 function to use\n"
+       "V6 Nexthop address to use\n"
        "SRv6 End.DT6 function to use\n"
        "Redirect table id to use\n"
        "SRv6 End.DT4 function to use\n"
@@ -516,6 +519,9 @@ DEFPY (install_seg6local_routes,
 	if (seg6l_enddx4) {
 		action = ZEBRA_SEG6_LOCAL_ACTION_END_DX4;
 		ctx.nh4 = seg6l_enddx4_nh4;
+	} else if (seg6l_enddx6) {
+		action = ZEBRA_SEG6_LOCAL_ACTION_END_DX6;
+		ctx.nh6 = seg6l_enddx6_nh6;
 	} else if (seg6l_endx) {
 		action = ZEBRA_SEG6_LOCAL_ACTION_END_X;
 		ctx.nh6 = seg6l_endx_nh6;

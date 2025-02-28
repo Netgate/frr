@@ -32,7 +32,6 @@
 #include "zebra/zebra_ptm.h"
 #include "zebra/rt_netlink.h"
 #include "zebra/if_netlink.h"
-#include "zebra/interface.h"
 #include "zebra/zebra_vxlan.h"
 #include "zebra/zebra_errors.h"
 #include "zebra/zebra_evpn_mh.h"
@@ -108,17 +107,6 @@ static void zebra_if_node_destroy(route_table_delegate_t *delegate,
 	route_node_destroy(delegate, table, node);
 }
 
-static void zebra_if_nhg_dependents_free(struct zebra_if *zebra_if)
-{
-	nhg_connected_tree_free(&zebra_if->nhg_dependents);
-}
-
-static void zebra_if_nhg_dependents_init(struct zebra_if *zebra_if)
-{
-	nhg_connected_tree_init(&zebra_if->nhg_dependents);
-}
-
-
 route_table_delegate_t zebra_if_table_delegate = {
 	.create_node = route_node_create,
 	.destroy_node = zebra_if_node_destroy};
@@ -137,7 +125,7 @@ static int if_zebra_new_hook(struct interface *ifp)
 
 	zebra_if->link_nsid = NS_UNKNOWN;
 
-	zebra_if_nhg_dependents_init(zebra_if);
+	nhg_connected_tree_init(&zebra_if->nhg_dependents);
 
 	zebra_ptm_if_init(zebra_if);
 
@@ -187,6 +175,10 @@ static void if_nhg_dependents_release(const struct interface *ifp)
 	frr_each(nhg_connected_tree, &zif->nhg_dependents, rb_node_dep) {
 		rb_node_dep->nhe->ifp = NULL; /* Null it out */
 		zebra_nhg_check_valid(rb_node_dep->nhe);
+		if (CHECK_FLAG(rb_node_dep->nhe->flags,
+			       NEXTHOP_GROUP_KEEP_AROUND) &&
+		    rb_node_dep->nhe->refcnt == 1)
+			zebra_nhg_decrement_ref(rb_node_dep->nhe);
 	}
 }
 
@@ -221,7 +213,7 @@ static int if_zebra_delete_hook(struct interface *ifp)
 		zebra_evpn_mac_ifp_del(ifp);
 
 		if_nhg_dependents_release(ifp);
-		zebra_if_nhg_dependents_free(zebra_if);
+		nhg_connected_tree_free(&zebra_if->nhg_dependents);
 
 		XFREE(MTYPE_ZIF_DESC, zebra_if->desc);
 
@@ -954,47 +946,6 @@ static void if_down_del_nbr_connected(struct interface *ifp)
 	}
 }
 
-void if_nhg_dependents_add(struct interface *ifp, struct nhg_hash_entry *nhe)
-{
-	if (ifp->info) {
-		struct zebra_if *zif = (struct zebra_if *)ifp->info;
-
-		nhg_connected_tree_add_nhe(&zif->nhg_dependents, nhe);
-	}
-}
-
-void if_nhg_dependents_del(struct interface *ifp, struct nhg_hash_entry *nhe)
-{
-	if (ifp->info) {
-		struct zebra_if *zif = (struct zebra_if *)ifp->info;
-
-		nhg_connected_tree_del_nhe(&zif->nhg_dependents, nhe);
-	}
-}
-
-unsigned int if_nhg_dependents_count(const struct interface *ifp)
-{
-	if (ifp->info) {
-		struct zebra_if *zif = (struct zebra_if *)ifp->info;
-
-		return nhg_connected_tree_count(&zif->nhg_dependents);
-	}
-
-	return 0;
-}
-
-
-bool if_nhg_dependents_is_empty(const struct interface *ifp)
-{
-	if (ifp->info) {
-		struct zebra_if *zif = (struct zebra_if *)ifp->info;
-
-		return nhg_connected_tree_is_empty(&zif->nhg_dependents);
-	}
-
-	return false;
-}
-
 /* Interface is up. */
 void if_up(struct interface *ifp, bool install_connected)
 {
@@ -1021,6 +972,14 @@ void if_up(struct interface *ifp, bool install_connected)
 	/* Install connected routes to the kernel. */
 	if (install_connected)
 		if_install_connected(ifp);
+
+	/*
+	 * Interface associated NHG's have been deleted on
+	 * interface down events, now that this interface
+	 * is coming back up, let's resync the zebra -> dplane
+	 * nhg's so that they can be continued to be used.
+	 */
+	zebra_interface_nhg_reinstall(ifp);
 
 	/* Handle interface up for specific types for EVPN. Non-VxLAN interfaces
 	 * are checked to see if (remote) neighbor entries need to be installed
@@ -1099,6 +1058,8 @@ void if_down(struct interface *ifp)
 
 	/* Delete all neighbor addresses learnt through IPv6 RA */
 	if_down_del_nbr_connected(ifp);
+
+	rib_update_handle_vrf_all(RIB_UPDATE_INTERFACE_DOWN, ZEBRA_ROUTE_KERNEL);
 }
 
 void if_refresh(struct interface *ifp)

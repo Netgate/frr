@@ -44,7 +44,7 @@ def setup_module(mod):
 
     router_list = tgen.routers()
 
-    for i, (rname, router) in enumerate(router_list.items(), 1):
+    for _, (rname, router) in enumerate(router_list.items(), 1):
         router.load_config(
             TopoRouter.RD_ZEBRA, os.path.join(CWD, "{}/zebra.conf".format(rname))
         )
@@ -189,7 +189,7 @@ def test_show_bgp_rpki_prefixes_no_rpki_cache():
         """
 configure
 rpki
- no rpki cache 192.0.2.1 15432 preference 1
+ no rpki cache tcp 192.0.2.1 15432 preference 1
 exit
 """
     )
@@ -219,7 +219,7 @@ def test_show_bgp_rpki_prefixes_reconnect():
         """
 configure
 rpki
- rpki cache 192.0.2.1 15432 preference 1
+ rpki cache tcp 192.0.2.1 15432 preference 1
 exit
 """
     )
@@ -319,7 +319,7 @@ def test_show_bgp_rpki_prefixes_vrf():
 configure
 vrf vrf10
  rpki
-  rpki cache 192.0.2.3 15432 preference 1
+  rpki cache tcp 192.0.2.3 15432 preference 1
  exit
 exit
 """

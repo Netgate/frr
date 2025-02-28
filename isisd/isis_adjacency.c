@@ -293,7 +293,7 @@ const char *isis_adj_name(const struct isis_adjacency *adj)
 	struct isis_dynhn *dyn;
 
 	dyn = dynhn_find_by_id(adj->circuit->isis, adj->sysid);
-	if (dyn)
+	if (adj->circuit->area->dynhostname && dyn)
 		return dyn->hostname;
 
 	snprintfrr(buf, sizeof(buf), "%pSY", adj->sysid);
@@ -693,7 +693,7 @@ void isis_adj_print_json(struct isis_adjacency *adj, struct json_object *json,
 			default:
 				continue;
 			}
-			backup = (sra->type == ISIS_SR_LAN_BACKUP) ? " (backup)"
+			backup = (sra->type == ISIS_SR_ADJ_BACKUP) ? " (backup)"
 								   : "";
 
 			json_object_string_add(adj_sid_json, "nexthop",
@@ -732,13 +732,13 @@ void isis_adj_print_vty(struct isis_adjacency *adj, struct vty *vty,
 		now = time(NULL);
 		if (adj->last_upd) {
 			if (adj->last_upd + adj->hold_time < now)
-				vty_out(vty, " Expiring");
+				vty_out(vty, " Expiring ");
 			else
 				vty_out(vty, " %-9llu",
 					(unsigned long long)adj->last_upd
 						+ adj->hold_time - now);
 		} else
-			vty_out(vty, "-        ");
+			vty_out(vty, " -        ");
 		vty_out(vty, "%-10pSY", adj->snpa);
 		vty_out(vty, "\n");
 	}
@@ -868,7 +868,7 @@ void isis_adj_print_vty(struct isis_adjacency *adj, struct vty *vty,
 			default:
 				continue;
 			}
-			backup = (sra->type == ISIS_SR_LAN_BACKUP) ? " (backup)"
+			backup = (sra->type == ISIS_SR_ADJ_BACKUP) ? " (backup)"
 								   : "";
 
 			vty_out(vty, "    %s %s%s: %u\n",

@@ -45,9 +45,6 @@ struct yang_module {
 	RB_ENTRY(yang_module) entry;
 	const char *name;
 	const struct lys_module *info;
-#ifdef HAVE_CONFD
-	int confd_hash;
-#endif
 #ifdef HAVE_SYSREPO
 	sr_subscription_ctx_t *sr_subscription;
 	struct event *sr_thread;
@@ -539,6 +536,21 @@ extern struct lyd_node *yang_dnode_dup(const struct lyd_node *dnode);
 extern void yang_dnode_free(struct lyd_node *dnode);
 
 /*
+ * Add a libyang data node to an RPC/action output container.
+ *
+ * output
+ *    RPC/action output container.
+ *
+ * xpath
+ *    XPath of the data node to add, relative to the output container.
+ *
+ * value
+ *    String representing the value of the data node.
+ */
+extern void yang_dnode_rpc_output_add(struct lyd_node *output,
+				      const char *xpath, const char *value);
+
+/*
  * Create a new yang_data structure.
  *
  * xpath
@@ -595,9 +607,11 @@ extern struct yang_data *yang_data_list_find(const struct list *list,
  * explicit_compile
  *    True if the caller will later call ly_ctx_compile to compile all loaded
  *    modules at once.
+ * load_library
+ *    Set this to have libyang to load/implement the ietf-yang-library.
  */
-extern struct ly_ctx *yang_ctx_new_setup(bool embedded_modules,
-					 bool explicit_compile);
+extern struct ly_ctx *yang_ctx_new_setup(bool embedded_modules, bool explicit_compile,
+					 bool load_library);
 
 /*
  * Enable or disable libyang verbose debugging.
@@ -621,6 +635,25 @@ extern void yang_debugging_set(bool enable);
  */
 extern LY_ERR yang_parse_notification(const char *xpath, LYD_FORMAT format,
 				      const char *data, struct lyd_node **notif);
+
+/*
+ * Parse a YANG RPC.
+ *
+ * Args:
+ *	xpath: xpath of an RPC/action.
+ *	format: LYD_FORMAT of input data.
+ *	data: input data.
+ *	reply: true if the data represents a reply to an RPC/action.
+ *	rpc: pointer to the libyang data tree to store the parsed RPC/action.
+ *	     If data represents an action, the pointer to the action node is
+ *	     still returned, but it's part of the full data tree with all its
+ *	     parents.
+ *
+ * Returns:
+ *	LY_ERR from underlying calls.
+ */
+LY_ERR yang_parse_rpc(const char *xpath, LYD_FORMAT format, const char *data,
+		      bool reply, struct lyd_node **rpc);
 
 /*
  * "Print" the yang tree in `root` into dynamic sized array.
@@ -696,8 +729,10 @@ extern const char *yang_print_errors(struct ly_ctx *ly_ctx, char *buf,
  *    Specify whether libyang should attempt to look for embedded YANG modules.
  * defer_compile
  *    Hold off on compiling modules until yang_init_loading_complete is called.
+ * load_library
+ *    Set this to have libyang to load/implement the ietf-yang-library.
  */
-extern void yang_init(bool embedded_modules, bool defer_compile);
+extern void yang_init(bool embedded_modules, bool defer_compile, bool load_library);
 
 /*
  * Should be called after yang_init and all yang_module_load()s have been done,
@@ -771,6 +806,14 @@ extern int yang_get_key_preds(char *s, const struct lysc_node *snode,
 extern int yang_get_node_keys(struct lyd_node *node, struct yang_list_keys *keys);
 
 /**
+ * yang_xpath_pop_node() - remove the last node from xpath string
+ * @xpath: an xpath string
+ *
+ * Return: NB_OK or NB_ERR_NOT_FOUND if nothing left to pop.
+ */
+extern int yang_xpath_pop_node(char *xpath);
+
+/**
  * yang_resolve_snodes() - Resolve an XPath to matching schema nodes.
  * @ly_ctx: libyang context to operate on.
  * @xpath: the path or XPath to resolve.
@@ -788,7 +831,8 @@ extern int yang_get_node_keys(struct lyd_node *node, struct yang_list_keys *keys
  * Return: a libyang error or LY_SUCCESS.
  */
 extern LY_ERR yang_resolve_snode_xpath(struct ly_ctx *ly_ctx, const char *xpath,
-				       struct lysc_node ***snodes, bool *simple);
+				       const struct lysc_node ***snodes,
+				       bool *simple);
 
 /*
  * Libyang future functions
@@ -800,6 +844,11 @@ extern LY_ERR yang_lyd_new_list(struct lyd_node_inner *parent,
 				const struct yang_list_keys *keys,
 				struct lyd_node **nodes);
 extern LY_ERR yang_lyd_trim_xpath(struct lyd_node **rootp, const char *xpath);
+extern LY_ERR yang_lyd_parse_data(const struct ly_ctx *ctx,
+				  struct lyd_node *parent, struct ly_in *in,
+				  LYD_FORMAT format, uint32_t parse_options,
+				  uint32_t validate_options,
+				  struct lyd_node **tree);
 
 #ifdef __cplusplus
 }

@@ -10,23 +10,19 @@ Test if route-map match by EVPN route-type works.
 """
 
 import os
-import re
 import sys
 import json
 import pytest
 import functools
 
-pytestmark = pytest.mark.bgpd
+pytestmark = [pytest.mark.bgpd]
 
 CWD = os.path.dirname(os.path.realpath(__file__))
 sys.path.append(os.path.join(CWD, "../"))
 
 # pylint: disable=C0413
 from lib import topotest
-from lib.topogen import Topogen, TopoRouter, get_topogen
-from lib.common_config import step
-
-pytestmark = [pytest.mark.bgpd]
+from lib.topogen import Topogen, get_topogen
 
 
 def setup_module(mod):

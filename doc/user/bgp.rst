@@ -83,7 +83,7 @@ be specified (:ref:`common-invocation-options`).
    be done to see if this is helping or not at the scale you are running
    at.
 
-.. option:: --v6-with-v4-nexthops
+.. option:: -x, --v6-with-v4-nexthops
 
    Allow BGP to peer in the V6 afi, when the interface only has v4 addresses.
    This allows bgp to install the v6 routes with a v6 nexthop that has the
@@ -91,6 +91,12 @@ be specified (:ref:`common-invocation-options`).
    overrides the bgp setting.  This setting is only really usable when
    the operator has turned off communication to zebra and is running bgpd
    as a complete standalone process.
+
+.. option:: -K, --graceful_restart
+
+   Bgpd will use this option to denote either a planned FRR graceful
+   restart or a bgpd-only graceful restart, and this will drive the BGP
+   GR restarting router procedures.
 
 LABEL MANAGER
 -------------
@@ -154,15 +160,15 @@ bottom until one of the factors can be used.
 
    Prefer higher local preference routes to lower.
 
+3. **Local route check**
+
+   Prefer local routes (statics, aggregates, redistributed) to received routes.
+
    If ``bgp bestpath aigp`` is enabled, and both paths that are compared have
    AIGP attribute, BGP uses AIGP tie-breaking unless both of the paths have the
    AIGP metric attribute. This means that the AIGP attribute is not evaluated
    during the best path selection process between two paths when one path does
    not have the AIGP attribute.
-
-3. **Local route check**
-
-   Prefer local routes (statics, aggregates, redistributed) to received routes.
 
 4. **AS path length check**
 
@@ -589,25 +595,51 @@ Route Flap Dampening
 
 .. clicmd:: bgp dampening (1-45) (1-20000) (1-50000) (1-255)
 
-   This command enables BGP route-flap dampening and specifies dampening parameters.
+   This command enables (with optionally specified dampening parameters) or
+   disables route-flap dampening for all routes of a BGP instance.
+
+.. clicmd:: neighbor PEER dampening [(1-45) [(1-20000) (1-20000) (1-255)]]
+
+   This command enables (with optionally specified dampening parameters) or
+   disables route-flap dampening for all routes learned from a BGP peer.
+
+.. clicmd:: neighbor GROUP dampening [(1-45) [(1-20000) (1-20000) (1-255)]]
+
+   This command enables (with optionally specified dampening parameters) or
+   disables route-flap dampening for all routes learned from peers of a peer
+   group.
 
    half-life
-      Half-life time for the penalty
+      Half-life time for the penalty in minutes (default value: 15).
 
    reuse-threshold
-      Value to start reusing a route
+      Value to start reusing a route (default value: 750).
 
    suppress-threshold
-      Value to start suppressing a route
+      Value to start suppressing a route (default value: 2000).
 
    max-suppress
-      Maximum duration to suppress a stable route
+      Maximum duration to suppress a stable route in minutes (default value:
+      60).
 
    The route-flap damping algorithm is compatible with :rfc:`2439`. The use of
-   this command is not recommended nowadays.
+   these commands is not recommended nowadays.
 
    At the moment, route-flap dampening is not working per VRF and is working only
    for IPv4 unicast and multicast.
+
+   With different parameter sets configurable for BGP instances, peer groups and
+   peers, the active dampening profile for a route is chosen on the fly,
+   allowing for various changes in configuration (i.e. peer group memberships)
+   during runtime. The parameter sets are taking precedence in the following
+   order:
+
+   1. Peer
+   2. Peer group
+   3. BGP instance
+
+   The negating commands do not allow to exclude a peer/peer group from a peer
+   group/BGP instances configuration.
 
 .. seealso::
    https://www.ripe.net/publications/docs/ripe-378
@@ -1054,6 +1086,52 @@ Default global mode is helper and default peer per mode is inherit from global.
 If per peer mode is configured, the GR mode of this particular peer will
 override the global mode.
 
+.. _bgp-GR-config-mode-cmd:
+
+BGP GR Config Mode Commands
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. clicmd:: bgp graceful-restart
+
+   This command will enable BGP graceful restart functionality for all BGP instances.
+
+.. clicmd:: bgp graceful-restart-disable
+
+   This command will disable both the functionality graceful restart and helper
+   mode for all BGP instances
+
+.. clicmd:: bgp graceful-restart select-defer-time (0-3600)
+
+   This is command, will set deferral time to value specified.
+
+.. clicmd:: bgp graceful-restart rib-stale-time (1-3600)
+
+   This is command, will set the time for which stale routes are kept in RIB.
+
+.. clicmd:: bgp graceful-restart restart-time (0-4095)
+
+   Set the time to wait to delete stale routes before a BGP open message
+   is received.
+
+   Using with Long-lived Graceful Restart capability, this is recommended
+   setting this timer to 0 and control stale routes with
+   ``bgp long-lived-graceful-restart stale-time``.
+
+   Default value is 120.
+
+.. clicmd:: bgp graceful-restart stalepath-time (1-4095)
+
+   This is command, will set the max time (in seconds) to hold onto
+   restarting peer's stale paths.
+
+   It also controls Enhanced Route-Refresh timer.
+
+   If this command is configured and the router does not receive a Route-Refresh EoRR
+   message, the router removes the stale routes from the BGP table after the timer
+   expires. The stale path timer is started when the router receives a Route-Refresh
+   BoRR message
+
+
 .. _bgp-GR-global-mode-cmd:
 
 BGP GR Global Mode Commands
@@ -1064,7 +1142,7 @@ BGP GR Global Mode Commands
    This command will enable BGP graceful restart functionality at the global
    level.
 
-.. clicmd:: bgp graceful-restart disable
+.. clicmd:: bgp graceful-restart-disable
 
    This command will disable both the functionality graceful restart and helper
    mode.
@@ -1204,6 +1282,13 @@ IPv6 Support
    address family is enabled by default for all new neighbors.
 
 
+.. clicmd:: bgp ipv6-auto-ra
+
+   By default, bgpd can ask Zebra to enable sending IPv6 router advertisement
+   messages on interfaces. For example, this happens for unnumbered peers
+   support or when extended-nexthop capability is used. The ``no`` form of this
+   command disables such behaviour.
+
 .. _bgp-route-aggregation:
 
 Route Aggregation
@@ -1334,7 +1419,14 @@ OSPFv3 into ``address-family ipv4 unicast`` as OSPFv3 supports IPv6.
 
 .. clicmd:: redistribute <babel|connected|eigrp|isis|kernel|openfabric|ospf|ospf6|rip|ripng|sharp|static> [metric (0-4294967295)] [route-map WORD]
 
-Redistribute routes from other protocols into BGP.
+   Redistribute routes from other protocols into BGP.
+
+   Note - When redistributing a static route, or any better Admin Distance route,
+   into BGP for which the same path is learned dynamically from another BGP
+   speaker, if the redistribute path is more preferred from a BGP Best Path
+   standpoint than the dynamically learned path, then BGP will not export
+   the best path to Zebra(RIB) for installation into the routing table,
+   unless BGP receives the path before the static route is created.
 
 .. clicmd:: redistribute <table|table-direct> (1-65535)] [metric (0-4294967295)] [route-map WORD]
 
@@ -1476,6 +1568,10 @@ Defining Peers
    peers ASN is the same as mine as specified under the :clicmd:`router bgp ASN`
    command the connection will be denied.
 
+.. clicmd:: neighbor PEER remote-as auto
+
+   The neighbor's ASN is detected automatically from the OPEN message.
+
 .. clicmd:: neighbor PEER oad
 
    Mark a peer belonging to the One Administrative Domain.
@@ -1565,6 +1661,15 @@ Configuring Peers
    value is carried encoded as uint32. To enable backward compatibility we
    need to disable IEEE floating-point encoding option per-peer.
 
+.. clicmd:: neighbor PEER extended-link-bandwidth
+
+   By default bandwidth in extended communities is carried encoded as IEEE
+   floating-point format, and is limited to maximum of 25 Gbps.
+
+   Enabling this parameter, you can use the bandwidth of to 4294967295 Mbps.
+
+   This is disabled by default.
+
 .. clicmd:: neighbor PEER enforce-first-as
 
    Discard updates received from the specified (eBGP) peer if the AS_PATH
@@ -1605,7 +1710,7 @@ Configuring Peers
    IPv4 session addresses, see the ``neighbor PEER update-source`` command
    below.
 
-.. clicmd:: neighbor PEER interface remote-as <internal|external|ASN>
+.. clicmd:: neighbor PEER interface remote-as <internal|external|auto|ASN>
 
    Configure an unnumbered BGP peer. ``PEER`` should be an interface name. The
    session will be established via IPv6 link locals. Use ``internal`` for iBGP
@@ -1720,7 +1825,7 @@ Configuring Peers
    Since sent prefix count is managed by update-groups, this option
    creates a separate update-group for outgoing updates.
 
-.. clicmd:: neighbor PEER local-as AS-NUMBER [no-prepend] [replace-as]
+.. clicmd:: neighbor PEER local-as AS-NUMBER [no-prepend [replace-as [dual-as]]]
 
    Specify an alternate AS for this BGP process when interacting with the
    specified peer. With no modifiers, the specified local-as is prepended to
@@ -1735,6 +1840,10 @@ Configuring Peers
    prepended to the AS_PATH when transmitting local-route updates to this peer.
 
    Note that replace-as can only be specified if no-prepend is.
+
+   The ``dual-as`` keyword is used to configure the neighbor to establish a peering
+   session using the real autonomous-system number (``router bgp ASN``) or by using
+   the autonomous system number configured with the ``local-as``.
 
    This command is only allowed for eBGP peers.
 
@@ -1785,6 +1894,17 @@ Configuring Peers
 
    Do not accept additional paths from this neighbor.
 
+.. clicmd:: neighbor <A.B.C.D|X:X::X:X|WORD> addpath-rx-paths-limit (1-65535)
+
+   Limit the maximum number of paths a BGP speaker can receive from a peer, optimizing
+   the transmission of BGP routes by selectively relaying pertinent routes instead of
+   the entire set.
+
+   If this command is configured, the sender will only send the number of paths specified
+   in PATHS-LIMIT capability.
+
+   To exchange this limit, both peers must support the PATHS-LIMIT capability.
+
 .. clicmd:: neighbor PEER ttl-security hops NUMBER
 
    This command enforces Generalized TTL Security Mechanism (GTSM), as
@@ -1810,7 +1930,7 @@ Configuring Peers
    This includes changing graceful-restart (LLGR also) timers,
    enabling/disabling add-path, and other supported capabilities.
 
-.. clicmd:: neighbor PEER capability fqdn 
+.. clicmd:: neighbor PEER capability fqdn
 
    Allow BGP to negotiate the FQDN Capability with its peers.
 
@@ -1819,7 +1939,7 @@ Configuring Peers
 
    This capability is activated by default. The ``no neighbor PEER capability
    fqdn`` avoid negotiation of that capability. This is useful for peers who
-   are not supporting this capability or supporting BGP Capabilities 
+   are not supporting this capability or supporting BGP Capabilities
    Negotiation RFC 2842.
 
 .. clicmd:: neighbor <A.B.C.D|X:X::X:X|WORD> accept-own
@@ -1863,11 +1983,13 @@ Configuring Peers
    and will not be displayed as part of a `show run`.  The no form
    of the command turns off this ability.
 
-.. clicmd:: bgp default-originate timer (0-3600)
+.. clicmd:: bgp default-originate timer (0-65535)
 
    Set the period to rerun the default-originate route-map scanner process. The
    default is 5 seconds. With a full routing table, it might be useful to increase
    this setting to avoid scanning the whole BGP table aggressively.
+
+   Setting to 0 turns off the scanning at all.
 
 .. clicmd:: bgp default ipv4-unicast
 
@@ -1942,6 +2064,13 @@ Configuring Peers
    This command shows the hostname of the next-hop in certain BGP commands
    outputs. It's easier to troubleshoot if you have a number of BGP peers
    and a number of routes to check.
+
+.. clicmd:: bgp default dynamic-capability
+
+   This command enables dynamic capability advertisement by default
+   for all the neighbors.
+
+   For ``datacenter`` profile, this is enabled by default.
 
 .. clicmd:: bgp default software-version-capability
 
@@ -2075,8 +2204,7 @@ and will share updates.
 .. clicmd:: neighbor PEER solo
 
    This command is used to indicate that routes advertised by the peer
-   should not be reflected back to the peer.  This command only is only
-   meaningful when there is a single peer defined in the peer-group.
+   should not be reflected back to the peer.
 
 .. clicmd:: show [ip] bgp peer-group [json]
 
@@ -2366,7 +2494,7 @@ is 4 octet long. The following format is used to define the community value.
 ``blackhole``
    ``blackhole`` represents well-known communities value ``BLACKHOLE``
    ``0xFFFF029A`` ``65535:666``. :rfc:`7999` documents sending prefixes to
-   EBGP peers and upstream for the purpose of blackholing traffic.
+   peers and upstream for the purpose of blackholing traffic.
    Prefixes tagged with the this community should normally not be
    re-advertised from neighbors of the originating network. Upon receiving
    ``BLACKHOLE`` community from a BGP speaker, ``NO_ADVERTISE`` community
@@ -3201,6 +3329,31 @@ L3VPN SRv6
    Specify the SRv6 locator to be used for SRv6 L3VPN. The Locator name must
    be set in zebra, but user can set it in any order.
 
+L3VPN SRv6 SID reachability
+---------------------------
+
+In the context of IPv4 L3VPN over SRv6 specific usecase, 2001:db8:12::2
+is the peer IPv6 address of r2, and 2001:db8:2:2:: is the SRv6 SID
+advertised by router r2 for prefix P. On r1, the SID reachability is
+checked in order to install the prefix P. The below output indicates
+that the 2001:db8:2:2:: prefix is valid.
+
+
+.. code-block:: frr
+
+   r1# show bgp nexthop detail
+   Current BGP nexthop cache:
+    2001:db8:2:2:: valid [IGP metric 0], #paths 4
+     gate 2001:db8:12::2, if eth0
+     Last update: Tue Nov 14 10:36:28 2023
+     Paths:
+       1/1 192.168.2.0/24 VRF vrf10 flags 0x4018
+       1/3 192.168.2.0/24 RD 65002:10 VRF default flags 0x418
+    2001:db8:12::2 valid [IGP metric 0], #paths 0, peer 2001:db8:12::2
+     if eth0
+     Last update: Tue Nov 14 10:36:26 2023
+     Paths:
+
 General configuration
 ^^^^^^^^^^^^^^^^^^^^^
 
@@ -4016,6 +4169,10 @@ The following are available in the top level *enable* mode:
 .. clicmd:: clear bgp \*
 
    Clear all peers.
+
+.. clicmd:: clear bgp ipv4|ipv6 ASNUM
+
+   Clear peers with the AS number in plain or dotted format.
 
 .. clicmd:: clear bgp ipv4|ipv6 \*
 
@@ -4848,8 +5005,8 @@ setting.
 
 .. clicmd:: bgp session-dscp (0-63)
 
-This command allows bgp to control, at a global level, the TCP dscp values
-in the TCP header.
+This command allows the BGP daemon to control, at a global level, the DSCP value
+used in outgoing packets for each BGP connection.
 
 .. _bgp-suppress-fib:
 

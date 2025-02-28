@@ -342,38 +342,6 @@ static void nb_op_resume_data_tree(struct nb_op_yield_state *ys)
 /* ======================= */
 
 /**
- * __xpath_pop_node() - remove the last node from xpath string
- * @xpath: an xpath string
- *
- * Return: NB_OK or NB_ERR_NOT_FOUND if nothing left to pop.
- */
-static int __xpath_pop_node(char *xpath)
-{
-	int len = strlen(xpath);
-	bool abs = xpath[0] == '/';
-	char *slash;
-
-	/* "//" or "/" => NULL */
-	if (abs && (len == 1 || (len == 2 && xpath[1] == '/')))
-		return NB_ERR_NOT_FOUND;
-
-	slash = (char *)frrstr_back_to_char(xpath, '/');
-	/* "/foo/bar/" or "/foo/bar//" => "/foo " */
-	if (slash && slash == &xpath[len - 1]) {
-		xpath[--len] = 0;
-		slash = (char *)frrstr_back_to_char(xpath, '/');
-		if (slash && slash == &xpath[len - 1]) {
-			xpath[--len] = 0;
-			slash = (char *)frrstr_back_to_char(xpath, '/');
-		}
-	}
-	if (!slash)
-		return NB_ERR_NOT_FOUND;
-	*slash = 0;
-	return NB_OK;
-}
-
-/**
  * nb_op_xpath_to_trunk() - generate a lyd_node tree (trunk) using an xpath.
  * @xpath_in: xpath query string to build trunk from.
  * @dnode: resulting tree (trunk)
@@ -398,7 +366,7 @@ static enum nb_error nb_op_xpath_to_trunk(const char *xpath_in,
 		if (err == LY_SUCCESS)
 			break;
 
-		ret = __xpath_pop_node(xpath);
+		ret = yang_xpath_pop_node(xpath);
 		if (ret != NB_OK)
 			break;
 	}
@@ -783,8 +751,8 @@ static const struct lysc_node *nb_op_sib_next(struct nb_op_yield_state *ys,
 
 	/*
 	 * If the node info stack is shorter than the schema path then we are
-	 * doign specific query still on the node from the schema path (should
-	 * match) so just return NULL (i.e., don't process siblings)
+	 * working our way down the specific query path so just return NULL
+	 * (i.e., don't process siblings)
 	 */
 	if (darr_len(ys->schema_path) > darr_len(ys->node_infos))
 		return NULL;
@@ -792,21 +760,21 @@ static const struct lysc_node *nb_op_sib_next(struct nb_op_yield_state *ys,
 	 * If sib is on top of the node info stack then
 	 * 1) it's a container node -or-
 	 * 2) it's a list node that we were walking and we've reach the last entry
-	 * 3) if sib is a list and the list was empty we never would have
+	 *
+	 * If sib is a list and the list was empty we never would have
 	 * pushed sib on the stack so the top of the stack is the parent
 	 *
 	 * If the query string included this node then we do not process any
 	 * siblings as we are not walking all the parent's children just this
 	 * specified one give by the query string.
 	 */
-	if (sib == darr_last(ys->node_infos)->schema &&
-	    darr_len(ys->schema_path) >= darr_len(ys->node_infos))
-		return NULL;
-	/* case (3) */
-	else if (sib->nodetype == LYS_LIST &&
-		 parent == darr_last(ys->node_infos)->schema &&
-		 darr_len(ys->schema_path) > darr_len(ys->node_infos))
-		return NULL;
+	if (darr_len(ys->schema_path) == darr_len(ys->node_infos)) {
+		struct nb_op_node_info *node_infos = darr_last(ys->node_infos);
+
+		assert(node_infos);
+		if (sib == node_infos->schema)
+			return NULL;
+	}
 
 	sib = __sib_next(yn, sib->next);
 	if (sib)
@@ -833,6 +801,7 @@ static const struct lysc_node *nb_op_sib_first(struct nb_op_yield_state *ys,
 {
 	const struct lysc_node *sib = lysc_node_child(parent);
 	const struct lysc_node *first_sib;
+	struct nb_op_node_info *last = darr_last(ys->node_infos);
 
 	/*
 	 * NOTE: when we want to handle root level walks we will need to use
@@ -849,10 +818,9 @@ static const struct lysc_node *nb_op_sib_first(struct nb_op_yield_state *ys,
 	 * base of the user query, return the next schema node from the query
 	 * string (schema_path).
 	 */
-	if (darr_last(ys->node_infos) != NULL &&
-	    !CHECK_FLAG(darr_last(ys->node_infos)->schema->nodetype,
-			LYS_CASE | LYS_CHOICE))
-		assert(darr_last(ys->node_infos)->schema == parent);
+	if (last != NULL &&
+	    !CHECK_FLAG(last->schema->nodetype, LYS_CASE | LYS_CHOICE))
+		assert(last->schema == parent);
 	if (darr_lasti(ys->node_infos) < ys->query_base_level)
 		return ys->schema_path[darr_lasti(ys->node_infos) + 1];
 
@@ -940,9 +908,10 @@ static enum nb_error __walk(struct nb_op_yield_state *ys, bool is_resume)
 	 * Otherwise get the first child of the container we are walking,
 	 * starting with non-yielding children.
 	 */
-	if (is_resume)
+	if (is_resume) {
+		assert(darr_last(ys->node_infos) != NULL);
 		sib = darr_last(ys->node_infos)->schema;
-	else {
+	} else {
 		/*
 		 * Start with non-yielding children first.
 		 *
@@ -1509,7 +1478,8 @@ static void nb_op_walk_continue(struct event *thread)
 		goto finish;
 
 	/* otherwise we are at a resumable node */
-	assert(darr_last(ys->node_infos)->has_lookup_next);
+	assert(darr_last(ys->node_infos) &&
+	       darr_last(ys->node_infos)->has_lookup_next);
 
 	ret = __walk(ys, true);
 	if (ret == NB_YIELD) {
@@ -1588,8 +1558,9 @@ static enum nb_error nb_op_yield(struct nb_op_yield_state *ys)
 	unsigned long min_us = MAX(1, NB_OP_WALK_INTERVAL_US / 50000);
 	struct timeval tv = { .tv_sec = 0, .tv_usec = min_us };
 
-	DEBUGD(&nb_dbg_events, "NB oper-state: yielding %s for %lus (should_batch %d)",
-	       ys->xpath, tv.tv_usec, ys->should_batch);
+	DEBUGD(&nb_dbg_events,
+	       "NB oper-state: yielding %s for %lldus (should_batch %d)",
+	       ys->xpath, (long long)tv.tv_usec, ys->should_batch);
 
 	if (ys->should_batch) {
 		/*
@@ -1770,6 +1741,16 @@ static enum nb_error nb_op_walk_start(struct nb_op_yield_state *ys)
 	return __walk(ys, false);
 }
 
+bool nb_oper_is_yang_lib_query(const char *xpath)
+{
+	const char *libstr = "/ietf-yang-library:";
+	const unsigned long liblen = strlen(libstr);
+
+	if (strncmp(libstr, xpath, liblen))
+		return false;
+
+	return strlen(xpath) > liblen;
+}
 
 void *nb_oper_walk(const char *xpath, struct yang_translator *translator,
 		   uint32_t flags, bool should_batch, nb_oper_data_cb cb,

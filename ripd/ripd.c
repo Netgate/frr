@@ -3042,7 +3042,10 @@ DEFUN (show_ip_rip,
 	}
 
 	vty_out(vty,
-		"Codes: R - RIP, C - connected, S - Static, O - OSPF, B - BGP\n"
+		"Codes: K - kernel route, C - connected, L - local, S - static,\n"
+		"       R - RIP, O - OSPF, I - IS-IS, B - BGP, E - EIGRP, N - NHRP,\n"
+		"       T - Table, v - VNC, V - VNC-Direct, A - Babel, F - PBR,\n"
+		"       f - OpenFabric, t - Table-Direct\n"
 		"Sub-codes:\n"
 		"      (n) - normal, (s) - static, (d) - default, (r) - redistribute,\n"
 		"      (i) - interface\n\n"
@@ -3240,38 +3243,6 @@ DEFUN (show_ip_rip_status,
 	rip_distance_show(vty, rip);
 
 	return CMD_SUCCESS;
-}
-
-#include "ripd/ripd_clippy.c"
-
-/*
- * XPath: /frr-ripd:clear-rip-route
- */
-DEFPY_YANG (clear_ip_rip,
-       clear_ip_rip_cmd,
-       "clear ip rip [vrf WORD]",
-       CLEAR_STR
-       IP_STR
-       "Clear IP RIP database\n"
-       VRF_CMD_HELP_STR)
-{
-	struct list *input;
-	int ret;
-
-	input = list_new();
-	if (vrf) {
-		struct yang_data *yang_vrf;
-
-		yang_vrf = yang_data_new("/frr-ripd:clear-rip-route/input/vrf",
-					 vrf);
-		listnode_add(input, yang_vrf);
-	}
-
-	ret = nb_cli_rpc(vty, "/frr-ripd:clear-rip-route", input, NULL);
-
-	list_delete(&input);
-
-	return ret;
 }
 
 /* Distribute-list update functions. */
@@ -3648,7 +3619,6 @@ void rip_init(void)
 	/* Install rip commands. */
 	install_element(VIEW_NODE, &show_ip_rip_cmd);
 	install_element(VIEW_NODE, &show_ip_rip_status_cmd);
-	install_element(ENABLE_NODE, &clear_ip_rip_cmd);
 
 	/* Debug related init. */
 	rip_debug_init();

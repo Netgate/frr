@@ -2070,7 +2070,10 @@ DEFUN (show_ipv6_ripng,
 
 	/* Header of display. */
 	vty_out(vty,
-		"Codes: R - RIPng, C - connected, S - Static, O - OSPF, B - BGP\n"
+		"Codes: K - kernel route, C - connected, L - local, S - static,\n"
+		"       R - RIPng, O - OSPF, I - IS-IS, B - BGP, E - EIGRP, N - NHRP,\n"
+		"       T - Table, v - VNC, V - VNC-Direct, A - Babel, F - PBR,\n"
+		"       f - OpenFabric, t - Table-Direct\n"
 		"Sub-codes:\n"
 		"      (n) - normal, (s) - static, (d) - default, (r) - redistribute,\n"
 		"      (i) - interface, (a/S) - aggregated/Suppressed\n\n"
@@ -2229,38 +2232,6 @@ DEFUN (show_ipv6_ripng_status,
 	ripng_peer_display(vty, ripng);
 
 	return CMD_SUCCESS;
-}
-
-#include "ripngd/ripngd_clippy.c"
-
-/*
- * XPath: /frr-ripngd:clear-ripng-route
- */
-DEFPY_YANG (clear_ipv6_rip,
-       clear_ipv6_rip_cmd,
-       "clear ipv6 ripng [vrf WORD]",
-       CLEAR_STR
-       IPV6_STR
-       "Clear IPv6 RIP database\n"
-       VRF_CMD_HELP_STR)
-{
-	struct list *input;
-	int ret;
-
-	input = list_new();
-	if (vrf) {
-		struct yang_data *yang_vrf;
-
-		yang_vrf = yang_data_new(
-			"/frr-ripngd:clear-ripng-route/input/vrf", vrf);
-		listnode_add(input, yang_vrf);
-	}
-
-	ret = nb_cli_rpc(vty, "/frr-ripngd:clear-ripng-route", input, NULL);
-
-	list_delete(&input);
-
-	return ret;
 }
 
 /* Update ECMP routes to zebra when ECMP is disabled. */
@@ -2680,7 +2651,6 @@ void ripng_init(void)
 	/* Install ripng commands. */
 	install_element(VIEW_NODE, &show_ipv6_ripng_cmd);
 	install_element(VIEW_NODE, &show_ipv6_ripng_status_cmd);
-	install_element(ENABLE_NODE, &clear_ipv6_rip_cmd);
 
 	ripng_if_init();
 	ripng_debug_init();

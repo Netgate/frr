@@ -11,14 +11,13 @@
 import os
 import sys
 import json
-from time import sleep
 from functools import partial
 import pytest
 
 # pylint: disable=C0413
 # Import topogen and topotest helpers
 from lib import topotest
-from lib.topogen import Topogen, TopoRouter, get_topogen
+from lib.topogen import Topogen, get_topogen
 from lib.topolog import logger
 
 
@@ -166,7 +165,7 @@ def setup_module(mod):
             tgen.set_error("unsupported version")
 
 
-def teardown_module(mod):
+def teardown_module():
     "Teardown the pytest environment"
     tgen = get_topogen()
     tgen.stop_topology()
@@ -283,7 +282,7 @@ def test_link_1_2_3_4_down():
     assert result is None, assertmsg
 
 
-def test_link_1_2_4_down():
+def test_link_1_2_4_down_3_up():
     "Test path R1 -> R2 -> Rc -> R3  -> R4"
     tgen = get_topogen()
 
@@ -305,7 +304,7 @@ def test_link_1_2_4_down():
     assert result is None, assertmsg
 
 
-def test_link_1_4_down():
+def test_link_1_4_down_2_up():
     "Test path R1 -> R2 -> Ra -> Rb -> R3  -> R4"
     tgen = get_topogen()
 
@@ -321,13 +320,13 @@ def test_link_1_4_down():
     test_func = partial(
         topotest.router_json_cmp, r1, "show ip route vrf green 10.0.94.2 json", expected
     )
-    _, result = topotest.run_and_expect(test_func, None, count=60, wait=1)
+    _, result = topotest.run_and_expect(test_func, None, count=120, wait=2)
 
     assertmsg = "r1 JSON output mismatches"
     assert result is None, assertmsg
 
 
-def test_link_4_down():
+def test_link_4_down_1_up():
     "Test path R1 -> Ra -> Rb -> R3  -> R4"
     tgen = get_topogen()
 
@@ -343,7 +342,7 @@ def test_link_4_down():
     test_func = partial(
         topotest.router_json_cmp, r1, "show ip route vrf green 10.0.94.2 json", expected
     )
-    _, result = topotest.run_and_expect(test_func, None, count=60, wait=1)
+    _, result = topotest.run_and_expect(test_func, None, count=120, wait=2)
 
     assertmsg = "r1 JSON output mismatches"
     assert result is None, assertmsg
@@ -365,7 +364,7 @@ def test_link_1_2_3_4_up():
     test_func = partial(
         topotest.router_json_cmp, r1, "show ip route vrf green 10.0.94.2 json", expected
     )
-    _, result = topotest.run_and_expect(test_func, None, count=60, wait=1)
+    _, result = topotest.run_and_expect(test_func, None, count=120, wait=2)
 
     assertmsg = "r1 JSON output mismatches"
     assert result is None, assertmsg

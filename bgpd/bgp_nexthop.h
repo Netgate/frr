@@ -38,7 +38,7 @@ struct bgp_nexthop_cache {
 	uint32_t metric;
 
 	/* Nexthop number and nexthop linked list.*/
-	uint8_t nexthop_num;
+	uint16_t nexthop_num;
 
 	/* This flag is set to TRUE for a bnc that is gateway IP overlay index
 	 * nexthop.
@@ -66,6 +66,7 @@ struct bgp_nexthop_cache {
 #define BGP_STATIC_ROUTE              (1 << 4)
 #define BGP_STATIC_ROUTE_EXACT_MATCH  (1 << 5)
 #define BGP_NEXTHOP_LABELED_VALID     (1 << 6)
+#define BGP_NEXTHOP_ULTIMATE	      (1 << 7)
 
 /*
  * This flag is added for EVPN gateway IP nexthops.
@@ -90,6 +91,7 @@ struct bgp_nexthop_cache {
 	struct bgp_nexthop_cache_head *tree;
 
 	struct prefix prefix;
+	struct prefix resolved_prefix;
 	void *nht_info; /* In BGP, peer session */
 	LIST_HEAD(path_list, bgp_path_info) paths;
 	unsigned int path_count;

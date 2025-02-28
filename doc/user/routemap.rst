@@ -176,10 +176,9 @@ Route Map Match Command
 
    Matches the specified `metric`.
 
-.. clicmd:: match tag TAG
+.. clicmd:: match tag <untagged|(1-4294967295)>
 
-   Matches the specified tag value associated with the route. This tag value
-   can be in the range of (1-4294967295).
+   Matches the specified tag (or untagged) value associated with the route.
 
 .. clicmd:: match local-preference METRIC
 
@@ -241,9 +240,10 @@ Route Map Set Command
 
 .. program:: configure
 
-.. clicmd:: set tag TAG
+.. clicmd:: set tag <untagged|(1-4294967295)>
 
-   Set a tag on the matched route. This tag value can be from (1-4294967295).
+   Set a tag on the matched route.
+
    Additionally if you have compiled with the :option:`--enable-realms`
    configure option. Tag values from (1-255) are sent to the Linux kernel as a
    realm value. Then route policy can be applied. See the tc man page.  As
@@ -320,7 +320,7 @@ Route Map Set Command
 
    Set the maximum meric for the route.
 
-.. clicmd:: set aigp-metric <igp-metric|(1-4294967295)>
+.. clicmd:: set aigp-metric <igp-metric|(0-4294967295)>
 
    Set the BGP attribute AIGP to a specific value. If ``igp-metric`` is specified,
    then the value is taken from the IGP protocol, otherwise an arbitrary value.

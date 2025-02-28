@@ -67,9 +67,8 @@ extern bool vpn_leak_to_vrf_no_retain_filter_check(struct bgp *from_bgp,
 						   struct attr *attr,
 						   afi_t afi);
 
-extern void vpn_leak_to_vrf_update(struct bgp *from_bgp,
-				   struct bgp_path_info *path_vpn,
-				   struct prefix_rd *prd);
+extern void vpn_leak_to_vrf_update(struct bgp *from_bgp, struct bgp_path_info *path_vpn,
+				   struct prefix_rd *prd, struct peer *peer);
 
 extern void vpn_leak_to_vrf_withdraw(struct bgp_path_info *path_vpn);
 
@@ -167,16 +166,6 @@ static inline int vpn_leak_to_vpn_active(struct bgp *bgp_vrf, afi_t afi,
 		!bgp_vrf->vpn_policy[afi].rmap[BGP_VPN_POLICY_DIR_TOVPN]) {
 		if (pmsg)
 			*pmsg = "route-map tovpn named but not defined";
-		return 0;
-	}
-
-	/* Is there an "auto" export label that isn't allocated yet? */
-	if (CHECK_FLAG(bgp_vrf->vpn_policy[afi].flags,
-		BGP_VPN_POLICY_TOVPN_LABEL_AUTO) &&
-		(bgp_vrf->vpn_policy[afi].tovpn_label == MPLS_LABEL_NONE)) {
-
-		if (pmsg)
-			*pmsg = "auto label not allocated";
 		return 0;
 	}
 
@@ -429,6 +418,8 @@ struct bgp_mplsvpn_nh_label_bind_cache *bgp_mplsvpn_nh_label_bind_find(
 	struct bgp_mplsvpn_nh_label_bind_cache_head *tree, struct prefix *p,
 	mpls_label_t orig_label);
 void bgp_mplsvpn_nexthop_init(void);
+extern void sid_register(struct bgp *bgp, const struct in6_addr *sid,
+			 const char *locator_name);
 extern void sid_unregister(struct bgp *bgp, const struct in6_addr *sid);
 
 #endif /* _QUAGGA_BGP_MPLSVPN_H */

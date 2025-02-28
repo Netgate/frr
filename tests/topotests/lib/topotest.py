@@ -27,6 +27,7 @@ import time
 import logging
 from collections.abc import Mapping
 from copy import deepcopy
+from pathlib import Path
 
 import lib.topolog as topolog
 from lib.micronet_compat import Node
@@ -395,6 +396,9 @@ def run_and_expect(func, what, count=20, wait=3):
     waiting `wait` seconds between tries. By default it tries 20 times with
     3 seconds delay between tries.
 
+    Changing default count/wait values, please change them below also for
+    `minimum_wait`, and `minimum_count`.
+
     Returns (True, func-return) on success or
     (False, func-return) on failure.
 
@@ -413,13 +417,18 @@ def run_and_expect(func, what, count=20, wait=3):
 
     # Just a safety-check to avoid running topotests with very
     # small wait/count arguments.
+    # If too low count/wait values are defined, override them
+    # with the minimum values.
+    minimum_count = 20
+    minimum_wait = 3
+    minimum_wait_time = 15  # The overall minimum seconds for the test to wait
     wait_time = wait * count
-    if wait_time < 5:
-        assert (
-            wait_time >= 5
-        ), "Waiting time is too small (count={}, wait={}), adjust timer values".format(
-            count, wait
+    if wait_time < minimum_wait_time:
+        logger.warning(
+            f"Waiting time is too small (count={count}, wait={wait}), using default values (count={minimum_count}, wait={minimum_wait})"
         )
+        count = minimum_count
+        wait = minimum_wait
 
     logger.debug(
         "'{}' polling started (interval {} secs, maximum {} tries)".format(
@@ -598,6 +607,30 @@ def is_linux():
 
     if os.uname()[0] == "Linux":
         return True
+    return False
+
+
+def iproute2_is_json_capable():
+    """
+    Checks if the iproute2 version installed on the system is capable of
+    handling JSON outputss
+
+    Returns True if capability can be detected, returns False otherwise.
+    """
+    if is_linux():
+        try:
+            subp = subprocess.Popen(
+                ["ip", "-json", "route", "show"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                stdin=subprocess.PIPE,
+            )
+            iproute2_err = subp.communicate()[1].splitlines()[0].split()[0]
+
+            if iproute2_err != "Error:":
+                return True
+        except Exception:
+            pass
     return False
 
 
@@ -1211,8 +1244,8 @@ def _sysctl_assure(commander, variable, value):
 def sysctl_atleast(commander, variable, min_value, raises=False):
     try:
         if commander is None:
-            logger = logging.getLogger("topotest")
-            commander = micronet.Commander("sysctl", logger=logger)
+            topotest_logger = logging.getLogger("topotest")
+            commander = micronet.Commander("sysctl", logger=topotest_logger)
 
         return _sysctl_atleast(commander, variable, min_value)
     except subprocess.CalledProcessError as error:
@@ -1229,8 +1262,8 @@ def sysctl_atleast(commander, variable, min_value, raises=False):
 def sysctl_assure(commander, variable, value, raises=False):
     try:
         if commander is None:
-            logger = logging.getLogger("topotest")
-            commander = micronet.Commander("sysctl", logger=logger)
+            topotest_logger = logging.getLogger("topotest")
+            commander = micronet.Commander("sysctl", logger=topotest_logger)
         return _sysctl_assure(commander, variable, value)
     except subprocess.CalledProcessError as error:
         logger.warning(
@@ -1295,6 +1328,8 @@ def fix_netns_limits(ns):
 
     sysctl_assure(ns, "net.ipv4.conf.all.ignore_routes_with_linkdown", 1)
     sysctl_assure(ns, "net.ipv6.conf.all.ignore_routes_with_linkdown", 1)
+    sysctl_assure(ns, "net.ipv4.conf.default.ignore_routes_with_linkdown", 1)
+    sysctl_assure(ns, "net.ipv6.conf.default.ignore_routes_with_linkdown", 1)
 
     # igmp
     sysctl_atleast(ns, "net.ipv4.igmp_max_memberships", 1000)
@@ -1403,7 +1438,7 @@ class Router(Node):
         self.daemondir = None
         self.hasmpls = False
         self.routertype = "frr"
-        self.unified_config = None
+        self.unified_config = False
         self.daemons = {
             "zebra": 0,
             "ripd": 0,
@@ -1426,6 +1461,7 @@ class Router(Node):
             "snmpd": 0,
             "mgmtd": 0,
             "snmptrapd": 0,
+            "fpm_listener": 0,
         }
         self.daemons_options = {"zebra": ""}
         self.reportCores = True
@@ -1522,7 +1558,7 @@ class Router(Node):
                 pass
         return ret
 
-    def stopRouter(self, assertOnError=True, minErrorVersion="5.1"):
+    def stopRouter(self, assertOnError=True):
         # Stop Running FRR Daemons
         running = self.listDaemons()
         if not running:
@@ -1569,9 +1605,6 @@ class Router(Node):
             )
 
         errors = self.checkRouterCores(reportOnce=True)
-        if self.checkRouterVersion("<", minErrorVersion):
-            # ignore errors in old versions
-            errors = ""
         if assertOnError and (errors is not None) and len(errors) > 0:
             assert "Errors found - details follow:" == 0, errors
         return errors
@@ -1628,7 +1661,7 @@ class Router(Node):
         # print "Daemons before:", self.daemons
         if daemon in self.daemons.keys() or daemon == "frr":
             if daemon == "frr":
-                self.unified_config = 1
+                self.unified_config = True
             else:
                 self.daemons[daemon] = 1
             if param is not None:
@@ -1802,6 +1835,8 @@ class Router(Node):
         "Starts FRR daemons for this router."
 
         asan_abort = bool(g_pytest_config.option.asan_abort)
+        cov_option = bool(g_pytest_config.option.cov_topotest)
+        cov_dir = Path(g_pytest_config.option.rundir) / "gcda"
         gdb_breakpoints = g_pytest_config.get_option_list("--gdb-breakpoints")
         gdb_daemons = g_pytest_config.get_option_list("--gdb-daemons")
         gdb_routers = g_pytest_config.get_option_list("--gdb-routers")
@@ -1834,13 +1869,6 @@ class Router(Node):
 
         # Re-enable to allow for report per run
         self.reportCores = True
-
-        # XXX: glue code forward ported from removed function.
-        if self.version is None:
-            self.version = self.cmd(
-                os.path.join(self.daemondir, "bgpd") + " -v"
-            ).split()[2]
-            logger.info("{}: running version: {}".format(self.name, self.version))
 
         perfds = {}
         perf_options = g_pytest_config.get_option("--perf-options", "-g")
@@ -1896,7 +1924,11 @@ class Router(Node):
                 )
 
             rediropt = " > {0}.out 2> {0}.err".format(daemon)
-            if daemon == "snmpd":
+            if daemon == "fpm_listener":
+                binary = "/usr/lib/frr/fpm_listener"
+                cmdenv = ""
+                cmdopt = "-d {}".format(daemon_opts)
+            elif daemon == "snmpd":
                 binary = "/usr/sbin/snmpd"
                 cmdenv = ""
                 cmdopt = "{} -C -c /etc/frr/snmpd.conf -p ".format(
@@ -1922,6 +1954,10 @@ class Router(Node):
                 cmdenv += "log_path={0}/{1}.asan.{2} ".format(
                     self.logdir, self.name, daemon
                 )
+
+                if cov_option:
+                    scount = os.environ["GCOV_PREFIX_STRIP"]
+                    cmdenv += f"GCOV_PREFIX_STRIP={scount} GCOV_PREFIX={cov_dir}"
 
                 if valgrind_memleaks:
                     this_dir = os.path.dirname(
@@ -2162,7 +2198,11 @@ class Router(Node):
                         "%s: %s %s started with rr", self, self.routertype, daemon
                     )
             else:
-                if daemon != "snmpd" and daemon != "snmptrapd":
+                if (
+                    daemon != "snmpd"
+                    and daemon != "snmptrapd"
+                    and daemon != "fpm_listener"
+                ):
                     cmdopt += " -d "
                 cmdopt += rediropt
 
@@ -2175,12 +2215,16 @@ class Router(Node):
                         daemon,
                         error.returncode,
                         error.cmd,
-                        '\n:stdout: "{}"'.format(error.stdout.strip())
-                        if error.stdout
-                        else "",
-                        '\n:stderr: "{}"'.format(error.stderr.strip())
-                        if error.stderr
-                        else "",
+                        (
+                            '\n:stdout: "{}"'.format(error.stdout.strip())
+                            if error.stdout
+                            else ""
+                        ),
+                        (
+                            '\n:stderr: "{}"'.format(error.stderr.strip())
+                            if error.stderr
+                            else ""
+                        ),
                     )
                 else:
                     logger.debug("%s: %s %s started", self, self.routertype, daemon)
@@ -2211,6 +2255,11 @@ class Router(Node):
             start_daemon("snmpd")
             while "snmpd" in daemons_list:
                 daemons_list.remove("snmpd")
+
+        if "fpm_listener" in daemons_list:
+            start_daemon("fpm_listener")
+            while "fpm_listener" in daemons_list:
+                daemons_list.remove("fpm_listener")
 
         # Now start all the other daemons
         for daemon in daemons_list:
@@ -2263,9 +2312,7 @@ class Router(Node):
         rc, o, e = self.cmd_status("kill -0 " + str(pid), warn=False)
         return rc == 0 or "No such process" not in e
 
-    def killRouterDaemons(
-        self, daemons, wait=True, assertOnError=True, minErrorVersion="5.1"
-    ):
+    def killRouterDaemons(self, daemons, wait=True, assertOnError=True):
         # Kill Running FRR
         # Daemons(user specified daemon only) using SIGKILL
         rundaemons = self.cmd("ls -1 /var/run/%s/*.pid" % self.routertype)
@@ -2325,9 +2372,6 @@ class Router(Node):
                         self.cmd("rm -- {}".format(daemonpidfile))
                     if wait:
                         errors = self.checkRouterCores(reportOnce=True)
-                        if self.checkRouterVersion("<", minErrorVersion):
-                            # ignore errors in old versions
-                            errors = ""
                         if assertOnError and len(errors) > 0:
                             assert "Errors found - details follow:" == 0, errors
             else:
@@ -2406,6 +2450,8 @@ class Router(Node):
             if daemon == "snmpd":
                 continue
             if daemon == "snmptrapd":
+                continue
+            if daemon == "fpm_listener":
                 continue
             if (self.daemons[daemon] == 1) and not (daemon in daemonsRunning):
                 sys.stderr.write("%s: Daemon %s not running\n" % (self.name, daemon))

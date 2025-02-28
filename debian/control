@@ -31,7 +31,11 @@ Build-Depends: bison,
                python3-sphinx:native,
                texinfo (>= 4.7),
                lua5.3 <pkg.frr.lua>,
-               liblua5.3-dev <pkg.frr.lua>
+               liblua5.3-dev <pkg.frr.lua>,
+	       libgrpc-dev (>=1.16.1) <pkg.frr.grpc>,
+	       libgrpc++-dev (>=1.16.1) <pkg.frr.grpc>,
+	       protobuf-compiler (>=3.6.1) <pkg.frr.grpc>,
+	       protobuf-compiler-grpc (>=1.16.1) <pkg.frr.grpc>
 Standards-Version: 4.5.0.3
 Homepage: https://www.frrouting.org/
 Vcs-Browser: https://github.com/FRRouting/frr/tree/debian/master
@@ -78,6 +82,17 @@ Description: FRRouting suite of internet protocols (BGP, OSPF, IS-IS, ...)
  git lives on https://github.com/frrouting/frr.git and the project name
  is commonly abbreviated as "FRR."
 
+Package: netgate-frr-snmp
+Architecture: linux-any
+Depends: netgate-frr (= ${binary:Version}),
+         ${misc:Depends},
+         ${shlibs:Depends}
+Recommends: snmpd
+Description: FRRouting suite - SNMP support
+ Adds SNMP support to FRR's daemons by attaching to net-snmp's snmpd
+ through the AgentX protocol.  Provides read-only access to current
+ routing state through standard SNMP MIBs.
+
 Package: netgate-frr-rpki-rtrlib
 Architecture: linux-any
 Depends: netgate-frr (= ${binary:Version}),
@@ -90,6 +105,14 @@ Description: FRRouting suite - BGP RPKI support (rtrlib)
  relevant to internet service providers using their own autonomous system
  number.
 Build-Profiles: <!pkg.frr.nortrlib>
+
+Package: netgate-frr-test-tools
+Architecture: linux-any
+Depends: frr (= ${binary:Version}),
+	${misc:Depends},
+	${shlibs:Depends}
+Description: FRRouting suite - Testing Tools
+ Adds FRR test tools, used in testing FRR.
 
 Package: netgate-frr-doc
 Section: doc
@@ -117,6 +140,15 @@ Description: FRRouting suite - Python tools
  .
  Without this package installed, "reload" (as a systemd or init script
  invocation) will not work for the FRR daemons.
+
+Package: netgate-frr-grpc
+Architecture: linux-any
+Depends: frr (= ${binary:Version}),
+         ${misc:Depends},
+	 ${shlibs:Depends}
+Description: FRRouting suite - GRPC interface
+ This provides the GRPC interface to the daemons.
+Build-Profiles: <pkg.frr.grpc>
 
 Package: netgate-frr-dbg
 Architecture: any
