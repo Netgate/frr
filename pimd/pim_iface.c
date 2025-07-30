@@ -38,6 +38,7 @@
 #include "pim_igmp_join.h"
 #include "pim_vxlan.h"
 #include "pim_tib.h"
+#include "pim_util.h"
 
 #include "pim6_mld.h"
 
@@ -144,6 +145,7 @@ struct pim_interface *pim_if_new(struct interface *ifp, bool gm, bool pim,
 	pim_ifp->pim_enable = pim;
 	pim_ifp->pim_passive_enable = false;
 	pim_ifp->gm_enable = gm;
+	pim_ifp->gm_proxy = false;
 
 	pim_ifp->gm_join_list = NULL;
 	pim_ifp->static_group_list = NULL;
@@ -191,8 +193,17 @@ void pim_if_delete(struct interface *ifp)
 	assert(pim_ifp);
 
 	pim_ifp->pim->mcast_if_count--;
-	if (pim_ifp->gm_join_list)
+	if (pim_ifp->gm_join_list) {
 		pim_if_gm_join_del_all(ifp);
+		/*
+		 * Sometimes gm_join_del_all does not delete them all
+		 * and as such it's not actually freed.  Let's
+		 * just clean this up if it wasn't to prevent
+		 * the problem.
+		 */
+		if (pim_ifp->gm_join_list)
+			list_delete(&pim_ifp->gm_join_list);
+	}
 
 	if (pim_ifp->static_group_list)
 		pim_if_static_group_del_all(ifp);
@@ -215,7 +226,6 @@ void pim_if_delete(struct interface *ifp)
 	if (pim_ifp->bfd_config.profile)
 		XFREE(MTYPE_TMP, pim_ifp->bfd_config.profile);
 
-	XFREE(MTYPE_PIM_INTERFACE, pim_ifp->boundary_oil_plist);
 	XFREE(MTYPE_PIM_INTERFACE, pim_ifp);
 
 	ifp->info = NULL;
@@ -601,26 +611,13 @@ void pim_if_addr_add(struct connected *ifc)
 						ifp->name);
 				}
 			}
-			struct pim_nexthop_cache *pnc = NULL;
-			struct pim_rpf rpf;
-			struct zclient *zclient = NULL;
 
-			zclient = pim_zebra_zclient_get();
-			/* RP config might come prior to (local RP's interface)
-			   IF UP event.
-			   In this case, pnc would not have pim enabled
-			   nexthops.
-			   Once Interface is UP and pim info is available,
-			   reregister
-			   with RNH address to receive update and add the
-			   interface as nexthop. */
-			memset(&rpf, 0, sizeof(struct pim_rpf));
-			rpf.rpf_addr = pim_addr_from_prefix(ifc->address);
-			pnc = pim_nexthop_cache_find(pim_ifp->pim, &rpf);
-			if (pnc)
-				pim_sendmsg_zebra_rnh(pim_ifp->pim, zclient,
-						      pnc,
-						      ZEBRA_NEXTHOP_REGISTER);
+			/* RP config might come prior to local RP's interface IF UP event.
+			 * In this case, pnc would not have pim enabled nexthops. Once
+			 * Interface is UP and pim info is available, reregister with RNH
+			 * address to receive update and add the interface as nexthop.
+			 */
+			pim_nht_get(pim_ifp->pim, pim_addr_from_prefix(ifc->address));
 		}
 	} /* pim */
 
@@ -1258,6 +1255,14 @@ static int gm_join_sock(const char *ifname, ifindex_t ifindex,
 {
 	int join_fd;
 
+	if (pim_is_group_filtered(pim_ifp, &group_addr, &source_addr)) {
+		if (PIM_DEBUG_GM_EVENTS) {
+			zlog_debug("%s: join failed for (S,G)=(%pPAs,%pPAs) due to multicast boundary filtering",
+				   __func__, &source_addr, &group_addr);
+		}
+		return -1;
+	}
+
 	pim_ifp->igmp_ifstat_joins_sent++;
 
 	join_fd = pim_socket_raw(IPPROTO_GM);
@@ -1438,10 +1443,8 @@ int pim_if_gm_join_del(struct interface *ifp, pim_addr group_addr,
 	}
 	listnode_delete(pim_ifp->gm_join_list, ij);
 	gm_join_free(ij);
-	if (listcount(pim_ifp->gm_join_list) < 1) {
+	if (listcount(pim_ifp->gm_join_list) < 1)
 		list_delete(&pim_ifp->gm_join_list);
-		pim_ifp->gm_join_list = 0;
-	}
 
 	return 0;
 }
@@ -1903,9 +1906,7 @@ static int pim_ifp_up(struct interface *ifp)
 	}
 
 #if PIM_IPV == 4
-	if (pim->autorp && pim->autorp->do_discovery && pim_ifp &&
-	    pim_ifp->pim_enable)
-		pim_autorp_add_ifp(ifp);
+	pim_autorp_add_ifp(ifp);
 #endif
 
 	pim_cand_addrs_changed();
@@ -2022,8 +2023,7 @@ void pim_pim_interface_delete(struct interface *ifp)
 		return;
 
 #if PIM_IPV == 4
-	if (pim_ifp->pim_enable)
-		pim_autorp_rm_ifp(ifp);
+	pim_autorp_rm_ifp(ifp);
 #endif
 
 	pim_ifp->pim_enable = false;
@@ -2035,7 +2035,7 @@ void pim_pim_interface_delete(struct interface *ifp)
 	 * pim_ifp->pim_neighbor_list.
 	 */
 	pim_sock_delete(ifp, "pim unconfigured on interface");
-	pim_upstream_nh_if_update(pim_ifp->pim, ifp);
+	pim_nht_upstream_if_update(pim_ifp->pim, ifp);
 
 	if (!pim_ifp->gm_enable) {
 		pim_if_addr_del_all(ifp);

@@ -338,10 +338,6 @@ DEFUN_NOSH (srv6_locator,
 	}
 
 	locator = srv6_locator_alloc(argv[1]->arg);
-	if (!locator) {
-		vty_out(vty, "%% Alloc failed\n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
 	locator->status_up = true;
 
 	VTY_PUSH_CONTEXT(SRV6_LOC_NODE, locator);
@@ -409,9 +405,12 @@ DEFPY (locator_prefix,
 	struct listnode *node = NULL;
 	uint8_t expected_prefixlen;
 	struct srv6_sid_format *format;
+	int idx = 0;
 
 	locator->prefix = *prefix;
-	func_bit_len = func_bit_len ?: ZEBRA_SRV6_FUNCTION_LENGTH;
+	/* Only set default if func_bit_len was not provided in command */
+	if (func_bit_len == 0 && !argv_find(argv, argc, "func-bits", &idx))
+		func_bit_len = ZEBRA_SRV6_FUNCTION_LENGTH;
 
 	expected_prefixlen = prefix->prefixlen;
 	format = locator->sid_format;

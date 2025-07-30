@@ -1312,8 +1312,8 @@ leak_update(struct bgp *to_bgp, struct bgp_dest *bn,
 	else
 		bgp_path_info_unset_flag(bn, new, BGP_PATH_VALID);
 
-	bgp_aggregate_increment(to_bgp, p, new, afi, safi);
 	bgp_path_info_add(bn, new);
+	bgp_aggregate_increment(to_bgp, p, new, afi, safi);
 
 	bgp_process(to_bgp, bn, new, afi, safi);
 
@@ -1450,7 +1450,7 @@ _vpn_leak_from_vrf_get_per_nexthop_label(struct bgp_path_info *pi,
 		/* request a label to zebra for this nexthop
 		 * the response from zebra will trigger the callback
 		 */
-		bgp_lp_get(LP_TYPE_NEXTHOP, blnc,
+		bgp_lp_get(LP_TYPE_NEXTHOP, blnc, from_bgp->vrf_id,
 			   bgp_mplsvpn_get_label_per_nexthop_cb);
 	}
 
@@ -1490,7 +1490,8 @@ static mpls_label_t bgp_mplsvpn_get_vpn_label(struct vpn_policy *bgp_policy)
 {
 	if (bgp_policy->tovpn_label == MPLS_LABEL_NONE &&
 	    CHECK_FLAG(bgp_policy->flags, BGP_VPN_POLICY_TOVPN_LABEL_AUTO)) {
-		bgp_lp_get(LP_TYPE_VRF, bgp_policy, vpn_leak_label_callback);
+		bgp_lp_get(LP_TYPE_VRF, bgp_policy, bgp_policy->bgp->vrf_id,
+			   vpn_leak_label_callback);
 		return MPLS_INVALID_LABEL;
 	}
 	return bgp_policy->tovpn_label;
@@ -1594,6 +1595,15 @@ vpn_leak_from_vrf_get_per_nexthop_label(afi_t afi, struct bgp_path_info *pi,
 		 * is not compatible with per-nexthop label.
 		 * Fallback to per-vrf label.
 		 */
+		bgp_mplsvpn_path_nh_label_unlink(pi);
+		return bgp_mplsvpn_get_vpn_label(&from_bgp->vpn_policy[afi]);
+	}
+
+	if (is_bgp_static_route && pi->nexthop->nexthop->type == NEXTHOP_TYPE_IFINDEX) {
+		/* "network" imported prefixes from vrf
+		 * fallback to per-vrf label.
+		 */
+
 		bgp_mplsvpn_path_nh_label_unlink(pi);
 		return bgp_mplsvpn_get_vpn_label(&from_bgp->vpn_policy[afi]);
 	}
@@ -2513,11 +2523,12 @@ void vpn_leak_to_vrf_update(struct bgp *from_bgp, struct bgp_path_info *path_vpn
 {
 	struct listnode *mnode, *mnnode;
 	struct bgp *bgp;
+	const struct prefix *p = bgp_dest_get_prefix(path_vpn->net);
 
 	int debug = BGP_DEBUG(vpn, VPN_LEAK_TO_VRF);
 
 	if (debug)
-		zlog_debug("%s: start (path_vpn=%p)", __func__, path_vpn);
+		zlog_debug("%s: start (path_vpn=%p, prefix=%pFX)", __func__, path_vpn, p);
 
 	/* Loop over VRFs */
 	for (ALL_LIST_ELEMENTS(bm->bgp, mnode, mnnode, bgp)) {
@@ -4073,6 +4084,35 @@ void bgp_vpn_leak_export(struct bgp *from_bgp)
 	}
 }
 
+/* It releases the label from labelpool which
+ * was previously assigned and unsets the flag based on reset arg
+ * This also used in vty to release the label and to change the allocation mode as well
+ */
+void bgp_vpn_release_label(struct bgp *bgp, afi_t afi, bool reset)
+{
+	if (!CHECK_FLAG(bgp->vpn_policy[afi].flags, BGP_VPN_POLICY_TOVPN_LABEL_AUTO))
+		return;
+	/*
+	 * label has previously been automatically
+	 * assigned by labelpool: release it
+	 *
+	 * NB if tovpn_label == MPLS_LABEL_NONE it
+	 * means the automatic assignment is in flight
+	 * and therefore the labelpool callback must
+	 * detect that the auto label is not needed.
+	 */
+	if (bgp->vpn_policy[afi].tovpn_label == MPLS_LABEL_NONE)
+		return;
+	if (CHECK_FLAG(bgp->vpn_policy[afi].flags, BGP_VPN_POLICY_TOVPN_LABEL_PER_NEXTHOP))
+		return;
+
+	bgp_lp_release(LP_TYPE_VRF, &bgp->vpn_policy[afi], bgp->vpn_policy[afi].tovpn_label);
+	bgp->vpn_policy[afi].tovpn_label = MPLS_LABEL_NONE;
+
+	if (reset)
+		UNSET_FLAG(bgp->vpn_policy[afi].flags, BGP_VPN_POLICY_TOVPN_LABEL_AUTO);
+}
+
 /* The nexthops values are compared to
  * find in the tree the appropriate cache entry
  */
@@ -4348,7 +4388,7 @@ void bgp_mplsvpn_nh_label_bind_register_local_label(struct bgp *bgp,
 						     label);
 		bmnc->bgp_vpn = bgp;
 		bmnc->allocation_in_progress = true;
-		bgp_lp_get(LP_TYPE_BGP_L3VPN_BIND, bmnc,
+		bgp_lp_get(LP_TYPE_BGP_L3VPN_BIND, bmnc, bgp->vrf_id,
 			   bgp_mplsvpn_nh_label_bind_get_local_label_cb);
 	}
 
@@ -4389,7 +4429,6 @@ static void show_bgp_mplsvpn_nh_label_bind_internal(struct vty *vty,
 	struct bgp_path_info *path;
 	struct bgp *bgp_path;
 	struct bgp_table *table;
-	time_t tbuf;
 	char buf[32];
 
 	vty_out(vty, "Current BGP mpls-vpn nexthop label bind cache, %s\n",
@@ -4407,8 +4446,7 @@ static void show_bgp_mplsvpn_nh_label_bind_internal(struct vty *vty,
 			vty_out(vty, "  interface %s\n",
 				ifindex2ifname(iter->nh->ifindex,
 					       iter->nh->vrf_id));
-		tbuf = time(NULL) - (monotime(NULL) - iter->last_update);
-		vty_out(vty, "  Last update: %s", ctime_r(&tbuf, buf));
+		vty_out(vty, "  Last update: %s", time_to_string(iter->last_update, buf));
 		if (!detail)
 			continue;
 		vty_out(vty, "  Paths:\n");

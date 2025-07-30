@@ -399,26 +399,45 @@ fi
 AM_CONDITIONAL([SCRIPTING], [test "$enable_scripting" = "yes"])
 
 if test "$enable_scripting" = "yes"; then
-   AX_PROG_LUA([5.3], [5.4], [], [
-     AC_MSG_ERROR([Lua 5.3 is required to build with Lua support. No other version is supported.])
+   AX_PROG_LUA([5.3], [], [], [
+     AC_MSG_ERROR([Lua >= 5.3 is required to build with Lua support. No other version is supported.])
    ])
    AX_LUA_HEADERS([], [
-     AC_MSG_ERROR([Lua 5.3 headers are required to build with Lua support. No other version is supported.])
+     AC_MSG_ERROR([Lua >= 5.3 headers are required to build with Lua support. No other version is supported.])
    ])
-   PKG_CHECK_MODULES([LUA], [lua5.3], [
-     AC_DEFINE([HAVE_SCRIPTING], [1], [Have support for scripting])
-     LIBS="$LIBS $LUA_LIBS"
-     SCRIPTING=true
-   ], [
-      AX_LUA_LIBS([
-        AC_DEFINE([HAVE_SCRIPTING], [1], [Have support for scripting])
-        LIBS="$LIBS $LUA_LIB"
-        SCRIPTING=true
-      ], [
-        SCRIPTING=false
-        AC_MSG_ERROR([Lua 5.3 libraries are required to build with Lua support. No other version is supported.])
-      ])
-    ])
+  
+   for version in 5.3 5.4; do
+     PKG_CHECK_MODULES([LUA], [lua >= $version], [
+       AC_DEFINE([HAVE_SCRIPTING], [1], [Have support for scripting])
+         LIBS="$LIBS $LUA_LIBS"
+         SCRIPTING=true
+         break
+     ], [
+       PKG_CHECK_MODULES([LUA], [lua$version], [
+         AC_DEFINE([HAVE_SCRIPTING], [1], [Have support for scripting])
+           LIBS="$LIBS $LUA_LIBS"
+           SCRIPTING=true
+           break
+       ], [
+         PKG_CHECK_MODULES([LUA], [lua-$version], [
+           AC_DEFINE([HAVE_SCRIPTING], [1], [Have support for scripting])
+             LIBS="$LIBS $LUA_LIBS"
+             SCRIPTING=true
+             break
+         ], [])
+       ])
+     ])
+   done
+
+   if [ "$SCRIPTING" != "true" ]; then
+     AX_LUA_LIBS([
+       AC_DEFINE([HAVE_SCRIPTING], [1], [Have support for scripting])
+         LIBS="$LIBS $LUA_LIB"
+         SCRIPTING=true
+     ], [
+       AC_MSG_ERROR([Lua >= 5.3 libraries are required to build with Lua support. No other version is supported.])
+     ])
+   fi
 fi
 
 dnl the following flags go in CFLAGS rather than AC_CFLAGS since they make
@@ -2270,11 +2289,12 @@ dnl ------------------------------------------
 dnl Check whether rtrlib was build with ssh support
 dnl ------------------------------------------
 AC_MSG_CHECKING([whether the RTR Library is compiled with SSH])
-AC_LINK_IFELSE([AC_LANG_PROGRAM([[#include "rtrlib/rtrlib.h"]],
+# Note: AC_LINK_IFELSE_FLAGS has 2 last arguments swapped compared to AC_LINK_IFELSE
+AC_LINK_IFELSE_FLAGS([$RTRLIB_CFLAGS], [$RTRLIB_LIBS], [AC_LANG_PROGRAM([[#include "rtrlib/rtrlib.h"]],
 			[[struct tr_ssh_config config;]])],
+	AC_MSG_RESULT([no]),
 	[AC_MSG_RESULT([yes])
-	AC_DEFINE([FOUND_SSH], [1], [found_ssh])],
-	AC_MSG_RESULT([no])
+	AC_DEFINE([FOUND_SSH], [1], [found_ssh])]
 )
 
 dnl ---------------

@@ -805,6 +805,7 @@ static void isis_zebra_connected(struct zclient *zclient)
 	zclient_register_opaque(zclient, LDP_IGP_SYNC_IF_STATE_UPDATE);
 	zclient_register_opaque(zclient, LDP_IGP_SYNC_ANNOUNCE_UPDATE);
 	bfd_client_sendmsg(zclient, ZEBRA_BFD_CLIENT_REGISTER, VRF_DEFAULT);
+	isis_srv6_locators_request();
 }
 
 /**
@@ -1500,6 +1501,7 @@ static int isis_zebra_srv6_sid_notify(ZAPI_CALLBACK_ARGS)
 					isis_zebra_srv6_sid_uninstall(area, sid);
 					listnode_delete(area->srv6db.srv6_sids,
 							sid);
+					isis_srv6_sid_free(sid);
 				}
 
 				/* Allocate new SRv6 End SID */

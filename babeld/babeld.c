@@ -183,6 +183,10 @@ static void babel_read_protocol(struct event *thread)
             flog_err_sys(EC_LIB_SOCKET, "recv: %s", safe_strerror(errno));
         }
     } else {
+        if(ntohs(sin6.sin6_port) != BABEL_PORT) {
+            return;
+        }
+
         FOR_ALL_INTERFACES(vrf, ifp) {
             if(!if_up(ifp))
                 continue;
@@ -303,6 +307,12 @@ void babel_clean_routing_process(void)
 {
     flush_all_routes();
     babel_interface_close_all();
+
+    /* Clean babel config */
+    diversity_kind = DIVERSITY_NONE;
+    diversity_factor = BABEL_DEFAULT_DIVERSITY_FACTOR;
+    resend_delay = BABEL_DEFAULT_RESEND_DELAY;
+    change_smoothing_half_life(BABEL_DEFAULT_SMOOTHING_HALF_LIFE);
 
     /* cancel events */
     event_cancel(&babel_routing_process->t_read);

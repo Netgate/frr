@@ -263,7 +263,11 @@ ctx_keywords = {
     },
     "router rip": {},
     "router ripng": {},
-    "router isis ": {},
+    "router isis ": {
+        "segment-routing srv6": {
+            "node-msd": {},
+        },
+    },
     "router openfabric ": {},
     "router ospf": {},
     "router ospf6": {},
@@ -285,6 +289,7 @@ ctx_keywords = {
         },
         "srv6": {
             "locators": {"locator ": {}},
+            "static-sids": {},
             "encapsulation": {},
             "formats": {"format": {}},
         },
@@ -955,10 +960,14 @@ def bgp_remove_neighbor_cfg(lines_to_del, del_nbr_dict):
     lines_to_del_to_del = []
 
     for ctx_keys, line in lines_to_del:
+        # lines_to_del has following
+        # (('router bgp 100',), 'neighbor swp1.10 interface peer-group dpeergrp_2'),
+        # (('router bgp 100',), 'neighbor swp1.10 advertisement-interval 1'),
+        # (('router bgp 100',), 'no neighbor swp1.10 capability dynamic'),
         if (
             ctx_keys[0].startswith("router bgp")
             and line
-            and line.startswith("neighbor ")
+            and ((line.startswith("neighbor ") or line.startswith("no neighbor ")))
         ):
             if ctx_keys[0] in del_nbr_dict:
                 for nbr in del_nbr_dict[ctx_keys[0]]:
@@ -1684,6 +1693,7 @@ def ignore_unconfigurable_lines(lines_to_add, lines_to_del):
     those commands from lines_to_del.
     """
     lines_to_del_to_del = []
+    lines_to_del_to_add = []
 
     for ctx_keys, line in lines_to_del:
         # The integrated-vtysh-config one is technically "no"able but if we did
@@ -1705,9 +1715,30 @@ def ignore_unconfigurable_lines(lines_to_add, lines_to_del):
         ):
             log.info('"%s" cannot be removed' % (ctx_keys[-1],))
             lines_to_del_to_del.append((ctx_keys, line))
+        # Handle segment-routing srv6 locators and formats commands
+        #  - Ignore "no formats" and "no locators" command
+        #  - replace "no prefix" under locator XYZ as "no locator XYZ"
+        elif (
+            len(ctx_keys) > 2
+            and ctx_keys[0].startswith("segment-routing")
+            and ctx_keys[1].startswith("srv6")
+            and ctx_keys[2] in {"locators", "formats"}
+        ):
+            is_top_level = len(ctx_keys) == 3 and not line
+            if ctx_keys[2] == "formats" and is_top_level:
+                lines_to_del_to_del.append((ctx_keys, line))
+            elif ctx_keys[2] == "locators":
+                if is_top_level:
+                    lines_to_del_to_del.append((ctx_keys, line))
+                elif len(ctx_keys) == 4 and line and line.startswith("prefix "):
+                    lines_to_del_to_del.append((ctx_keys, line))
+                    lines_to_del_to_add.append((ctx_keys[:-1] + (ctx_keys[-1],), None))
 
     for ctx_keys, line in lines_to_del_to_del:
         lines_to_del.remove((ctx_keys, line))
+
+    for ctx_keys, line in lines_to_del_to_add:
+        lines_to_del.append((ctx_keys, line))
 
     return (lines_to_add, lines_to_del)
 
@@ -1760,12 +1791,13 @@ def compare_context_objects(newconf, running):
                 delete_bgpd = True
                 lines_to_del.append((running_ctx_keys, None))
 
-            # We cannot do 'no interface' or 'no vrf' in FRR, and so deal with it
-            elif (
-                running_ctx_keys[0].startswith("interface")
-                or running_ctx_keys[0].startswith("vrf")
-                or running_ctx_keys[0].startswith("router pim")
-            ):
+            elif running_ctx_keys[0].startswith("interface"):
+                lines_to_del.append((running_ctx_keys, None))
+
+            # We cannot do 'no vrf' in FRR, and so deal with it
+            elif running_ctx_keys[0].startswith("vrf") or running_ctx_keys[
+                0
+            ].startswith("router pim"):
                 for line in running_ctx.lines:
                     lines_to_del.append((running_ctx_keys, line))
 

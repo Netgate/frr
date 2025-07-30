@@ -365,6 +365,7 @@ endif
 
 #### include version information in the distibution tarball
 EXTRA_DIST += extras/scripts/version
+EXTRA_DIST += debian
 DISTCLEANFILES += extras/scripts/.tmpversion *.tar.gz
 
 extras/scripts/.tmpversion:

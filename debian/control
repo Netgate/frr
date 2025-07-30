@@ -20,7 +20,6 @@ Build-Depends: bison,
                libprotobuf-c-dev,
                libpython3-dev:native,
                libreadline-dev,
-               librtr-dev (>= 0.8.0~) <!pkg.frr.nortrlib>,
                libssh-dev <!pkg.frr.nortrlib>,
                lsb-base,
                pkg-config,
@@ -35,7 +34,8 @@ Build-Depends: bison,
 	       libgrpc-dev (>=1.16.1) <pkg.frr.grpc>,
 	       libgrpc++-dev (>=1.16.1) <pkg.frr.grpc>,
 	       protobuf-compiler (>=3.6.1) <pkg.frr.grpc>,
-	       protobuf-compiler-grpc (>=1.16.1) <pkg.frr.grpc>
+	       protobuf-compiler-grpc (>=1.16.1) <pkg.frr.grpc>,
+               libprotobuf-dev (>=3.6.1) <pkg.frr.grpc>
 Standards-Version: 4.5.0.3
 Homepage: https://www.frrouting.org/
 Vcs-Browser: https://github.com/FRRouting/frr/tree/debian/master
@@ -96,8 +96,8 @@ Description: FRRouting suite - SNMP support
 Package: netgate-frr-rpki-rtrlib
 Architecture: linux-any
 Depends: netgate-frr (= ${binary:Version}),
-         ${misc:Depends},
-         ${shlibs:Depends}
+         netgate-librtr0t64,
+         ${misc:Depends}
 Description: FRRouting suite - BGP RPKI support (rtrlib)
  Adds RPKI support to FRR's bgpd, allowing validation of BGP routes
  against cryptographic information stored in WHOIS databases.  This is

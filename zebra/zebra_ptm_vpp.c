@@ -298,6 +298,9 @@ static struct stream *zebra_ptm_vpp_make_msg(struct vpp_bfd_peer *bfd_peer,
 	/* Write field: cbit */
 	stream_putc(msg, bfd_peer->cbit);
 
+	/* Write field: 0: FRR 10.3 wants a bfd_name. Set 0 length */
+	stream_putc(msg, 0);
+
 	/* Write packet size. */
 	stream_putw_at(msg, 0, stream_get_endp(msg));
 

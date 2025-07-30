@@ -8,6 +8,14 @@ LIBYANG_CFLAGS = \
 LIBYANG_LIBS = -lyang
 endif
 
+ifneq ($(LIBRTR_DIR),)
+RTRLIB_CFLAGS = \
+	 -I$(LIBRTR_DIR)/usr/include \
+	 -L$(LIBRTR_DIR)/usr/lib/${DEB_HOST_MULTIARCH} \
+	 -Wl,-rpath -Wl,$(LIBRTR_DIR)/usr/lib/${DEB_HOST_MULTIARCH}
+RTRLIB_LIBS = -lrtr
+endif
+
 ifneq ($(NET_SNMP_UBUNTU_DIR),)
 NETSNMP_CONFIG = $(NET_SNMP_UBUNTU_DIR)/usr/bin/net-snmp-config
 export NETSNMP_CONFIG
@@ -59,6 +67,8 @@ export PYTHON=python3
 
 override_dh_auto_configure:
 	$(shell dpkg-buildflags --export=sh); \
+	env LIBYANG_CFLAGS="$(LIBYANG_CFLAGS)" LIBYANG_LIBS="$(LIBYANG_LIBS)" \
+	RTRLIB_CFLAGS="$(RTRLIB_CFLAGS)" RTRLIB_LIBS="$(RTRLIB_LIBS)" \
 	dh_auto_configure -- \
 		--sbindir=/usr/lib/frr \
 		--with-vtysh-pager=/usr/bin/pager \
@@ -81,6 +91,7 @@ override_dh_auto_configure:
 		--enable-ospfapi \
 		--enable-bgp-vnc \
 		--enable-multipath=256 \
+		--enable-pcre2posix \
 		\
 		--enable-user=frr \
 		--enable-group=frr \
