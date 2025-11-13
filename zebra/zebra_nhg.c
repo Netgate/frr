@@ -1080,7 +1080,7 @@ static void zebra_nhg_set_valid(struct nhg_hash_entry *nhe, bool valid)
 			struct nexthop *nexthop = rb_node_dep->nhe->nhg.nexthop;
 
 			while (nexthop) {
-				if (nexthop_same(nexthop, nhe->nhg.nexthop)) {
+				if (nexthop_same_no_weight(nexthop, nhe->nhg.nexthop)) {
 					/* Invalid Nexthop */
 					UNSET_FLAG(nexthop->flags, NEXTHOP_FLAG_ACTIVE);
 				} else {
@@ -3495,8 +3495,25 @@ void zebra_nhg_dplane_result(struct zebra_dplane_ctx *ctx)
 static int zebra_nhg_sweep_entry(struct hash_bucket *bucket, void *arg)
 {
 	struct nhg_hash_entry *nhe = NULL;
+	bool *stale_sweep = (bool *)arg;
 
 	nhe = (struct nhg_hash_entry *)bucket->data;
+
+	/*
+	 * We are in the zebra shutdown path and all the NHGs would have been
+	 * cleaned up by now. Check if any NHG is still present in the hash and
+	 * it has timer running. If yes, we need to uninstall it from kernel as
+	 * it was meant to be uninstalled after the timer expires.
+	 * This is required to avoid stale NHG in kernel as it is not being
+	 * referenced by anyone.
+	 */
+	if (stale_sweep && *stale_sweep) {
+		if (event_is_scheduled(nhe->timer)) {
+			zebra_nhg_decrement_ref(nhe);
+			return HASHWALK_ABORT;
+		}
+		return HASHWALK_CONTINUE;
+	}
 
 	/*
 	 * same logic as with routes.
@@ -3531,7 +3548,7 @@ static int zebra_nhg_sweep_entry(struct hash_bucket *bucket, void *arg)
 	return HASHWALK_CONTINUE;
 }
 
-void zebra_nhg_sweep_table(struct hash *hash)
+void zebra_nhg_sweep_table(struct hash *hash, bool stale_sweep)
 {
 	uint32_t count;
 
@@ -3549,7 +3566,7 @@ void zebra_nhg_sweep_table(struct hash *hash)
 	 */
 	do {
 		count = hashcount(hash);
-		hash_walk(hash, zebra_nhg_sweep_entry, NULL);
+		hash_walk(hash, zebra_nhg_sweep_entry, &stale_sweep);
 	} while (count != hashcount(hash));
 }
 
@@ -3934,6 +3951,14 @@ void zebra_interface_nhg_reinstall(struct interface *ifp)
 
 	frr_each (nhg_connected_tree, &zif->nhg_dependents, rb_node_dep) {
 		/*
+		 * If this nhe has 'initial delay' flag set, we should not install this
+		 * in kernel in case of any interface events. Zebra created this entry
+		 * while processing the kernel/connected routes, just to pretend
+		 * the successful kernel install of this NHG
+		 */
+		if (CHECK_FLAG(rb_node_dep->nhe->flags, NEXTHOP_GROUP_INITIAL_DELAY_INSTALL))
+			continue;
+		/*
 		 * The nexthop associated with this was set as !ACTIVE
 		 * so we need to turn it back to active when we get to
 		 * this point again
@@ -3975,8 +4000,7 @@ void zebra_interface_nhg_reinstall(struct interface *ifp)
 				struct nexthop *nhop_dependent =
 					rb_node_dependent->nhe->nhg.nexthop;
 
-				while (nhop_dependent &&
-				       !nexthop_same(nhop_dependent, nh))
+				while (nhop_dependent && !nexthop_same_no_weight(nhop_dependent, nh))
 					nhop_dependent = nhop_dependent->next;
 
 				if (nhop_dependent)

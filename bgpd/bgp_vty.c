@@ -9278,12 +9278,15 @@ DEFUN (no_neighbor_addpath_tx_all_paths,
 {
 	int idx_peer = 2;
 	struct peer *peer;
+	safi_t safi = bgp_node_safi(vty);
 
 	peer = peer_and_group_lookup_vty(vty, argv[idx_peer]->arg);
 	if (!peer)
 		return CMD_WARNING_CONFIG_FAILED;
 
-	if (peer->addpath_type[bgp_node_afi(vty)][bgp_node_safi(vty)] != BGP_ADDPATH_ALL) {
+	if (safi == SAFI_LABELED_UNICAST)
+		safi = SAFI_UNICAST;
+	if (peer->addpath_type[bgp_node_afi(vty)][safi] != BGP_ADDPATH_ALL) {
 		vty_out(vty,
 			"%% Peer not currently configured to transmit all paths.");
 		return CMD_WARNING_CONFIG_FAILED;
@@ -9375,13 +9378,15 @@ DEFUN (no_neighbor_addpath_tx_bestpath_per_as,
 {
 	int idx_peer = 2;
 	struct peer *peer;
+	safi_t safi = bgp_node_safi(vty);
 
 	peer = peer_and_group_lookup_vty(vty, argv[idx_peer]->arg);
 	if (!peer)
 		return CMD_WARNING_CONFIG_FAILED;
 
-	if (peer->addpath_type[bgp_node_afi(vty)][bgp_node_safi(vty)]
-	    != BGP_ADDPATH_BEST_PER_AS) {
+	if (safi == SAFI_LABELED_UNICAST)
+		safi = SAFI_UNICAST;
+	if (peer->addpath_type[bgp_node_afi(vty)][safi] != BGP_ADDPATH_BEST_PER_AS) {
 		vty_out(vty,
 			"%% Peer not currently configured to transmit all best path per as.");
 		return CMD_WARNING_CONFIG_FAILED;
@@ -13285,9 +13290,8 @@ static void bgp_show_neighbor_graceful_restart_capability_per_afi_safi(
 			 */
 			if (CHECK_FLAG(peer->flags,
 				       PEER_FLAG_GRACEFUL_RESTART)) {
-				json_object_int_add(json_timer,
-						    "selectionDeferralTimer",
-						    peer->bgp->stalepath_time);
+				json_object_int_add(json_timer, "selectionDeferralTimer",
+						    peer->bgp->select_defer_time);
 			}
 
 			if (peer->bgp->gr_info[afi][safi].t_select_deferral !=
@@ -17121,7 +17125,7 @@ static int bgp_show_one_peer_group(struct vty *vty, struct peer_group *group,
 	const char *peer_status;
 	int lr_count;
 	int dynamic;
-	bool af_cfgd;
+	bool af_cfgd = false;
 	json_object *json_peer_group = NULL;
 	json_object *json_peer_group_afc = NULL;
 	json_object *json_peer_group_members = NULL;
@@ -18348,12 +18352,23 @@ static bool peergroup_filter_check(struct peer *peer, afi_t afi, safi_t safi,
 				   uint8_t type, int direct)
 {
 	struct bgp_filter *filter;
+	filter = &peer->filter[afi][safi];
 
-	if (peer_group_active(peer))
+	if (peer_group_active(peer)) {
+		/* This is required because the filter_override stores only the filter type.
+		 * To determine whether exist-map or non-exist-map is configured along with adv-map filter,
+		 * 'advmap.condition == direct' is evaluated where 'direct' should be passed appropriately by the caller */
+		if (type == PEER_FT_ADVERTISE_MAP) {
+			if (CHECK_FLAG(peer->filter_override[afi][safi][RMAP_OUT], type)) {
+				/* Only return true if the condition matches what we're checking for */
+				return (filter->advmap.condition == direct);
+			}
+			return false;
+		}
 		return !!CHECK_FLAG(peer->filter_override[afi][safi][direct],
 				    type);
+	}
 
-	filter = &peer->filter[afi][safi];
 	switch (type) {
 	case PEER_FT_DISTRIBUTE_LIST:
 		return !!(filter->dlist[direct].name);

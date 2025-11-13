@@ -180,7 +180,7 @@ void zebra_router_sweep_route(void)
 
 void zebra_router_sweep_nhgs(void)
 {
-	zebra_nhg_sweep_table(zrouter.nhgs_id);
+	zebra_nhg_sweep_table(zrouter.nhgs_id, false);
 }
 
 static void zebra_router_free_table(struct zebra_router_table *zrt)
@@ -290,6 +290,9 @@ void zebra_router_init(bool asic_offload, bool notify_on_ack,
 	zrouter.packets_to_process = ZEBRA_ZAPI_PACKETS_TO_PROCESS;
 
 	zrouter.nhg_keep = ZEBRA_DEFAULT_NHG_KEEP_TIMER;
+
+	/* Initialize the red-black tree for router tables */
+	RB_INIT(zebra_router_table_head, &zrouter.tables);
 
 	/*Init V6 RA batching stuffs*/
 	zrouter.ra_wheel = wheel_init(zrouter.master, RTADV_TIMER_WHEEL_PERIOD_MS,

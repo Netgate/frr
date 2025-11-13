@@ -7,7 +7,7 @@
 ##
 AC_PREREQ([2.69])
 
-AC_INIT(frr,[m4_esyscmd([./extras/scripts/version | tr -d '\n'])])
+AC_INIT([frr], [10.3.2], [https://github.com/frrouting/frr/issues])
 PACKAGE_URL="https://frrouting.org/"
 AC_SUBST([PACKAGE_URL])
 PACKAGE_FULLNAME="FRRouting"
@@ -178,7 +178,7 @@ AM_CONDITIONAL([ONLY_CLIPPY], [test "$enable_clippy_only" = "yes"])
 
 # Disable portability warnings -- our automake code (in particular
 # common.am) uses some constructs specific to gmake.
-AM_INIT_AUTOMAKE([1.12 -Wno-portability foreign tar-ustar])
+AM_INIT_AUTOMAKE([1.12 -Wno-portability foreign])
 m4_ifndef([AM_SILENT_RULES], [m4_define([AM_SILENT_RULES],[])])
 AM_SILENT_RULES([yes])
 AC_CONFIG_HEADERS([config.h])
@@ -504,7 +504,7 @@ else
 fi
 AC_C_FLAG([-Wno-unused-parameter])
 AC_C_FLAG([-Wno-missing-field-initializers])
-dnl AC_C_FLAG([-Wno-microsoft-anon-tag])
+AC_C_FLAG([-Wno-microsoft-anon-tag])
 AC_C_FLAG([-Wno-error=deprecated-declarations])
 
 AC_C_FLAG([-Wc++-compat], [], [CXX_COMPAT_CFLAGS="-Wc++-compat"])
@@ -2660,7 +2660,7 @@ if test "$enable_backtrace" != "no" ; then
   ])
 
   if test "$backtrace_ok" = "no"; then
-    AC_CHECK_HEADER([unwind.h], [
+    AC_CHECK_HEADER([libunwind.h], [
       AC_SEARCH_LIBS([unw_getcontext], [unwind], [
         AC_DEFINE([HAVE_LIBUNWIND], [1], [libunwind])
         backtrace_ok=yes

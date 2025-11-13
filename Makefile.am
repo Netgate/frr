@@ -362,14 +362,3 @@ force-check-coverage: coverage upload-check-coverage
 check-coverage: coverage yorn upload-check-coverage
 
 endif
-
-#### include version information in the distibution tarball
-EXTRA_DIST += extras/scripts/version
-EXTRA_DIST += debian
-DISTCLEANFILES += extras/scripts/.tmpversion *.tar.gz
-
-extras/scripts/.tmpversion:
-	sh extras/scripts/version > extras/scripts/.tmpversion
-
-dist-hook: extras/scripts/.tmpversion
-	mv $(srcdir)/extras/scripts/.tmpversion $(distdir)/extras/scripts/.version

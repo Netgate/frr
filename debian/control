@@ -20,6 +20,7 @@ Build-Depends: bison,
                libprotobuf-c-dev,
                libpython3-dev:native,
                libreadline-dev,
+	       libsnmp-dev,
                libssh-dev <!pkg.frr.nortrlib>,
                lsb-base,
                pkg-config,
@@ -150,7 +151,3 @@ Description: FRRouting suite - GRPC interface
  This provides the GRPC interface to the daemons.
 Build-Profiles: <pkg.frr.grpc>
 
-Package: netgate-frr-dbg
-Architecture: any
-Depends: ${misc:Depends}
-Description: FRRouting suite debug symbols

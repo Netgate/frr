@@ -1,5 +1,7 @@
 #!/usr/bin/make -f
 
+DEB_BUILD_OPTIONS += nocheck
+
 ifneq ($(LIBYANG2_DIR),)
 LIBYANG_CFLAGS = \
 	 -I$(LIBYANG2_DIR)/usr/include \
@@ -16,8 +18,8 @@ RTRLIB_CFLAGS = \
 RTRLIB_LIBS = -lrtr
 endif
 
-ifneq ($(NET_SNMP_UBUNTU_DIR),)
-NETSNMP_CONFIG = $(NET_SNMP_UBUNTU_DIR)/usr/bin/net-snmp-config
+ifneq ($(NET_SNMP_DIR),)
+NETSNMP_CONFIG = $(NET_SNMP_DIR)/usr/bin/net-snmp-config
 export NETSNMP_CONFIG
 endif
 
@@ -131,7 +133,7 @@ override_dh_shlibdeps:
 		-l${VPP_DIR}/build-root/install-vpp-native/vpp/lib/${DEB_HOST_MULTIARCH} \
 		-l${LIBTNSRINFRA_DIR}/usr/lib/${DEB_HOST_MULTIARCH} \
 		-l${LIBYANG2_DIR}/usr/lib/${DEB_HOST_MULTIARCH} \
-		-l${NET_SNMP_UBUNTU_DIR}/usr/lib/${DEB_HOST_MULTIARCH}
+		-l${NET_SNMP_DIR}/usr/lib/${DEB_HOST_MULTIARCH}
 
 override_dh_auto_build:
 	dh_auto_build -- $(MAKE_SILENT)
@@ -160,11 +162,6 @@ override_dh_auto_clean:
 	#-rm -f debian/netgate-frr.init
 	#-rm -f debian/netgate-frr.service
 	-rm -f debian/netgate-frr@.service
-
-override_dh_strip:
-	dh_strip --dbg-package=netgate-frr-dbg
-
-override_dh_auto_test:
 
 # vtysh tries to authenticate against a pam service name of frr. When we
 # change the package names to netgate-frr*, the pam service gets installed

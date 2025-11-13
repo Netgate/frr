@@ -2,11 +2,9 @@
 Description=FRRouting
 Documentation=https://frrouting.readthedocs.io/en/latest/setup.html
 Wants=network.target
-After=network-pre.target systemd-sysctl.service tnsr-dataplane-netns.service
+After=network.target systemd-sysctl.service tnsr-dataplane-netns.service vpp.service
 Requires=tnsr-dataplane-netns.service
 Requisite=vpp.service
-Before=network.target
-OnFailure=heartbeat-failed@%n
 
 [Service]
 Nice=-5
