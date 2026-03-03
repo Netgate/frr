@@ -2,6 +2,13 @@
 
 DEB_BUILD_OPTIONS += nocheck
 
+ifeq ($(DEBUG_BUILD),1)
+VPP_TAG=vpp_debug
+else
+VPP_TAG=vpp
+endif
+export VPP_TAG
+
 ifneq ($(LIBYANG2_DIR),)
 LIBYANG_CFLAGS = \
 	 -I$(LIBYANG2_DIR)/usr/include \
@@ -130,7 +137,7 @@ override_dh_shlibdeps:
 	dh_shlibdeps -- \
 		--ignore-missing-info \
 		-l${LIBVPPMGMT_DIR}/usr/lib/${DEB_HOST_MULTIARCH} \
-		-l${VPP_DIR}/build-root/install-vpp-native/vpp/lib/${DEB_HOST_MULTIARCH} \
+		-l${VPP_DIR}/build-root/install-$(VPP_TAG)-native/vpp/lib/${DEB_HOST_MULTIARCH} \
 		-l${LIBTNSRINFRA_DIR}/usr/lib/${DEB_HOST_MULTIARCH} \
 		-l${LIBYANG2_DIR}/usr/lib/${DEB_HOST_MULTIARCH} \
 		-l${NET_SNMP_DIR}/usr/lib/${DEB_HOST_MULTIARCH}
