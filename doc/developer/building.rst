@@ -16,14 +16,14 @@ Building FRR
    building-frr-for-debian8
    building-frr-for-debian9
    building-frr-for-debian12
+   building-frr-for-debian13
    building-frr-for-fedora
    building-frr-for-freebsd9
    building-frr-for-freebsd10
    building-frr-for-freebsd11
    building-frr-for-freebsd13
    building-frr-for-freebsd14
-   building-frr-for-netbsd6
-   building-frr-for-netbsd7
+   building-frr-for-netbsd10
    building-frr-for-openbsd6
    building-frr-for-opensuse
    building-frr-for-openwrt

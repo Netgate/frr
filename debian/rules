@@ -25,11 +25,6 @@ RTRLIB_CFLAGS = \
 RTRLIB_LIBS = -lrtr
 endif
 
-ifneq ($(NET_SNMP_DIR),)
-NETSNMP_CONFIG = $(NET_SNMP_DIR)/usr/bin/net-snmp-config
-export NETSNMP_CONFIG
-endif
-
 # standard Debian options & profiles
 
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
@@ -69,6 +64,12 @@ else
   CONF_GRPC=--enable-grpc
 endif
 
+ifeq ($(filter pkg.frr.asan,$(DEB_BUILD_PROFILES)),)
+  CONF_ASAN=--disable-address-sanitizer
+else
+  CONF_ASAN=--enable-address-sanitizer
+endif
+
 export PYTHON=python3
 
 %:
@@ -90,6 +91,7 @@ override_dh_auto_configure:
 		$(CONF_LUA) \
 		$(CONF_PIM6) \
 		$(CONF_GRPC) \
+		$(CONF_ASAN) \
 		--with-libpam \
 		--enable-doc \
 		--enable-doc-html \
@@ -139,8 +141,7 @@ override_dh_shlibdeps:
 		-l${LIBVPPMGMT_DIR}/usr/lib/${DEB_HOST_MULTIARCH} \
 		-l${VPP_DIR}/build-root/install-$(VPP_TAG)-native/vpp/lib/${DEB_HOST_MULTIARCH} \
 		-l${LIBTNSRINFRA_DIR}/usr/lib/${DEB_HOST_MULTIARCH} \
-		-l${LIBYANG2_DIR}/usr/lib/${DEB_HOST_MULTIARCH} \
-		-l${NET_SNMP_DIR}/usr/lib/${DEB_HOST_MULTIARCH}
+		-l${LIBYANG2_DIR}/usr/lib/${DEB_HOST_MULTIARCH}
 
 override_dh_auto_build:
 	dh_auto_build -- $(MAKE_SILENT)

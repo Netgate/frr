@@ -198,8 +198,9 @@ bottom until one of the factors can be used.
    If multi-pathing is enabled, then check whether the routes not yet
    distinguished in preference may be considered equal. If
    :clicmd:`bgp bestpath as-path multipath-relax` is set, all such routes are
-   considered equal, otherwise routes received via iBGP with identical AS_PATHs
-   or routes received from eBGP neighbours in the same AS are considered equal.
+   considered equal; otherwise, only routes received via iBGP with identical
+   AS_PATHs or routes received from eBGP neighbours in the same AS are
+   considered equal.
 
 10. **Already-selected external check**
 
@@ -537,6 +538,15 @@ Reject routes with AS_SET or AS_CONFED_SET types
 
    This command enables rejection of incoming and outgoing routes having AS_SET or AS_CONFED_SET type.
 
+   The aggregated routes are not sent to the contributing neighbors.
+
+   It's defined under RFC 9774 and it's enabled by default.
+
+.. seealso::
+   https://datatracker.ietf.org/doc/html/draft-ietf-idr-deprecate-as-set-confed-set
+
+   Default: disabled.
+
 Enforce first AS
 ----------------
 
@@ -687,7 +697,7 @@ and sometimes not, depending on the properties of those other routes, means MED
 can cause the order of preference over all the routes to be undefined. That is,
 given routes A, B, and C, if A is preferred to B, and B is preferred to C, then
 a well-defined order should mean the preference is transitive (in the sense of
-orders [#med-transitivity-rant]_) and that A would be preferred to C.
+orders and that A would be preferred to C.
 
 However, when MED is involved this need not be the case. With MED it is
 possible that C is actually preferred over A. So A is preferred to B, B is
@@ -1759,6 +1769,15 @@ Configuring Peers
        neighbor foo update-source 192.168.0.1
        neighbor bar update-source lo0
 
+.. clicmd:: neighbor PEER ip-transparent
+
+   Use this command when you need to establish a BGP session with a
+   neighbor using an IP address that you do *not* own. Some typical use
+   cases include running BGP in a container without configuring the
+   address on a loopback interface, peering over a virtual (floating)
+   IP (VIP), or operating as a transparent IP firewall.
+   The BGP TCP session shall have a TCP source address that you set with
+   `neighbor PEER update-source A.B.C.D`.
 
 .. clicmd:: neighbor PEER default-originate [route-map WORD]
 
@@ -1793,6 +1812,12 @@ Configuring Peers
    command with a large number of peers on linux you should consider
    modifying the `net.core.optmem_max` sysctl to a larger value to
    avoid out of memory errors from the linux kernel.
+
+.. clicmd:: neighbor PEER send-nexthop-characteristics
+
+   Send the BGP Next Hop Dependent Characteristics Attribute (NHC) to the peer.
+
+   Default: disabled.
 
 .. clicmd:: neighbor PEER send-community <both|all|extended|standard|large>
 
@@ -1853,7 +1878,10 @@ Configuring Peers
 
    The ``dual-as`` keyword is used to configure the neighbor to establish a peering
    session using the real autonomous-system number (``router bgp ASN``) or by using
-   the autonomous system number configured with the ``local-as``.
+   the autonomous system number configured with the ``local-as``.  If ``dual-as`` is
+   used be aware of connection collision ordering and attempt to configure this system
+   with a higher ip address so that this connection is preferred.  As that the other
+   side will reject the incoming connection.
 
    This command is only allowed for eBGP peers.
 
@@ -1952,6 +1980,19 @@ Configuring Peers
    fqdn`` avoid negotiation of that capability. This is useful for peers who
    are not supporting this capability or supporting BGP Capabilities
    Negotiation RFC 2842.
+
+.. clicmd:: neighbor PEER capability link-local
+
+   Send the Link-Local Next Hop capability in the BGP OPEN message to the neighbor.
+   This is useful in data center environments where point-to-point (unnumbered) links
+   are utilized. This capability standardizes the operation of BGP over a
+   point-to-point links using link-local IPv6 addressing only.
+
+   If this capability is enabled, only link-local IPv6 address will be sent as
+   next-hop (16-bytes) to the neighbor instead of global and link-local addresses
+   (32-bytes).
+
+   Disabled by default.
 
 .. clicmd:: neighbor <A.B.C.D|X:X::X:X|WORD> accept-own
 
@@ -2908,7 +2949,22 @@ Extended Community Lists
 BGP Extended Communities in Route Map
 """""""""""""""""""""""""""""""""""""
 
-.. clicmd:: match extcommunity WORD
+.. clicmd:: match extcommunity WORD [exact-match|any]
+
+   This command perform match to BGP updates using extended community list WORD.
+   When the one of BGP extended communities value match to the one of the extended
+   communities value in community list, it is match. When ``exact-match`` keyword
+   is specified, match happens only when BGP updates have completely same extended
+   communities value specified in the extended community list. When ``any`` keyword
+   is set, match happens when any of the extended communities of the BGP updates
+   matches an extended community of the specified list.
+
+ .. clicmd:: match extcommunity-limit (0-65535)
+
+   This command matches BGP updates that use extended community list and IPv6
+   extended community list, and with an extended community list count less or
+   equal than the defined limit. Setting extended community-limit to 0 will
+   only match BGP updates with no extended community.
 
 .. clicmd:: set extcommunity none
 
@@ -3364,6 +3420,23 @@ L3VPN SRv6
    Specify the SRv6 locator to be used for SRv6 L3VPN. The Locator name must
    be set in zebra, but user can set it in any order.
 
+.. clicmd:: encap-behavior <H_Encaps|H_Encaps_Red>
+
+   Specify the encapsulation instruction to use for incoming BGP L3VPN SRv6 routes
+   to install to RIB. By default, a segment-routing-header is added, in addition to
+   the IPv6 header. With `H_Encaps_Red`, if the number of segments is only 1, and
+   there are no other specific options, then the segment-routing-header is removed,
+   and only the IPv6 header is appended to the original packet.
+
+.. clicmd:: srv6-only
+
+   By default, if any SRv6 locator is configured, BGP assumes exported L3VPN updates
+   rely on an SRv6 dataplane. Consequently, any BGP update without an SRv6 prefix SID
+   attribute will not be considered as valid. Use the ``no srv6-only`` command under
+   the ``segment-routing srv6`` node of the instance where the BGP updates originate:
+   this command will also consider BGP updates with no srv6 options, thus making possible
+   to have both MPLS and SRv6 updates.
+
 L3VPN SRv6 SID reachability
 ---------------------------
 
@@ -3395,16 +3468,46 @@ General configuration
 Configuration of the SRv6 SID used to advertise a L3VPN for both IPv4 and IPv6
 is accomplished via the following command in the context of a VRF:
 
-.. clicmd:: sid vpn per-vrf export (1..1048575)|auto
+.. clicmd:: sid vpn per-vrf export <(1..1048575)|auto|explicit X:X::X:X>
 
    Enables a SRv6 SID to be attached to a route exported from the current
    unicast VRF to VPN. A single SID is used for both IPv4 and IPv6 address
-   families. If you want to set a SID for only IPv4 address family or IPv6
-   address family, you need to use the command ``sid vpn export (1..1048575)|auto``
-   in the context of an address-family. If the value specified is ``auto``,
-   the SID value is automatically assigned from a pool maintained by the Zebra
-   daemon. If Zebra is not running, or if this command is not configured, automatic
-   SID assignment will not complete, which will block corresponding route export.
+   families. If the value specified is ``auto``, the SID value is
+   automatically assigned from a pool maintained by the Zebra daemon. If the
+   value specified is ``explicit X:X::X:X``, SID allocation with the explicit
+   value is requested from the Zebra daemon. If Zebra is not running, or if
+   this command is not configured, or if SID allocation is failed, automatic
+   or explicit SID assignment will not complete, which will block corresponding
+   route export.
+
+
+.. clicmd:: sid vpn export <(1..1048575)|auto|explicit X:X::X:X>
+
+   If you want to set a SID for only IPv4 address family or IPv6 address
+   family, the above command can be executed in the context of an
+   address-family. If the value specified is ``auto``, the SID value is
+   automatically assigned from a pool maintained by the Zebra daemon. If the
+   value specified is ``explicit X:X::X:X``, SID allocation with the explicit
+   value is requested from the Zebra daemon. If Zebra is not running, or if
+   this command is not configured, or if SID allocation is failed, automatic
+   or explicit SID assignment will not complete, which will block corresponding
+   route export.
+
+Filtering SRv6/MPLS per neighbor
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. clicmd:: neighbor X:X::X:X <encapsulation-srv6|encapsulation-mpls>
+
+   For a given peer, it is possible to filter out outgoing MPLS L3VPN BGP updates
+   to SRv6-only capable peers, by using the following command under ``ipv4 vpn``
+   or ``ipv6 vpn`` address-family. Only BGP updates with SRv6 prefix SID option
+   will be sent. Reversely, the ``encapsulation-mpls`` command can be used to
+   filter out SRv6 L3VPN BGP updates, and keep MPLS L3VPN BGP updates.
+   The same command is used to check as valid or invalid incoming L3VPN BGP
+   updates according to their nature: MPLS or SRv6. The ``encapsulation-srv6``
+   command can be used to invalidate incoming MPLS BGP updates from a given peer.
+   Reversely, the ``encapsulation-mpls`` command can be used to invalidate
+   incoming SRv6 BGP updates from a given peer.
 
 .. _bgp-evpn:
 
@@ -3447,6 +3550,21 @@ default VRF. The command to enable EVPN for a BGP instance is
      advertise-all-vni
 
 A more comprehensive configuration example can be found in the :ref:`evpn` page.
+
+.. _bgp-evpn-bum-handling:
+
+EVPN BUM Handling
+^^^^^^^^^^^^^^^^^
+
+.. clicmd:: flooding <disable|head-end-replication>
+
+This command controls the handling of BUM (Broadcast, Unknown Unicast, and
+Multicast) traffic in EVPN. The default behavior is to flood BUM traffic
+across all VTEPs in the EVPN instance. BUM traffic can also be handled
+per VNI by entering ``vni`` context first.
+
+When ``disable`` is configured, BUM traffic will not be flooded for an arbitrary
+VNI or globally.
 
 .. _bgp-evpn-l3-route-targets:
 
@@ -3581,11 +3699,18 @@ prefix:
 .. clicmd:: advertise <ipv4|ipv6> unicast [gateway-ip]
 
 When this CLI is configured for a BGP vrf under L2VPN EVPN address family, EVPN
-type-5 routes are generated for BGP prefixes in the vrf. Nexthop of the BGP
-prefix becomes the gateway IP of the corresponding type-5 route.
+type-5 routes are generated for BGP prefixes in the vrf.
 
 If the above command is configured without the "gateway-ip" keyword, type-5
-routes are generated without overlay index.
+routes are generated without overlay index, and only the best path for each
+prefix is exported to EVPN.
+
+If the above command is configured with the "gateway-ip" keyword, all paths are
+exported to EVPN using AddPath, and each path's nexthop becomes the gateway IP
+of the corresponding type-5 paths.
+
+Note that EVPN will still perform its own bestpath selection for each EVPN
+prefix, and addpath must be properly configured in EVPN to enable multipathing.
 
 2. Add gateway IP to EVPN type-5 route using a route-map:
 
@@ -4171,7 +4296,7 @@ Dumping Messages and Routing Tables
 
 
    Dump all BGP packet and events to `path` file.
-   If `interval` is set, a new file will be created for echo `interval` of
+   If `interval` is set, a new file will be created for each `interval` of
    seconds.  The path `path` can be set with date and time formatting
    (strftime).  The type ‘all-et’ enables support for Extended Timestamp Header
    (:ref:`packet-binary-dump-format`).
@@ -4182,7 +4307,7 @@ Dumping Messages and Routing Tables
 
 
    Dump only BGP updates messages to `path` file.
-   If `interval` is set, a new file will be created for echo `interval` of
+   If `interval` is set, a new file will be created for each `interval` of
    seconds.  The path `path` can be set with date and time formatting
    (strftime).  The type ‘updates-et’ enables support for Extended Timestamp
    Header (:ref:`packet-binary-dump-format`).
@@ -4194,7 +4319,7 @@ Dumping Messages and Routing Tables
 
    Dump whole BGP routing table to `path`. This is heavy process. The path
    `path` can be set with date and time formatting (strftime). If `interval` is
-   set, a new file will be created for echo `interval` of seconds.
+   set, a new file will be created for each `interval` of seconds.
 
    Note: the interval variable can also be set using hours and minutes: 04h20m00.
 
@@ -4558,6 +4683,13 @@ incoming/outgoing directions.
 
    Display statistics of routes of all the afi and safi.
 
+.. clicmd:: show bgp attribute-info [summary]
+
+   This command displays information about the attributes. If ``summary`` is
+   specified, it will display a summary of the attributes, including the
+   attribute type, the number of occurrences, and the total size of the
+   attributes in the BGP table.
+
 .. clicmd:: show [ip] bgp [afi] [safi] [all] cidr-only [wide|json]
 
    Display routes with non-natural netmasks.
@@ -4638,13 +4770,16 @@ incoming/outgoing directions.
 
    If ``json`` option is specified, output is displayed in JSON format.
 
-.. clicmd:: show [ip] bgp [afi] [safi] [all] detail-routes
+.. clicmd:: show [ip] bgp [afi] [safi] [all] detail-routes [internal]
 
    Display the detailed version of all routes. The same format as using
    ``show [ip] bgp [afi] [safi] PREFIX``, but for the whole BGP table.
 
    If ``all`` option is specified, ``ip`` keyword is ignored and,
    routes displayed for all AFIs and SAFIs.
+
+   ``internal`` option is used to display internal data additionally. JSON
+   output is not supported with this option.
 
    If ``afi`` is specified, with ``all`` option, routes will be displayed for
    each SAFI in the selected AFI.
@@ -4921,6 +5056,12 @@ Displaying Update Group Information
 
    Display Information about update-group events in FRR.
 
+.. clicmd:: show [ip] bgp l2vpn evpn update-groups [subgroup-id (1-1000)] [json]
+
+   Display information about L2VPN EVPN update-groups being used.
+   If subgroup-id is specified, only display information about that particular
+   subgroup. The optional json parameter formats the output as JSON.
+
 Displaying Nexthop Information
 ------------------------------
 .. clicmd:: show [ip] bgp [<view|vrf> VIEWVRFNAME] nexthop ipv4 [A.B.C.D] [detail] [json]
@@ -4972,6 +5113,31 @@ Segment-Routing IPv6
    - name: vrf20
      vpn_policy[AFI_IP].tovpn_sid: none
      vpn_policy[AFI_IP6].tovpn_sid: 2001:db8:1:1::200
+
+.. clicmd:: show bgp ipv6 vpn detail
+
+The SID can be advertised along with other SRv6 fields in the BGP prefix sid
+attribute defined in RFC-9252. The below output displays the SRv6 SID structure
+Sub-Sub-TLV, as per chapter 3.2.1. The `[32 16 32 0 0 0]` values respectively
+stand for the locator block length, node length, function length, argument
+length, and the transposition length and offset.
+
+.. code-block:: frr
+
+   r1# show bgp ipv6 vpn 2001:db9:10::/64
+   BGP routing table entry for 5:10:2001:db9:10::/64, version 2
+   not allocated
+   Paths: (1 available, best #1)
+     Advertised to peers:
+     fc00:0:1::1
+     Local
+       :: from :: (5.5.5.5) vrf vrf10(8) announce-nh-self
+         Origin incomplete, metric 0, weight 32768, valid, sourced, local, best (First path received)
+         Extended Community: RT:99:99
+         Originator: 5.5.5.5
+         Remote label: 3
+         Remote SID: fc05:0:5:cece:2345::, sid structure=[32 16 32 0 0 0]
+         Last update: Wed Jul  2 09:53:59 2025
 
 AS-notation support
 -------------------
@@ -5585,7 +5751,6 @@ Show command json output:
 
 .. include:: flowspec.rst
 
-.. [#med-transitivity-rant] For some set of objects to have an order, there *must* be some binary ordering relation that is defined for *every* combination of those objects, and that relation *must* be transitive. I.e.:, if the relation operator is <, and if a < b and b < c then that relation must carry over and it *must* be that a < c for the objects to have an order. The ordering relation may allow for equality, i.e. a < b and b < a may both be true and imply that a and b are equal in the order and not distinguished by it, in which case the set has a partial order. Otherwise, if there is an order, all the objects have a distinct place in the order and the set has a total order)
 .. [bgp-route-osci-cond] McPherson, D. and Gill, V. and Walton, D., "Border Gateway Protocol (BGP) Persistent Route Oscillation Condition", IETF RFC3345
 .. [stable-flexible-ibgp] Flavel, A. and M. Roughan, "Stable and flexible iBGP", ACM SIGCOMM 2009
 .. [ibgp-correctness] Griffin, T. and G. Wilfong, "On the correctness of IBGP configuration", ACM SIGCOMM 2002

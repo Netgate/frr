@@ -161,12 +161,13 @@ struct bgp_debug_filter {
 #define CONF_BGP_DEBUG(a, b) (unlikely(conf_bgp_debug_##a & BGP_DEBUG_##b))
 
 extern const char *const bgp_type_str[];
+extern const char *const bgp_global_gr_mode_str[];
 
 extern bool bgp_dump_attr(struct attr *attr, char *buf, size_t size);
 extern bool bgp_debug_peer_updout_enabled(char *host);
 extern const char *bgp_notify_code_str(char code);
 extern const char *bgp_notify_subcode_str(char code, char subcode);
-extern void bgp_notify_print(struct peer *peer, struct bgp_notify *bgp_notify,
+extern void bgp_notify_print(const struct peer *peer, const struct bgp_notify *bgp_notify,
 			     const char *direct, bool hard_reset);
 
 extern const struct message bgp_status_msg[];

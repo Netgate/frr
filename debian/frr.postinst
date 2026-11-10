@@ -58,6 +58,11 @@ find \
 	fi
 done
 
+# Make sure syslog has needed permissions to /var/log/for
+if command -v setfacl >/dev/null 2>&1; then
+	setfacl -m u:syslog:rwx /var/log/frr || true
+fi
+
 # fix misconfigured vtysh.conf & frr.conf ownership caused by config save
 # mishandling in earlier FRR (and Quagga) versions
 find /etc/frr -maxdepth 1 \( -name vtysh.conf -o -name frr.conf \) \

@@ -81,7 +81,7 @@ uint16_t nexthop_group_nexthop_num(const struct nexthop_group *nhg)
 	return num;
 }
 
-static uint16_t nexthop_group_nexthop_num_no_recurse(const struct nexthop_group *nhg)
+uint16_t nexthop_group_nexthop_num_no_recurse(const struct nexthop_group *nhg)
 {
 	struct nexthop *nhop;
 	uint16_t num = 0;
@@ -879,7 +879,7 @@ DEFPY(ecmp_nexthops, ecmp_nexthops_cmd,
 	   nexthop-vrf NAME$vrf_name \
 	   |label WORD \
 	   |vni (1-16777215) \
-           |weight (1-255) \
+           |weight (1-4294967295) \
            |backup-idx WORD \
 	}]",
       NO_STR

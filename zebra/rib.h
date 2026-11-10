@@ -85,10 +85,24 @@ struct route_entry {
 	 */
 	struct nhg_hash_entry *nhe;
 
-	/* Nexthop group hash entry IDs. The "installed" id is the id
-	 * used in linux/netlink, if available.
+	struct nhg_hash_entry *nhe_received;
+
+	/*
+	 * Nexthop group hash entry IDs.
+	 * Since the nhe_id is used as a temporary holder
+	 * of the nexthop group id ( say the route was learned
+	 * from the kernel and it had a nhg_id, this value will
+	 * need to stay for the moment, until we untangle
+	 * route reception from handling of nexthop groups a bit more
 	 */
 	uint32_t nhe_id;
+	/*
+	 * The installed id is the id of the nexthop group
+	 * that is installed in the FIB.  This can be different
+	 * a great example is a recursive singleton through
+	 * another singleton.  See the test_zebra_recursive_nhg_installed
+	 * for more details on how to setup this situation.
+	 */
 	uint32_t nhe_installed_id;
 
 	/* Type of this route. */
@@ -192,6 +206,12 @@ struct route_entry {
 struct meta_queue {
 	struct list *subq[MQ_SIZE];
 	uint32_t size; /* sum of lengths of all subqueues */
+	_Atomic uint32_t max_subq[MQ_SIZE];    /* Max size of individual sub queue */
+	_Atomic uint32_t max_metaq;	       /* Max size of the MetaQ */
+	_Atomic uint32_t total_subq[MQ_SIZE];  /* Total subq events */
+	_Atomic uint32_t total_metaq;	       /* Total MetaQ events */
+	_Atomic uint32_t re_subq[MQ_SIZE];     /* current RE count sub queue */
+	_Atomic uint32_t max_re_subq[MQ_SIZE]; /* Max RE in sub queue */
 };
 
 /*
@@ -460,7 +480,10 @@ int zebra_rib_queue_evpn_rem_vtep_del(vrf_id_t vrf_id, vni_t vni,
 
 extern void meta_queue_free(struct meta_queue *mq, struct zebra_vrf *zvrf);
 extern int zebra_rib_labeled_unicast(struct route_entry *re);
+extern void rib_meta_queue_early_route_cleanup(const struct prefix *p, int route_type);
 extern struct route_table *rib_table_ipv6;
+
+extern uint32_t zebra_rib_meta_queue_size(void);
 
 extern void rib_unlink(struct route_node *rn, struct route_entry *re);
 extern int rib_gc_dest(struct route_node *rn);
@@ -472,6 +495,7 @@ extern void zebra_rib_evaluate_rn_nexthops(struct route_node *rn, uint32_t seq,
 					   bool rt_delete);
 
 extern void rib_update_handle_vrf_all(enum rib_update_event event, int rtype);
+int zebra_show_metaq_counter(struct vty *vty, bool uj);
 
 /*
  * rib_find_rn_from_ctx
@@ -617,16 +641,16 @@ static inline struct nexthop_group *rib_get_fib_backup_nhg(
 	return &(re->fib_backup_ng);
 }
 
-extern void zebra_gr_process_client(afi_t afi, vrf_id_t vrf_id, uint8_t proto,
-				    uint8_t instance, time_t restart_time);
+extern void zebra_gr_process_client(afi_t afi, vrf_id_t vrf_id, uint8_t proto, uint8_t instance,
+				    time_t restart_time, bool stale_client_cleanup);
 
-extern int rib_add_gr_run(afi_t afi, vrf_id_t vrf_id, uint8_t proto,
-			  uint8_t instance, time_t restart_time);
+extern int rib_add_gr_run(afi_t afi, vrf_id_t vrf_id, uint8_t proto, uint8_t instance,
+			  time_t restart_time, bool stale_client_cleanup);
 
 extern void zebra_vty_init(void);
 extern uint32_t zebra_rib_dplane_results_count(void);
 
-extern pid_t pid;
+extern pid_t zebra_pid;
 
 extern uint32_t rt_table_main_id;
 
@@ -636,6 +660,8 @@ void route_entry_dump_nh(const struct route_entry *re, const char *straddr,
 
 /* Name of hook calls */
 #define ZEBRA_ON_RIB_PROCESS_HOOK_CALL "on_rib_process_dplane_results"
+
+extern char *zebra_rib_dump_re_status(const struct route_entry *re, char *buf, size_t len);
 
 #ifdef __cplusplus
 }

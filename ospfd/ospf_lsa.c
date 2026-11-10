@@ -61,6 +61,12 @@ static struct ospf_lsa *
 ospf_exnl_lsa_prepare_and_flood(struct ospf *ospf, struct external_info *ei,
 				struct in_addr id);
 
+/*
+ * LSA Update and Delete Hook LSAs.
+ */
+DEFINE_HOOK(ospf_lsa_update, (struct ospf_lsa *lsa), (lsa));
+DEFINE_HOOK(ospf_lsa_delete, (struct ospf_lsa *lsa), (lsa));
+
 uint32_t get_metric(uint8_t *metric)
 {
 	uint32_t m;
@@ -79,16 +85,6 @@ bool ospf_check_dna_lsa(const struct ospf_lsa *lsa)
 	return ((IS_LSA_SELF(lsa) && CHECK_FLAG(lsa->data->ls_age, DO_NOT_AGE))
 			? true
 			: false);
-}
-
-struct timeval int2tv(int a)
-{
-	struct timeval ret;
-
-	ret.tv_sec = a;
-	ret.tv_usec = 0;
-
-	return ret;
 }
 
 struct timeval msec2tv(int a)
@@ -178,6 +174,9 @@ uint16_t ospf_lsa_checksum(struct lsa_header *lsa)
 
 int ospf_lsa_checksum_valid(struct lsa_header *lsa)
 {
+	if (lsa->checksum == 0)
+		return 0; /* cannot be 0, discard */
+
 	uint8_t *buffer = &lsa->options;
 	int options_offset = buffer - (uint8_t *)&lsa->ls_age; /* should be 2 */
 
@@ -2529,8 +2528,9 @@ void ospf_nssa_lsa_flush(struct ospf *ospf, struct prefix_ipv4 *p)
 
 	for (ALL_LIST_ELEMENTS(ospf->areas, node, nnode, area)) {
 		if (area->external_routing == OSPF_AREA_NSSA) {
-			lsa = ospf_lsa_lookup(ospf, area, OSPF_AS_NSSA_LSA,
-					      p->prefix, ospf->router_id);
+			lsa = ospf_lsa_lookup_by_prefix(area->lsdb, OSPF_AS_NSSA_LSA, p,
+							ospf->router_id);
+
 			if (!lsa) {
 				if (IS_DEBUG_OSPF(lsa, LSA_FLOODING))
 					zlog_debug(
@@ -3146,6 +3146,11 @@ struct ospf_lsa *ospf_lsa_install(struct ospf *ospf, struct ospf_interface *oi,
 			zlog_debug("LSA[%s]: Install LSA %p, MaxAge",
 				   dump_lsa_key(new), lsa);
 		ospf_lsa_maxage(ospf, lsa);
+	} else {
+		/*
+		 * Invoke the LSA update hook.
+		 */
+		hook_call(ospf_lsa_update, new);
 	}
 
 	return new;
@@ -3363,6 +3368,11 @@ void ospf_lsa_maxage(struct ospf *ospf, struct ospf_lsa *lsa)
 	if (IS_DEBUG_OSPF(lsa, LSA_FLOODING))
 		zlog_debug("LSA[%s]: MaxAge LSA remover scheduled.",
 			   dump_lsa_key(lsa));
+
+	/*
+	 * Invoke the LSA delete hook.
+	 */
+	hook_call(ospf_lsa_delete, lsa);
 
 	OSPF_TIMER_ON(ospf->t_maxage, ospf_maxage_lsa_remover,
 		      ospf->maxage_delay);
@@ -3785,7 +3795,7 @@ void ospf_flush_self_originated_lsas_now(struct ospf *ospf)
 	 * without conflicting to other threads.
 	 */
 	if (ospf->t_maxage != NULL) {
-		EVENT_OFF(ospf->t_maxage);
+		event_cancel(&ospf->t_maxage);
 		event_execute(master, ospf_maxage_lsa_remover, ospf, 0, NULL);
 	}
 

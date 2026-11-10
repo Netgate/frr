@@ -179,8 +179,10 @@ static int show_proto_rm(struct vty *vty, int af_type, const char *vrf_all,
 	} else {
 		vrf_id_t vrf_id = VRF_DEFAULT;
 
-		if (vrf_name)
-			VRF_GET_ID(vrf_id, vrf_name, false);
+		if (vrf_name) {
+			if (!vrf_get_id(vty, &vrf_id, vrf_name, false))
+				return CMD_WARNING;
+		}
 
 		zvrf = zebra_vrf_lookup_by_id(vrf_id);
 		if (!zvrf)
@@ -197,8 +199,15 @@ static int show_nht_rm(struct vty *vty, int af_type, const char *vrf_all,
 		       const char *vrf_name, bool use_json)
 {
 	struct zebra_vrf *zvrf;
+	vrf_id_t vrf_id = VRF_DEFAULT;
 	json_object *json = NULL;
 	json_object *json_vrfs = NULL;
+
+	/* Check for single vrf name. Note that this macro returns on error. */
+	if (vrf_all == NULL && vrf_name != NULL) {
+		if (!vrf_get_id(vty, &vrf_id, vrf_name, false))
+			return CMD_WARNING;
+	}
 
 	if (use_json) {
 		json = json_object_new_object();
@@ -236,10 +245,6 @@ static int show_nht_rm(struct vty *vty, int af_type, const char *vrf_all,
 	} else {
 		json_object *json_proto = NULL;
 		json_object *json_vrf = NULL;
-		vrf_id_t vrf_id = VRF_DEFAULT;
-
-		if (vrf_name)
-			VRF_GET_ID(vrf_id, vrf_name, false);
 
 		zvrf = zebra_vrf_lookup_by_id(vrf_id);
 		if (!zvrf) {
@@ -1183,7 +1188,7 @@ void zebra_route_map_set_delay_timer(uint32_t value)
 	if (!value && zebra_t_rmap_update) {
 		/* Event driven route map updates is being disabled */
 		/* But there's a pending timer. Fire it off now */
-		EVENT_OFF(zebra_t_rmap_update);
+		event_cancel(&zebra_t_rmap_update);
 		zebra_route_map_update_timer(NULL);
 	}
 }
@@ -1193,7 +1198,7 @@ void zebra_routemap_finish(void)
 	/* Set zebra_rmap_update_timer to 0 so that it wont schedule again */
 	zebra_rmap_update_timer = 0;
 	/* Thread off if any scheduled already */
-	EVENT_OFF(zebra_t_rmap_update);
+	event_cancel(&zebra_t_rmap_update);
 	route_map_finish();
 }
 
@@ -1295,7 +1300,7 @@ static void zebra_route_map_mark_update(const char *rmap_name)
 {
 	/* rmap_update_timer of 0 means don't do route updates */
 	if (zebra_rmap_update_timer)
-		EVENT_OFF(zebra_t_rmap_update);
+		event_cancel(&zebra_t_rmap_update);
 
 	event_add_timer(zrouter.master, zebra_route_map_update_timer, NULL,
 			zebra_rmap_update_timer, &zebra_t_rmap_update);

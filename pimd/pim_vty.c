@@ -26,6 +26,7 @@
 #include "pim_rp.h"
 #include "pim_msdp.h"
 #include "pim_ssm.h"
+#include "pim_dm.h"
 #include "pim_bfd.h"
 #include "pim_bsm.h"
 #include "pim_vxlan.h"
@@ -180,6 +181,7 @@ int pim_global_config_write_worker(struct pim_instance *pim, struct vty *vty)
 {
 	int writes = 0;
 	struct pim_ssm *ssm = pim->ssm_info;
+	struct pim_dm *dm = pim->dm_info;
 
 #if PIM_IPV == 4
 	writes += pim_msdp_peer_config_write(vty, pim);
@@ -236,13 +238,16 @@ int pim_global_config_write_worker(struct pim_instance *pim, struct vty *vty)
 		vty_out(vty, " keep-alive-timer %d\n", pim->keep_alive_time);
 		++writes;
 	}
-	if (pim->rp_keep_alive_time != (unsigned int)PIM_RP_KEEPALIVE_PERIOD) {
-		vty_out(vty, " rp keep-alive-timer %d\n",
-			pim->rp_keep_alive_time);
+	if (pim->rp_keep_alive_time != MIN(PIM_RP_KEEPALIVE_PERIOD, UINT16_MAX)) {
+		vty_out(vty, " rp keep-alive-timer %d\n", pim->rp_keep_alive_time);
 		++writes;
 	}
 	if (ssm->plist_name) {
 		vty_out(vty, " ssm prefix-list %s\n", ssm->plist_name);
+		++writes;
+	}
+	if (dm->plist_name) {
+		vty_out(vty, " dm prefix-list %s\n", dm->plist_name);
 		++writes;
 	}
 	if (pim->register_plist) {
@@ -288,6 +293,12 @@ static int gm_config_write(struct vty *vty, int writes,
 	/* IF ip igmp */
 	if (pim_ifp->gm_enable) {
 		vty_out(vty, " ip igmp\n");
+		++writes;
+	}
+
+	/* IF ip igmp require-router-alert */
+	if (pim_ifp->gmp_require_ra) {
+		vty_out(vty, " ip igmp require-router-alert\n");
 		++writes;
 	}
 
@@ -380,6 +391,12 @@ static int gm_config_write(struct vty *vty, int writes,
 		++writes;
 	}
 
+	/* IF ip igmp require-router-alert */
+	if (pim_ifp->gmp_require_ra) {
+		vty_out(vty, " ipv6 mld require-router-alert\n");
+		++writes;
+	}
+
 	if (pim_ifp->mld_version != MLD_DEFAULT_VERSION)
 		vty_out(vty, " ipv6 mld version %d\n", pim_ifp->mld_version);
 
@@ -453,7 +470,47 @@ int pim_config_write(struct vty *vty, int writes, struct interface *ifp,
 	struct pim_interface *pim_ifp = ifp->info;
 
 	if (pim_ifp->pim_enable) {
-		vty_out(vty, " " PIM_AF_NAME " pim\n");
+		if (pim_ifp->pim_mode == PIM_MODE_DENSE)
+			vty_out(vty, " " PIM_AF_NAME " pim dm\n");
+		else if (pim_ifp->pim_mode == PIM_MODE_SPARSE_DENSE)
+			vty_out(vty, " " PIM_AF_NAME " pim sm-dm\n");
+		else if (pim_ifp->pim_mode == PIM_MODE_SSM)
+			vty_out(vty, " " PIM_AF_NAME " pim ssm\n");
+		else
+			vty_out(vty, " " PIM_AF_NAME " pim\n");
+		++writes;
+	}
+
+	/* IF igmp/mld routemap */
+	if (pim_ifp->gmp_filter.rmapname) {
+		vty_out(vty, " " PIM_AF_NAME " " GM_AF_DBG " route-map %s\n",
+			pim_ifp->gmp_filter.rmapname);
+		++writes;
+	}
+
+	/* IF igmp/mld max-sources */
+	if (pim_ifp->gm_source_limit != UINT32_MAX) {
+		vty_out(vty, " " PIM_AF_NAME " " GM_AF_DBG " max-sources %u\n",
+			pim_ifp->gm_source_limit);
+		++writes;
+	}
+
+	/* IF igmp/mld max-groups */
+	if (pim_ifp->gm_group_limit != UINT32_MAX) {
+		vty_out(vty, " " PIM_AF_NAME " " GM_AF_DBG " max-groups %u\n",
+			pim_ifp->gm_group_limit);
+		++writes;
+	}
+
+	/* IF ip/ipv6 igmp/mld immediate-leave */
+	if (pim_ifp->gmp_immediate_leave) {
+		vty_out(vty, " " PIM_AF_NAME " " GM_AF_DBG " immediate-leave\n");
+		++writes;
+	}
+
+	if (pim_ifp->nbr_plist) {
+		vty_out(vty, " " PIM_AF_NAME " pim allowed-neighbors prefix-list %s\n",
+			pim_ifp->nbr_plist);
 		++writes;
 	}
 

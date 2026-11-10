@@ -7,6 +7,10 @@
 #ifndef _ZEBRA_INTERFACE_H
 #define _ZEBRA_INTERFACE_H
 
+#ifndef __linux__
+#include <net/if_dl.h>
+#endif
+
 #include "redistribute.h"
 #include "vrf.h"
 #include "hook.h"
@@ -39,7 +43,8 @@ enum zebra_iftype {
 	ZEBRA_IF_MACVLAN,   /* MAC VLAN interface*/
 	ZEBRA_IF_VETH,      /* VETH interface*/
 	ZEBRA_IF_BOND,	    /* Bond */
-	ZEBRA_IF_GRE,      /* GRE interface */
+	ZEBRA_IF_GRE,       /* GRE interface */
+	ZEBRA_IF_DUMMY,     /* Dummy interface */
 };
 
 /* Zebra "slave" interface type */
@@ -50,8 +55,6 @@ enum zebra_slave_iftype {
 	ZEBRA_IF_SLAVE_BOND,   /* Bond member */
 	ZEBRA_IF_SLAVE_OTHER,  /* Something else - e.g., bond slave */
 };
-
-struct irdp_interface;
 
 /* Ethernet segment info used for setting up EVPN multihoming */
 struct zebra_evpn_es;
@@ -146,8 +149,6 @@ struct zebra_if {
 	struct rtadvconf rtadv;
 	unsigned int ra_sent, ra_rcvd;
 
-	struct irdp_interface *irdp;
-
 #ifdef HAVE_STRUCT_SOCKADDR_DL
 	union {
 		/* note that sdl_storage is never accessed, it only exists to
@@ -222,8 +223,8 @@ struct zebra_if {
 	char *desc;
 };
 
-DECLARE_HOOK(zebra_if_extra_info, (struct vty * vty, struct interface *ifp),
-	     (vty, ifp));
+DECLARE_HOOK(zebra_if_extra_info, (struct vty * vty, json_object *json_if, struct interface *ifp),
+	     (vty, json_if, ifp));
 
 #define IS_ZEBRA_IF_VRF(ifp)                                                   \
 	(((struct zebra_if *)(ifp->info))->zif_type == ZEBRA_IF_VRF)
@@ -248,6 +249,9 @@ DECLARE_HOOK(zebra_if_extra_info, (struct vty * vty, struct interface *ifp),
 
 #define IS_ZEBRA_IF_GRE(ifp)                                               \
 	(((struct zebra_if *)(ifp->info))->zif_type == ZEBRA_IF_GRE)
+
+#define IS_ZEBRA_IF_DUMMY(ifp)                                               \
+	(((struct zebra_if *)(ifp->info))->zif_type == ZEBRA_IF_DUMMY)
 
 #define IS_ZEBRA_IF_BRIDGE_SLAVE(ifp)					\
 	(((struct zebra_if *)(ifp->info))->zif_slave_type                      \

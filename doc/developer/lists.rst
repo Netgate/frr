@@ -48,7 +48,10 @@ unique and non-unique items.  Hash tables always require unique items
 and mostly follow the "sorted" API but use the hash value as sorting
 key.  Also, iterating while modifying does not work with hash tables.
 Conversely, the heap always has non-unique items, but iterating while modifying
-doesn't work either.
+doesn't work either.  Hash tables also have a property of auto-growing
+and auto-shrinking.  If you are using the hash table as a way to temporarily
+hold data, consider the costs associated with growing and shrinking of the
+data structure before using.
 
 
 The following sorted structures are likely to be implemented at some point
@@ -772,6 +775,20 @@ Why is it ``PREDECL`` + ``DECLARE`` instead of ``DECLARE`` + ``DEFINE``?
    file.  It is also perfectly fine to have the same ``DECLARE`` statement in
    2 ``.c`` files, but only **if the macro arguments are identical.**  Maybe
    don't do that unless you really need it.
+
+COMMON PROBLEMS
+---------------
+
+The ``fini`` call of the various typesafe structures actually close the data
+structure off and attempts to use the data structure after that introduce
+intentional crashes.  This is leading to situations when converting from
+an older data structure to the new typesafe where, on shutdown, the older
+data structures would still be attempted to be accessed.  This access would
+just be ignored or result in benign code running.  With the new typesafe
+data structure crashes will occurr.  Be aware that when modifying the code
+base that this sort of change might end up with crashes on shutdown and
+work must be done to ensure that the newly changed does not use the data
+structure after the fini call.
 
 FRR lists
 ---------

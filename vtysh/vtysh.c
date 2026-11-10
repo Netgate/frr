@@ -44,7 +44,7 @@
 DEFINE_MTYPE_STATIC(MVTYSH, VTYSH_CMD, "Vtysh cmd copy");
 
 /* Struct VTY. */
-struct vty *vty;
+struct vty *gvty;
 
 /* VTY shell pager name. */
 char *vtysh_pager_name = NULL;
@@ -161,8 +161,8 @@ static int vtysh_reconnect(struct vtysh_client *vclient);
 static void vclient_close(struct vtysh_client *vclient)
 {
 	if (vclient->fd >= 0) {
-		if (vty->of)
-			vty_out(vty,
+		if (gvty->of)
+			vty_out(gvty,
 				"Warning: closing connection to %s because of an I/O error!\n",
 				vclient->name);
 		close(vclient->fd);
@@ -282,8 +282,8 @@ static int vtysh_client_run(struct vtysh_client *vclient, const char *line,
 			vclient, bufvalid, buf + bufsz - bufvalid - 1, pass_fd);
 
 		if (nread <= 0) {
-			if (vty->of)
-				vty_out(vty,
+			if (gvty->of)
+				vty_out(gvty,
 					"vtysh: error reading from %s: %s (%d)",
 					vclient->name, safe_strerror(errno),
 					errno);
@@ -357,8 +357,8 @@ static int vtysh_client_run(struct vtysh_client *vclient, const char *line,
 			/* eol is at line end now, either \n => \0 or \0\0\0 */
 			assert(eol && eol <= bufvalid);
 
-			if (vty->of)
-				vty_out(vty, "%s\n", buf);
+			if (gvty->of)
+				vty_out(gvty, "%s\n", buf);
 
 			callback(cbarg, buf);
 
@@ -371,8 +371,8 @@ static int vtysh_client_run(struct vtysh_client *vclient, const char *line,
 
 		/* else if no callback, dump raw */
 		if (!callback) {
-			if (vty->of)
-				vty_out(vty, "%s", buf);
+			if (gvty->of)
+				vty_out(gvty, "%s", buf);
 			memmove(buf, buf + textlen, bufvalid - buf - textlen);
 			bufvalid -= textlen;
 			if (end)
@@ -431,8 +431,8 @@ static int vtysh_client_run_all(struct vtysh_client *head_client,
 			rc_all = rc;
 		}
 	}
-	if (wrong_instance && !correct_instance && vty->of) {
-		vty_out(vty,
+	if (wrong_instance && !correct_instance && gvty->of) {
+		vty_out(gvty,
 			"%% [%s]: command ignored as it targets an instance that is not running\n",
 			head_client->name);
 		rc_all = CMD_WARNING_CONFIG_FAILED;
@@ -468,7 +468,7 @@ static int vtysh_client_execute_name(const char *name, const char *line)
 	if (idx_client != -1)
 		ret = vtysh_client_execute(&vtysh_client[idx_client], line);
 	else {
-		vty_out(vty, "Client not found\n");
+		vty_out(gvty, "Client not found\n");
 		ret = CMD_WARNING;
 	}
 
@@ -495,11 +495,11 @@ static void vtysh_client_config(struct vtysh_client *head_client, char *line)
 		return;
 
 	/* suppress output to user */
-	vty->of_saved = vty->of;
-	vty->of = NULL;
+	gvty->of_saved = gvty->of;
+	gvty->of = NULL;
 	vtysh_client_run_all(head_client, line, 1, vtysh_config_parse_line,
 			     NULL);
-	vty->of = vty->of_saved;
+	gvty->of = gvty->of_saved;
 }
 
 /* Command execution over the vty interface. */
@@ -522,11 +522,11 @@ static int vtysh_execute_func(const char *line, int pager)
 		char ts[48];
 
 		(void)frr_timestamp(3, ts, sizeof(ts));
-		vty_out(vty, "%% %s\n\n", ts);
+		vty_out(gvty, "%% %s\n\n", ts);
 	}
 
-	saved_ret = ret = cmd_execute(vty, line, &cmd, 1);
-	saved_node = vty->node;
+	saved_ret = ret = cmd_execute(gvty, line, &cmd, 1);
+	saved_node = gvty->node;
 
 	/*
 	 * If command doesn't succeeded in current node, try to walk up in node
@@ -536,13 +536,13 @@ static int vtysh_execute_func(const char *line, int pager)
 	while (ret != CMD_SUCCESS && ret != CMD_SUCCESS_DAEMON
 	       && ret != CMD_WARNING && ret != CMD_WARNING_CONFIG_FAILED
 	       && ret != CMD_ERR_AMBIGUOUS && ret != CMD_ERR_INCOMPLETE
-	       && vty->node > CONFIG_NODE) {
-		vty->node = node_parent(vty->node);
-		ret = cmd_execute(vty, line, &cmd, 1);
+	       && gvty->node > CONFIG_NODE) {
+		gvty->node = node_parent(gvty->node);
+		ret = cmd_execute(gvty, line, &cmd, 1);
 		tried++;
 	}
 
-	vty->node = saved_node;
+	gvty->node = saved_node;
 
 	/*
 	 * If command succeeded in any other node than current (tried > 0) we
@@ -567,17 +567,17 @@ static int vtysh_execute_func(const char *line, int pager)
 	switch (ret) {
 	case CMD_WARNING:
 	case CMD_WARNING_CONFIG_FAILED:
-		if (vty->type == VTY_FILE)
-			vty_out(vty, "Warning...\n");
+		if (gvty->type == VTY_FILE)
+			vty_out(gvty, "Warning...\n");
 		break;
 	case CMD_ERR_AMBIGUOUS:
-		vty_out(vty, "%% Ambiguous command: %s\n", line);
+		vty_out(gvty, "%% Ambiguous command: %s\n", line);
 		break;
 	case CMD_ERR_NO_MATCH:
-		vty_out(vty, "%% Unknown command: %s\n", line);
+		vty_out(gvty, "%% Unknown command: %s\n", line);
 		break;
 	case CMD_ERR_INCOMPLETE:
-		vty_out(vty, "%% Command incomplete: %s\n", line);
+		vty_out(gvty, "%% Command incomplete: %s\n", line);
 		break;
 	case CMD_SUCCESS_DAEMON: {
 		/*
@@ -586,7 +586,7 @@ static int vtysh_execute_func(const char *line, int pager)
 		 * cause any problem but is really ugly.
 		 */
 		if (pager && strncmp(line, "exit", 4))
-			vty_open_pager(vty);
+			vty_open_pager(gvty);
 
 		if (!strcmp(cmd->string, "configure")) {
 			for (i = 0; i < array_size(vtysh_client); i++) {
@@ -602,17 +602,17 @@ static int vtysh_execute_func(const char *line, int pager)
 
 
 				if (vline == NULL) {
-					if (vty->is_paged)
-						vty_close_pager(vty);
+					if (gvty->is_paged)
+						vty_close_pager(gvty);
 					return CMD_SUCCESS;
 				}
 
-				ret = cmd_execute_command(vline, vty, &cmd, 1);
+				ret = cmd_execute_command(vline, gvty, &cmd, 1);
 				cmd_free_strvec(vline);
 				if (ret != CMD_SUCCESS_DAEMON)
 					break;
 			} else if (cmd->func) {
-				(*cmd->func)(cmd, vty, 0, NULL);
+				(*cmd->func)(cmd, gvty, 0, NULL);
 				break;
 			}
 		}
@@ -653,11 +653,11 @@ static int vtysh_execute_func(const char *line, int pager)
 			break;
 
 		if (cmd->func)
-			(*cmd->func)(cmd, vty, 0, NULL);
+			(*cmd->func)(cmd, gvty, 0, NULL);
 	}
 	}
-	if (vty->is_paged)
-		vty_close_pager(vty);
+	if (gvty->is_paged)
+		vty_close_pager(gvty);
 
 	return cmd_stat;
 }
@@ -980,21 +980,21 @@ static int vtysh_process_questionmark(const char *input, int input_len)
 	} else if (input_len && isspace((unsigned char)input[input_len - 1]))
 		vector_set(vline, NULL);
 
-	describe = cmd_describe_command(vline, vty, &ret);
+	describe = cmd_describe_command(vline, gvty, &ret);
 
 	/* Ambiguous and no match error. */
 	switch (ret) {
 	case CMD_ERR_AMBIGUOUS:
 		cmd_free_strvec(vline);
 		vector_free(describe);
-		vty_out(vty, "%% Ambiguous command.\n");
+		vty_out(gvty, "%% Ambiguous command.\n");
 		rl_on_new_line();
 		return 0;
 	case CMD_ERR_NO_MATCH:
 		cmd_free_strvec(vline);
 		if (describe)
 			vector_free(describe);
-		vty_out(vty, "%% There is no matched command.\n");
+		vty_out(gvty, "%% There is no matched command.\n");
 		rl_on_new_line();
 		return 0;
 	}
@@ -1015,9 +1015,9 @@ static int vtysh_process_questionmark(const char *input, int input_len)
 	for (i = 0; i < vector_active(describe); i++)
 		if ((token = vector_slot(describe, i)) != NULL) {
 			if (!token->desc)
-				vty_out(vty, "  %-s\n", token->text);
+				vty_out(gvty, "  %-s\n", token->text);
 			else
-				vty_out(vty, "  %-*s  %s\n", width, token->text,
+				vty_out(gvty, "  %-*s  %s\n", width, token->text,
 					token->desc);
 
 			if (IS_VARYING_TOKEN(token->type)) {
@@ -1033,7 +1033,7 @@ static int vtysh_process_questionmark(const char *input, int input_len)
 
 					char *ac = cmd_variable_comp2str(
 						varcomps, cols);
-					vty_out(vty, "%s\n", ac);
+					vty_out(gvty, "%s\n", ac);
 					XFREE(MTYPE_TMP, ac);
 				}
 
@@ -1056,7 +1056,7 @@ static int vtysh_rl_describe(int a, int b)
 {
 	int ret;
 
-	vty_out(vty, "\n");
+	vty_out(gvty, "\n");
 
 	ret = vtysh_process_questionmark(rl_line_buffer, rl_end);
 	rl_on_new_line();
@@ -1116,7 +1116,7 @@ static char *command_generator(const char *text, int state)
 	if (!state) {
 		index = 0;
 
-		if (vty->node == AUTH_NODE || vty->node == AUTH_ENABLE_NODE)
+		if (gvty->node == AUTH_NODE || gvty->node == AUTH_ENABLE_NODE)
 			return NULL;
 
 		vline = cmd_make_strvec(rl_line_buffer);
@@ -1127,7 +1127,7 @@ static char *command_generator(const char *text, int state)
 		    isspace((unsigned char)rl_line_buffer[rl_end - 1]))
 			vector_set(vline, NULL);
 
-		matched = cmd_complete_command(vline, vty, &complete_status);
+		matched = cmd_complete_command(vline, gvty, &complete_status);
 		cmd_free_strvec(vline);
 	}
 
@@ -1353,6 +1353,11 @@ static struct cmd_node srv6_sid_format_usid_f3216_node = {
 	.parent_node = SRV6_SID_FORMATS_NODE,
 	.prompt = "%s(config-srv6-format)# "
 };
+
+static struct cmd_node srv6_sid_format_usid_f4816_node = { .name = "srv6-format-usid-f4816",
+							   .node = SRV6_SID_FORMAT_USID_F4816_NODE,
+							   .parent_node = SRV6_SID_FORMATS_NODE,
+							   .prompt = "%s(config-srv6-format)# " };
 
 static struct cmd_node srv6_sid_format_uncompressed_f4024_node = {
 	.name = "srv6-format-uncompressed-f4024",
@@ -1672,13 +1677,13 @@ extern struct cmd_node vty_node;
 /* When '^Z' is received from vty, move down to the enable mode. */
 static int vtysh_end(void)
 {
-	switch (vty->node) {
+	switch (gvty->node) {
 	case VIEW_NODE:
 	case ENABLE_NODE:
 		/* Nothing to do. */
 		break;
 	default:
-		vty->node = ENABLE_NODE;
+		gvty->node = ENABLE_NODE;
 		break;
 	}
 	return CMD_SUCCESS;
@@ -1754,6 +1759,15 @@ DEFUNSH(VTYSH_ZEBRA, srv6_sid_format_f3216_usid, srv6_sid_format_f3216_usid_cmd,
 	"Configure the uSID f3216 format\n")
 {
 	vty->node = SRV6_SID_FORMAT_USID_F3216_NODE;
+	return CMD_SUCCESS;
+}
+
+DEFUNSH(VTYSH_ZEBRA, srv6_sid_format_f4816_usid, srv6_sid_format_f4816_usid_cmd,
+	"format usid-f4816",
+	"Configure SRv6 SID format\n"
+	"Configure the uSID f4816 format\n")
+{
+	vty->node = SRV6_SID_FORMAT_USID_F4816_NODE;
 	return CMD_SUCCESS;
 }
 
@@ -2683,6 +2697,7 @@ DEFUNSH(VTYSH_ZEBRA, exit_srv6_sid_format, exit_srv6_sid_format_cmd,
 	"exit", "Exit from SRv6 SID format configuration mode\n")
 {
 	if (vty->node == SRV6_SID_FORMAT_USID_F3216_NODE ||
+	    vty->node == SRV6_SID_FORMAT_USID_F4816_NODE ||
 	    vty->node == SRV6_SID_FORMAT_UNCOMPRESSED_F4024_NODE)
 		vty->node = SRV6_SID_FORMATS_NODE;
 	return CMD_SUCCESS;
@@ -3500,20 +3515,6 @@ DEFUN(vtysh_debug_uid_backtrace,
 	return err;
 }
 
-DEFUNSH(VTYSH_ALL, vtysh_allow_reserved_ranges, vtysh_allow_reserved_ranges_cmd,
-	"allow-reserved-ranges",
-	"Allow using IPv4 (Class E) reserved IP space\n")
-{
-	return CMD_SUCCESS;
-}
-
-DEFUNSH(VTYSH_ALL, no_vtysh_allow_reserved_ranges,
-	no_vtysh_allow_reserved_ranges_cmd, "no allow-reserved-ranges",
-	NO_STR "Allow using IPv4 (Class E) reserved IP space\n")
-{
-	return CMD_SUCCESS;
-}
-
 DEFUNSH(VTYSH_ALL, vtysh_service_password_encrypt,
 	vtysh_service_password_encrypt_cmd, "service password-encryption",
 	"Set up miscellaneous service\n"
@@ -3627,7 +3628,7 @@ static void show_route_map_send(const char *route_map, bool json)
 		strlcat(command_line, " json", sizeof(command_line));
 
 	if (json)
-		vty_out(vty, "{");
+		vty_out(gvty, "{");
 
 	for (i = 0; i < array_size(vtysh_client); i++) {
 		const struct vtysh_client *client = &vtysh_client[i];
@@ -3644,18 +3645,18 @@ static void show_route_map_send(const char *route_map, bool json)
 			continue;
 
 		if (json && !first)
-			vty_out(vty, ",");
+			vty_out(gvty, ",");
 		else
 			first = false;
 
 		if (json)
-			vty_out(vty, "\"%s\":", vtysh_client[i].name);
+			vty_out(gvty, "\"%s\":", vtysh_client[i].name);
 
 		vtysh_client_execute_name(vtysh_client[i].name, command_line);
 	}
 
 	if (json)
-		vty_out(vty, "}\n");
+		vty_out(gvty, "}\n");
 }
 
 DEFPY (show_route_map,
@@ -3699,7 +3700,7 @@ static void show_prefix_list_send(afi_t afi, const char *prefix_list,
 		strlcat(command_line, " json", sizeof(command_line));
 
 	if (json)
-		vty_out(vty, "{");
+		vty_out(gvty, "{");
 
 	for (i = 0; i < array_size(vtysh_client); i++) {
 		const struct vtysh_client *client = &vtysh_client[i];
@@ -3716,18 +3717,18 @@ static void show_prefix_list_send(afi_t afi, const char *prefix_list,
 			continue;
 
 		if (json && !first)
-			vty_out(vty, ",");
+			vty_out(gvty, ",");
 		else
 			first = false;
 
 		if (json)
-			vty_out(vty, "\"%s\":", vtysh_client[i].name);
+			vty_out(gvty, "\"%s\":", vtysh_client[i].name);
 
 		vtysh_client_execute_name(vtysh_client[i].name, command_line);
 	}
 
 	if (json)
-		vty_out(vty, "}\n");
+		vty_out(gvty, "}\n");
 }
 
 DEFPY (show_ip_prefix_list,
@@ -3842,7 +3843,7 @@ static void show_access_list_send(afi_t afi, const char *access_list, bool json)
 		strlcat(command_line, access_list, sizeof(command_line));
 	if (json) {
 		strlcat(command_line, " json", sizeof(command_line));
-		vty_out(vty, "{");
+		vty_out(gvty, "{");
 	}
 
 	for (i = 0; i < array_size(vtysh_client); i++) {
@@ -3860,18 +3861,18 @@ static void show_access_list_send(afi_t afi, const char *access_list, bool json)
 			continue;
 
 		if (json && !first)
-			vty_out(vty, ",");
+			vty_out(gvty, ",");
 		else
 			first = false;
 
 		if (json)
-			vty_out(vty, "\"%s\":", vtysh_client[i].name);
+			vty_out(gvty, "\"%s\":", vtysh_client[i].name);
 
 		vtysh_client_execute_name(vtysh_client[i].name, command_line);
 	}
 
 	if (json)
-		vty_out(vty, "}\n");
+		vty_out(gvty, "}\n");
 }
 
 DEFPY (show_ip_access_list,
@@ -3956,10 +3957,10 @@ static void backup_config_file(const char *fbackup)
 
 	/* Move current configuration file to backup config file. */
 	if (unlink(integrate_sav) != 0 && errno != ENOENT)
-		vty_out(vty, "Unlink failed for %s: %s\n", integrate_sav,
+		vty_out(gvty, "Unlink failed for %s: %s\n", integrate_sav,
 			strerror(errno));
 	if (rename(fbackup, integrate_sav) != 0 && errno != ENOENT)
-		vty_out(vty, "Error renaming %s to %s: %s\n", fbackup,
+		vty_out(gvty, "Error renaming %s to %s: %s\n", fbackup,
 			integrate_sav, strerror(errno));
 	free(integrate_sav);
 }
@@ -3981,12 +3982,12 @@ int vtysh_write_config_integrated(void)
 	struct stat st;
 	int err = 0;
 
-	vty_out(vty, "Building Configuration...\n");
+	vty_out(gvty, "Building Configuration...\n");
 
 	backup_config_file(frr_config);
 	fp = fopen(frr_config, "w");
 	if (fp == NULL) {
-		vty_out(vty,
+		vty_out(gvty,
 			"%% Error: failed to open configuration file %s: %s\n",
 			frr_config, safe_strerror(errno));
 		return CMD_WARNING_CONFIG_FAILED;
@@ -3997,10 +3998,10 @@ int vtysh_write_config_integrated(void)
 		vtysh_client_config(&vtysh_client[i], line);
 
 	vtysh_config_write();
-	vty->of_saved = vty->of;
-	vty->of = fp;
+	gvty->of_saved = gvty->of;
+	gvty->of = fp;
 	vtysh_config_dump();
-	vty->of = vty->of_saved;
+	gvty->of = gvty->of_saved;
 
 	if (fchmod(fd, CONFIGFILE_MASK) != 0) {
 		printf("%% Warning: can't chmod configuration file %s: %s\n",
@@ -4084,11 +4085,15 @@ DEFUN_HIDDEN(end_config, end_config_cmd, "XFRR_end_configuration",
 {
 	unsigned int i;
 	char line[] = "XFRR_end_configuration";
+	int ret, err_gathered = CMD_SUCCESS;
 
-	for (i = 0; i < array_size(vtysh_client); i++)
-		vtysh_client_execute(&vtysh_client[i], line);
+	for (i = 0; i < array_size(vtysh_client); i++) {
+		ret = vtysh_client_execute(&vtysh_client[i], line);
+		if (ret != CMD_SUCCESS)
+			err_gathered = ret;
+	}
 
-	return CMD_SUCCESS;
+	return err_gathered;
 }
 
 static bool want_config_integrated(void)
@@ -4254,6 +4259,21 @@ DEFUN (vtysh_show_daemons,
 	return CMD_SUCCESS;
 }
 
+DEFPY (vtysh_exec_timeout,
+       vtysh_exec_timeout_cmd,
+       "[no$nono] exec-timeout ![(0-1000000)$tsecs]",
+       NO_STR
+       "Set the VTYSH EXEC timeout\n"
+       "Timeout in seconds\n")
+{
+	if (nono)
+		tsecs = 0;
+
+	vtysh_exec_timeout_config(tsecs);
+
+	return CMD_SUCCESS;
+}
+
 struct visual_prio {
 	/* 4 characters for nice alignment */
 	const char *label;
@@ -4315,6 +4335,8 @@ static void vtysh_log_print(struct vtysh_client *vclient,
 	struct visual_prio *vis;
 	struct tm tm;
 	char ts_buf[32];
+	char ts_frac[16] = "";
+	int ts_prec = hdr->ts_subsec;
 
 	if (hdr->prio >= array_size(visual_prios))
 		vis = &visual_prios[LOG_CRIT];
@@ -4323,20 +4345,27 @@ static void vtysh_log_print(struct vtysh_client *vclient,
 
 	localtime_r(&ts, &tm);
 	strftime(ts_buf, sizeof(ts_buf), "%Y-%m-%d %H:%M:%S", &tm);
+	if (ts_prec > 0) {
+		uint32_t frac = hdr->ts_nsec;
+
+		if (ts_prec > 9)
+			ts_prec = 9;
+		for (int i = ts_prec; i < 9; i++)
+			frac /= 10;
+		snprintf(ts_frac, sizeof(ts_frac), ".%0*u", ts_prec, frac);
+	}
 
 	if (!stderr_tty) {
 		const char *label = vis->label + strlen(vis->label) - 4;
 
-		fprintf(stderr, "%s.%03u [%s] %s: %.*s\n", ts_buf,
-			hdr->ts_nsec / 1000000U, label, vclient->name,
+		fprintf(stderr, "%s%s [%s] %s: %.*s\n", ts_buf, ts_frac, label, vclient->name,
 			(int)textlen, text);
 		return;
 	}
 
 	fprintf(stderr,
-		"\e[48;5;%dm\e[38;5;247m%s.%03u [%s\e[38;5;247m] \e[38;5;255m%s\e[38;5;247m: \e[38;5;251m",
-		vis->c256_background, ts_buf, hdr->ts_nsec / 1000000U,
-		vis->label, vclient->name);
+		"\e[48;5;%dm\e[38;5;247m%s%s [%s\e[38;5;247m] \e[38;5;255m%s\e[38;5;247m: \e[38;5;251m",
+		vis->c256_background, ts_buf, ts_frac, vis->label, vclient->name);
 
 	for (size_t fmtpos = 0; fmtpos < hdr->n_argpos; fmtpos++) {
 		struct fmt_outpos *fmt = &hdr->argpos[fmtpos];
@@ -4401,7 +4430,7 @@ static void vtysh_log_read(struct event *thread)
 				"log monitor connection closed unexpectedly");
 		buf.hdr.textlen = strlen(buf.text);
 
-		EVENT_OFF(vclient->log_reader);
+		event_cancel(&vclient->log_reader);
 		close(vclient->log_fd);
 		vclient->log_fd = -1;
 
@@ -4410,6 +4439,7 @@ static void vtysh_log_read(struct event *thread)
 		buf.hdr.ts_nsec = ts.tv_nsec;
 		buf.hdr.prio = LOG_ERR;
 		buf.hdr.flags = 0;
+		buf.hdr.ts_subsec = 3;
 		buf.hdr.texthdrlen = 0;
 		buf.hdr.n_argpos = 0;
 	} else {
@@ -4523,7 +4553,7 @@ DEFPY (no_vtysh_terminal_monitor,
 			 * a close notification...
 			 */
 			if (vclient->log_fd != -1) {
-				EVENT_OFF(vclient->log_reader);
+				event_cancel(&vclient->log_reader);
 
 				close(vclient->log_fd);
 				vclient->log_fd = -1;
@@ -4965,7 +4995,7 @@ char *vtysh_prompt(void)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wformat-nonliteral"
 	/* prompt formatting has a %s in the cmd_node prompt string. */
-	snprintf(buf, sizeof(buf), cmd_prompt(vty->node), cmd_hostname_get());
+	snprintf(buf, sizeof(buf), cmd_prompt(gvty->node), cmd_hostname_get());
 #pragma GCC diagnostic pop
 	return buf;
 }
@@ -4988,12 +5018,12 @@ static void vtysh_autocomplete(vector comps, struct cmd_token *token)
 	snprintf(accmd, sizeof(accmd), "autocomplete %d %s %s", token->type,
 		 token->text, token->varname ? token->varname : "-");
 
-	vty->of_saved = vty->of;
-	vty->of = NULL;
+	gvty->of_saved = gvty->of;
+	gvty->of = NULL;
 	for (i = 0; i < array_size(vtysh_client); i++)
 		vtysh_client_run_all(&vtysh_client[i], accmd, 1, vtysh_ac_line,
 				     comps);
-	vty->of = vty->of_saved;
+	gvty->of = gvty->of_saved;
 }
 
 static const struct cmd_variable_handler vtysh_var_handler[] = {
@@ -5005,8 +5035,8 @@ static const struct cmd_variable_handler vtysh_var_handler[] = {
 
 void vtysh_uninit(void)
 {
-	if (vty->of != stdout)
-		fclose(vty->of);
+	if (gvty->of != stdout)
+		fclose(gvty->of);
 }
 
 void vtysh_init_vty(void)
@@ -5027,12 +5057,12 @@ void vtysh_init_vty(void)
 		stderr_stdout_same = true;
 
 	/* Make vty structure. */
-	vty = vty_new();
-	vty->type = VTY_SHELL;
-	vty->node = VIEW_NODE;
+	gvty = vty_new();
+	gvty->type = VTY_SHELL;
+	gvty->node = VIEW_NODE;
 
 	/* set default output */
-	vty->of = stdout;
+	gvty->of = stdout;
 	vtysh_pager_envdef(false);
 
 	/* Initialize commands. */
@@ -5110,6 +5140,7 @@ void vtysh_init_vty(void)
 	install_node(&srv6_encap_node);
 	install_node(&srv6_sid_formats_node);
 	install_node(&srv6_sid_format_usid_f3216_node);
+	install_node(&srv6_sid_format_usid_f4816_node);
 	install_node(&srv6_sid_format_uncompressed_f4024_node);
 
 	vtysh_init_cmd();
@@ -5568,6 +5599,7 @@ void vtysh_init_vty(void)
 	install_element(SRV6_ENCAP_NODE, &vtysh_end_all_cmd);
 
 	install_element(SRV6_SID_FORMATS_NODE, &srv6_sid_format_f3216_usid_cmd);
+	install_element(SRV6_SID_FORMATS_NODE, &srv6_sid_format_f4816_usid_cmd);
 	install_element(SRV6_SID_FORMATS_NODE,
 			&srv6_sid_format_f4024_uncompressed_cmd);
 	install_element(SRV6_SID_FORMATS_NODE, &exit_srv6_sid_formats_cmd);
@@ -5576,6 +5608,9 @@ void vtysh_init_vty(void)
 	install_element(SRV6_SID_FORMAT_USID_F3216_NODE,
 			&exit_srv6_sid_format_cmd);
 	install_element(SRV6_SID_FORMAT_USID_F3216_NODE, &vtysh_end_all_cmd);
+
+	install_element(SRV6_SID_FORMAT_USID_F4816_NODE, &exit_srv6_sid_format_cmd);
+	install_element(SRV6_SID_FORMAT_USID_F4816_NODE, &vtysh_end_all_cmd);
 
 	install_element(SRV6_SID_FORMAT_UNCOMPRESSED_F4024_NODE,
 			&exit_srv6_sid_format_cmd);
@@ -5663,11 +5698,9 @@ void vtysh_init_vty(void)
 	install_element(CONFIG_NODE, &vtysh_service_password_encrypt_cmd);
 	install_element(CONFIG_NODE, &no_vtysh_service_password_encrypt_cmd);
 
-	install_element(CONFIG_NODE, &vtysh_allow_reserved_ranges_cmd);
-	install_element(CONFIG_NODE, &no_vtysh_allow_reserved_ranges_cmd);
-
 	install_element(CONFIG_NODE, &vtysh_password_cmd);
 	install_element(CONFIG_NODE, &no_vtysh_password_cmd);
 	install_element(CONFIG_NODE, &vtysh_enable_password_cmd);
 	install_element(CONFIG_NODE, &no_vtysh_enable_password_cmd);
+	install_element(CONFIG_NODE, &vtysh_exec_timeout_cmd);
 }

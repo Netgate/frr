@@ -28,6 +28,7 @@
  */
 enum mgmt_be_client_id {
 	MGMTD_BE_CLIENT_ID_TESTC, /* always first */
+	MGMTD_BE_CLIENT_ID_MGMTD, /* loopback */
 	MGMTD_BE_CLIENT_ID_ZEBRA,
 #ifdef HAVE_RIPD
 	MGMTD_BE_CLIENT_ID_RIPD,
@@ -42,24 +43,6 @@ enum mgmt_be_client_id {
 };
 #define MGMTD_BE_CLIENT_ID_MIN	0
 
-
-enum mgmt_be_req_type {
-	MGMTD_BE_REQ_NONE = 0,
-	MGMTD_BE_REQ_CFG_VALIDATE,
-	MGMTD_BE_REQ_CFG_APPLY,
-	MGMTD_BE_REQ_DATA_GET_ELEM,
-	MGMTD_BE_REQ_DATA_GET_NEXT
-};
-
-struct mgmt_be_cfgreq {
-	Mgmtd__YangCfgDataReq **cfgdata_reqs;
-	size_t num_reqs;
-};
-
-struct mgmt_be_datareq {
-	Mgmtd__YangGetDataReq **getdata_reqs;
-	size_t num_reqs;
-};
 
 PREDECL_LIST(mgmt_be_adapters);
 PREDECL_LIST(mgmt_txn_badapters);
@@ -82,6 +65,7 @@ struct mgmt_be_client_adapter {
 	 * config items has been applied onto the backend.
 	 */
 	struct nb_config_cbs cfg_chgs;
+	struct mgmt_commit_stats cfg_stats;
 
 	struct mgmt_be_adapters_item list_linkage;
 };
@@ -113,21 +97,19 @@ DECLARE_LIST(mgmt_be_adapters, struct mgmt_be_client_adapter, list_linkage);
 #define IS_IDBIT_SET(v, id)   (!IS_IDBIT_UNSET(v, id))
 #define IS_IDBIT_UNSET(v, id) (!((v) & (1ull << (id))))
 
-#define __GET_NEXT_SET(id, bits)                                               \
-	({                                                                     \
-		enum mgmt_be_client_id __id = (id);                            \
-									       \
-		for (; __id < MGMTD_BE_CLIENT_ID_MAX &&                        \
-		       IS_IDBIT_UNSET(bits, __id);                             \
-		     __id++)                                                   \
-			;                                                      \
-		__id;                                                          \
+#define _GET_NEXT_SET(id, bits)                                                                    \
+	({                                                                                         \
+		enum mgmt_be_client_id _gns_id = (id);                                             \
+                                                                                                   \
+		for (; _gns_id < MGMTD_BE_CLIENT_ID_MAX && IS_IDBIT_UNSET(bits, _gns_id);          \
+		     _gns_id++)                                                                    \
+			;                                                                          \
+		_gns_id;                                                                           \
 	})
 
-#define FOREACH_BE_CLIENT_BITS(id, bits)                                       \
-	for ((id) = __GET_NEXT_SET(MGMTD_BE_CLIENT_ID_MIN, bits);              \
-	     (id) < MGMTD_BE_CLIENT_ID_MAX;                                    \
-	     (id) = __GET_NEXT_SET((id) + 1, bits))
+#define FOREACH_BE_CLIENT_BITS(id, bits)                                                           \
+	for ((id) = _GET_NEXT_SET(MGMTD_BE_CLIENT_ID_MIN, bits); (id) < MGMTD_BE_CLIENT_ID_MAX;    \
+	     (id) = _GET_NEXT_SET((id) + 1, bits))
 
 /* ---------- */
 /* Prototypes */
@@ -177,25 +159,14 @@ extern int mgmt_be_send_txn_req(struct mgmt_be_client_adapter *adapter,
  * adaptr
  *    Backend adapter information.
  *
- * txn_id
- *    Unique transaction identifier.
- *
- * cfgdata_reqs
- *    An array of pointer to Mgmtd__YangCfgDataReq.
- *
- * num_reqs
- *    Length of the cfgdata_reqs array.
- *
- * end_of_data
- *    TRUE if the data from last batch, FALSE otherwise.
+ * msg
+ *    The already constructed message to send.
  *
  * Returns:
  *    0 on success, -1 on failure.
  */
 extern int mgmt_be_send_cfgdata_req(struct mgmt_be_client_adapter *adapter,
-				    uint64_t txn_id,
-				    Mgmtd__YangCfgDataReq **cfgdata_reqs,
-				    size_t num_reqs, bool end_of_data);
+				    struct mgmt_msg_cfg_req *msg);
 
 /*
  * Send config apply request to backend client.
@@ -264,5 +235,10 @@ extern void mgmt_fe_adapter_send_notify(struct mgmt_msg_notify_data *msg,
  * Dump backend client information for a given xpath to vty.
  */
 extern void mgmt_be_show_xpath_registries(struct vty *vty, const char *xpath);
+
+/*
+ * Specials for mgmtd internally handling BE like behaviors
+ */
+extern bool mgmt_is_mgmtd_interested(const char *xpath);
 
 #endif /* _FRR_MGMTD_BE_ADAPTER_H_ */

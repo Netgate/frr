@@ -588,7 +588,7 @@ static struct aspath_tests {
 		&test_segments[0],
 		"8466 3 52737 4096",
 		AS2_DATA,
-		-1,
+		-2,
 		0,
 		{
 			COMMON_ATTRS,
@@ -620,7 +620,7 @@ static struct aspath_tests {
 		&test_segments[0],
 		"8466 3 52737 4096",
 		AS2_DATA,
-		-1,
+		-2,
 		0,
 		{
 			COMMON_ATTRS,
@@ -636,7 +636,7 @@ static struct aspath_tests {
 		&test_segments[0],
 		"8466 3 52737 4096",
 		AS2_DATA,
-		-1,
+		-2,
 		0,
 		{
 			COMMON_ATTRS,
@@ -652,7 +652,7 @@ static struct aspath_tests {
 		&test_segments[0],
 		"8466 3 52737 4096",
 		AS4_DATA,
-		-1,
+		-2,
 		0,
 		{
 			COMMON_ATTRS,
@@ -684,7 +684,7 @@ static struct aspath_tests {
 		&test_segments[0],
 		"8466 3 52737 4096",
 		AS4_DATA,
-		-1,
+		-2,
 		0,
 		{
 			COMMON_ATTRS,
@@ -732,7 +732,7 @@ static struct aspath_tests {
 		&test_segments[0],
 		"8466 3 52737 4096",
 		AS4_DATA,
-		-1,
+		-2,
 		0,
 		{
 			COMMON_ATTRS,
@@ -762,7 +762,7 @@ static struct aspath_tests {
 	{
 		"4b AS4_PATH: confed",
 		&test_segments[6],
-		"8466 3 52737 4096 (123 456 789)",
+		"8466 (123 456 789)",
 		AS4_DATA,
 		0,
 		PEER_CAP_AS4_ADV,
@@ -882,13 +882,13 @@ struct tests reconcile_tests[] = {
 	{
 		&test_segments[19],
 		&test_segments[18],
-		/* AS_PATH (19) has more hops than NEW_AS_PATH,
-		 * so just AS_PATH should be used (though, this practice
-		 * is bad imho).
+		/* AS_PATH (19) has fewer hops (4) than AS4_PATH (18, 7 hops).
+		 * RFC 6793 says AS4_PATH SHALL be ignored and AS_PATH taken
+		 * as-is.
 		 */
-		{"{2457,4369,61697} 1842 41591 51793 6435 59408 21665 {23456} 23456 23456 23456",
-		 "{2457,4369,61697} 1842 41591 51793 6435 59408 21665 {23456} 23456 23456 23456",
-		 11, 0, NOT_ALL_PRIVATE, 51793, 1, 6435},
+		{"{2457,4369,61697} 1842 41591 51793",
+		 "{2457,4369,61697} 1842 41591 51793",
+		 4, 0, NOT_ALL_PRIVATE, 51793, 1, 2457},
 	},
 	{
 		&test_segments[20],
@@ -907,9 +907,12 @@ struct tests reconcile_tests[] = {
 	{
 		&test_segments[23],
 		&test_segments[22],
-		{"23456 23456 23456 6435 59408 1842 41591 51793 6435 59408 21665",
-		 "23456 23456 23456 6435 59408 1842 41591 51793 6435 59408 21665",
-		 11, 0, NOT_ALL_PRIVATE, 51793, 1, 1842},
+		/* AS_PATH (23) has fewer AS numbers (5) than AS4_PATH (22, 6).
+		 * RFC 6793 says ignore AS4_PATH and use AS_PATH as-is.
+		 */
+		{"23456 23456 23456 6435 59408",
+		 "23456 23456 23456 6435 59408",
+		 5, 0, NOT_ALL_PRIVATE, 59408, 1, 23456},
 	},
 	{NULL,
 	 NULL,
@@ -1226,7 +1229,7 @@ static void empty_prepend_test(struct test_segment *t)
 
 	printf("\n");
 	aspath_unintern(&asp1);
-	aspath_free(asp2);
+	aspath_free(ascratch);
 }
 
 /* as2+as4 reconciliation testing */
@@ -1344,7 +1347,6 @@ static int handle_attr_test(struct aspath_tests *t)
 
 	peer.curr = stream_new(BGP_MAX_PACKET_SIZE);
 	peer.connection = bgp_peer_connection_new(&peer);
-	peer.connection->obuf = stream_fifo_new();
 	peer.bgp = &bgp;
 	peer.host = (char *)"none";
 	peer.connection->fd = -1;
@@ -1393,6 +1395,10 @@ static int handle_attr_test(struct aspath_tests *t)
 out:
 	aspath_unintern(&attr.aspath);
 	aspath_unintern(&asp);
+	bgp_peer_connection_free(&peer.connection);
+	stream_free(peer.last_reset_cause);
+	stream_free(peer.curr);
+	XFREE(MTYPE_BGP_NOTIFICATION, peer.notify.data);
 	return failed - initfail;
 }
 

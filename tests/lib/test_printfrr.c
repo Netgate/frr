@@ -107,7 +107,7 @@ static int printchk(const char *ref, const char *fmt, ...)
 		errors++;
 	}
 
-	for (size_t i = 0; i < fb.outpos_i; i++)
+	for (i = 0; i < fb.outpos_i; i++)
 		printf("\t[%zu: %u..%u] = \"%.*s\"\n", i,
 			outpos[i].off_start,
 			outpos[i].off_end,
@@ -232,22 +232,23 @@ int main(int argc, char **argv)
 	struct prefix_sg sg;
 	SET_IPADDR_V4(&sg.src);
 	sg.src.ipaddr_v4.s_addr = INADDR_ANY;
-	sg.grp.s_addr = INADDR_ANY;
-	printchk("(*,*)", "%pPSG4", &sg);
+	SET_IPADDR_V4(&sg.grp);
+	sg.grp.ipaddr_v4.s_addr = INADDR_ANY;
+	printchk("(*,*)", "%pPSG", &sg);
 
 	inet_aton("192.168.1.2", &sg.src.ipaddr_v4);
-	printchk("(192.168.1.2,*)", "%pPSG4", &sg);
+	printchk("(192.168.1.2,*)", "%pPSG", &sg);
 
-	inet_aton("224.1.2.3", &sg.grp);
-	printchk("(192.168.1.2,224.1.2.3)", "%pPSG4", &sg);
+	inet_aton("224.1.2.3", &sg.grp.ipaddr_v4);
+	printchk("(192.168.1.2,224.1.2.3)", "%pPSG", &sg);
 
 	SET_IPADDR_NONE(&sg.src);
 	sg.src.ipaddr_v4.s_addr = INADDR_ANY;
-	printchk("(*,224.1.2.3)", "%pPSG4", &sg);
+	printchk("(*,224.1.2.3)", "%pPSG", &sg);
 
 	SET_IPADDR_V6(&sg.src);
 	inet_pton(AF_INET6, "1:2:3:4::5", &sg.src.ipaddr_v6);
-	printchk("(1:2:3:4::5,224.1.2.3)", "%pPSG4", &sg);
+	printchk("(1:2:3:4::5,224.1.2.3)", "%pPSG", &sg);
 
 	uint8_t randhex[] = { 0x12, 0x34, 0x00, 0xca, 0xfe, 0x00, 0xaa, 0x55 };
 

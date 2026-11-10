@@ -830,7 +830,7 @@ static void ifam_read_mesg(struct ifa_msghdr *ifm, union sockunion *addr,
 int ifam_read(struct ifa_msghdr *ifam)
 {
 	struct interface *ifp = NULL;
-	union sockunion addr, mask, brd;
+	union sockunion addr, mask, brd, zero = { 0 };
 	bool dest_same = false;
 	char ifname[IFNAMSIZ];
 	short ifnlen = 0;
@@ -865,7 +865,8 @@ int ifam_read(struct ifa_msghdr *ifam)
 	if (if_is_pointopoint(ifp))
 		SET_FLAG(flags, ZEBRA_IFA_PEER);
 	else {
-		if (memcmp(&addr, &brd, sizeof(addr)) == 0)
+		if ((memcmp(&addr, &brd, sizeof(addr)) == 0)
+		    || (memcmp(&brd, &zero, sizeof(addr)) == 0))
 			dest_same = true;
 	}
 
@@ -1054,7 +1055,7 @@ void rtm_read(struct rt_msghdr *rtm)
 	/*
 	 * Ignore our own messages.
 	 */
-	if (rtm->rtm_type != RTM_GET && rtm->rtm_pid == pid)
+	if (rtm->rtm_type != RTM_GET && rtm->rtm_pid == zebra_pid)
 		return;
 
 	if (dest.sa.sa_family == AF_INET) {
@@ -1079,12 +1080,10 @@ void rtm_read(struct rt_msghdr *rtm)
 		else
 			p.prefixlen = ip6_masklen(mask.sin6.sin6_addr);
 
-#ifdef KAME
 		if (IN6_IS_ADDR_LINKLOCAL(&gate.sin6.sin6_addr)) {
 			ifindex = IN6_LINKLOCAL_IFINDEX(gate.sin6.sin6_addr);
 			SET_IN6_LINKLOCAL_IFINDEX(gate.sin6.sin6_addr, 0);
 		}
-#endif /* KAME */
 
 		if (!nh.type) {
 			nh.type = ifindex ? NEXTHOP_TYPE_IPV6_IFINDEX
@@ -1348,7 +1347,7 @@ static void kernel_read(struct event *thread)
 			 *  There is no good way to
 			 *  recover zebra at this point.
 			 */
-			exit(-1);
+			frr_exit_with_buffer_flush(-1);
 #endif
 		}
 		if (errno != EAGAIN && errno != EWOULDBLOCK)

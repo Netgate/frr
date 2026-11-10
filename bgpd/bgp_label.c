@@ -26,7 +26,7 @@
 #include "bgpd/bgp_debug.h"
 #include "bgpd/bgp_errors.h"
 
-extern struct zclient *zclient;
+extern struct zclient *bgp_zclient;
 
 
 /* MPLS Labels hash routines. */
@@ -157,7 +157,7 @@ int bgp_parse_fec_update(void)
 	afi_t afi;
 	safi_t safi;
 
-	s = zclient->ibuf;
+	s = bgp_zclient->ibuf;
 
 	memset(&p, 0, sizeof(p));
 	p.family = stream_getw(s);
@@ -249,7 +249,7 @@ static void bgp_send_fec_register_label_msg(struct bgp_dest *dest, bool reg,
 	p = bgp_dest_get_prefix(dest);
 
 	/* Check socket. */
-	if (!zclient || zclient->sock < 0)
+	if (!bgp_zclient || bgp_zclient->sock < 0)
 		return;
 
 	if (BGP_DEBUG(labelpool, LABELPOOL))
@@ -258,7 +258,7 @@ static void bgp_send_fec_register_label_msg(struct bgp_dest *dest, bool reg,
 	/* If the route node has a local_label assigned or the
 	 * path node has an MPLS SR label index allowing zebra to
 	 * derive the label, proceed with registration. */
-	s = zclient->obuf;
+	s = bgp_zclient->obuf;
 	stream_reset(s);
 	command = (reg) ? ZEBRA_FEC_REGISTER : ZEBRA_FEC_UNREGISTER;
 	zclient_create_header(s, command, VRF_DEFAULT);
@@ -288,7 +288,7 @@ static void bgp_send_fec_register_label_msg(struct bgp_dest *dest, bool reg,
 	if (reg)
 		stream_putw_at(s, flags_pos, flags);
 
-	zclient_send_message(zclient);
+	zclient_send_message(bgp_zclient);
 }
 
 /**
@@ -407,7 +407,7 @@ void bgp_reg_dereg_for_label(struct bgp_dest *dest, struct bgp_path_info *pi,
 		}
 	} else {
 		UNSET_FLAG(dest->flags, BGP_NODE_LABEL_REQUESTED);
-		bgp_lp_release(LP_TYPE_BGP_LU, dest, label);
+		bgp_lu_lp_release(dest, label);
 	}
 
 	bgp_send_fec_register_label_msg(
@@ -442,11 +442,13 @@ static int bgp_nlri_get_labels(struct peer *peer, uint8_t *pnt, uint8_t plen,
 		zlog_info("%pBP rcvd UPDATE with label stack %d deep", peer,
 			  label_depth);
 
-	if (!(bgp_is_withdraw_label(label) || label_bos(label)))
+	if (!(bgp_is_withdraw_label(label) || label_bos(label))) {
 		flog_warn(
 			EC_BGP_INVALID_LABEL_STACK,
 			"%pBP rcvd UPDATE with invalid label stack - no bottom of stack",
 			peer);
+		return 0;
+	}
 
 	return llen;
 }
@@ -515,7 +517,6 @@ int bgp_nlri_parse_label(struct peer *peer, struct attr *attr,
 				peer->host);
 			return BGP_NLRI_PARSE_ERROR_LABEL_LENGTH;
 		}
-		p.prefixlen = prefixlen - BSIZE(llen);
 
 		/* There needs to be at least one label */
 		if (prefixlen < 24) {
@@ -524,6 +525,8 @@ int bgp_nlri_parse_label(struct peer *peer, struct attr *attr,
 				 peer->host, prefixlen);
 			return BGP_NLRI_PARSE_ERROR_LABEL_LENGTH;
 		}
+
+		p.prefixlen = prefixlen - BSIZE(llen);
 
 		if ((afi == AFI_IP && p.prefixlen > IPV4_MAX_BITLEN)
 		    || (afi == AFI_IP6 && p.prefixlen > IPV6_MAX_BITLEN))
@@ -596,6 +599,32 @@ int bgp_nlri_parse_label(struct peer *peer, struct attr *attr,
 	return BGP_NLRI_PARSE_OK;
 }
 
+uint32_t decode_label(mpls_label_t *label_pnt)
+{
+	uint32_t l;
+	uint8_t *pnt = (uint8_t *)label_pnt;
+
+	l = ((uint32_t)*pnt++ << 12);
+	l |= (uint32_t)*pnt++ << 4;
+	l |= (uint32_t)((*pnt & 0xf0) >> 4);
+	return l;
+}
+
+void encode_label(mpls_label_t label, mpls_label_t *label_pnt)
+{
+	uint8_t *pnt = (uint8_t *)label_pnt;
+
+	if (pnt == NULL)
+		return;
+	if (label == BGP_PREVENT_VRF_2_VRF_LEAK) {
+		*label_pnt = label;
+		return;
+	}
+	*pnt++ = (label >> 12) & 0xff;
+	*pnt++ = (label >> 4) & 0xff;
+	*pnt++ = ((label << 4) + 1) & 0xff; /* S=1 */
+}
+
 bool bgp_labels_same(const mpls_label_t *tbl_a, const uint8_t num_labels_a,
 		     const mpls_label_t *tbl_b, const uint8_t num_labels_b)
 {
@@ -611,4 +640,13 @@ bool bgp_labels_same(const mpls_label_t *tbl_a, const uint8_t num_labels_a,
 			return false;
 	}
 	return true;
+}
+
+bool bgp_labels_is_implicit_null(struct bgp_path_info *pi)
+{
+	if (BGP_PATH_INFO_NUM_LABELS(pi) != 1)
+		return false;
+	if (decode_label(&pi->extra->labels->label[0]) == MPLS_LABEL_IMPLICIT_NULL)
+		return true;
+	return false;
 }

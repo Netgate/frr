@@ -265,7 +265,7 @@ static int process_p2p_hello(struct iih_info *iih)
 				      adj);
 
 	/* lets take care of the expiry */
-	EVENT_OFF(adj->t_expire);
+	event_cancel(&adj->t_expire);
 	event_add_timer(master, isis_adj_expire, adj, (long)adj->hold_time,
 			&adj->t_expire);
 
@@ -528,7 +528,7 @@ static int process_lan_hello(struct iih_info *iih)
 				      adj);
 
 	/* lets take care of the expiry */
-	EVENT_OFF(adj->t_expire);
+	event_cancel(&adj->t_expire);
 	event_add_timer(master, isis_adj_expire, adj, (long)adj->hold_time,
 			&adj->t_expire);
 
@@ -2110,7 +2110,7 @@ static void send_hello_cb(struct event *thread)
 	send_hello(circuit, level);
 
 	/* set next timer thread */
-	send_hello_sched(circuit, level, 1000 * circuit->hello_interval[level - 1]);
+	send_hello_sched(circuit, level, 1000L * circuit->hello_interval[level - 1]);
 }
 
 static void _send_hello_sched(struct isis_circuit *circuit,
@@ -2120,7 +2120,7 @@ static void _send_hello_sched(struct isis_circuit *circuit,
 		if (event_timer_remain_msec(*threadp) < (unsigned long)delay)
 			return;
 
-		EVENT_OFF(*threadp);
+		event_cancel(&*threadp);
 	}
 
 	event_add_timer_msec(master, send_hello_cb,
@@ -2173,7 +2173,7 @@ static uint16_t get_max_lsp_count(uint16_t size)
 
 	/* The last TLV, if any */
 	remaining_size = size % MAX_LSP_ENTRIES_TLV_SIZE;
-	if (remaining_size - 2 >= LSP_ENTRIES_LEN)
+	if ((remaining_size > 2) && (remaining_size - 2 >= LSP_ENTRIES_LEN))
 		lsp_count += (remaining_size - 2) / LSP_ENTRIES_LEN;
 
 	return lsp_count;

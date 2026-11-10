@@ -143,6 +143,7 @@ static const struct optspec os_always = {
 	"      --scriptdir    Override scripts directory\n"
 	"      --log          Set Logging to stdout, syslog, or file:<name>\n"
 	"      --log-level    Set Logging Level to use, debug, info, warn, etc\n"
+	"      --command-log-always Always log every command, cannot be turned off\n"
 	"      --limit-fds    Limit number of fds supported\n",
 	lo_always
 };
@@ -756,8 +757,8 @@ struct event_loop *frr_init(void)
 	snprintf(pidfile_default, sizeof(pidfile_default), "%s/%s%s.pid",
 		 frr_runstatedir, di->name, p_instance);
 #ifdef HAVE_SQLITE3
-	snprintf(dbfile_default, sizeof(dbfile_default), "%s/%s%s%s.db",
-		 frr_libstatedir, p_pathspace, di->name, p_instance);
+	snprintf(dbfile_default, sizeof(dbfile_default), "%s/%s%s.db", frr_libstatedir, di->name,
+		 p_instance);
 #endif
 
 	zprivs_preinit(di->privs);
@@ -818,8 +819,13 @@ struct event_loop *frr_init(void)
 
 	if (di->flags & FRR_LIMITED_CLI)
 		cmd_init(-1);
-	else
+	else {
 		cmd_init(1);
+		if (!(di->flags & FRR_MGMTD_BACKEND)) {
+			host_cli_init();
+			log_cli_init();
+		}
+	}
 
 	vty_init(master, di->log_always);
 	lib_cmd_init();
@@ -867,7 +873,7 @@ static void rcv_signal(int signum)
 	/* poll() is interrupted by the signal; handled below */
 }
 
-static void frr_daemon_wait(int fd)
+static FRR_NORETURN void frr_daemon_wait(int fd)
 {
 	struct pollfd pfd[1];
 	int ret;
@@ -1191,9 +1197,10 @@ void frr_detach(void)
 	frr_check_detach();
 }
 
-void frr_run(struct event_loop *master)
+void frr_run(struct event_loop *loop)
 {
 	char instanceinfo[64] = "";
+	struct event thread;
 
 	if (!(di->flags & FRR_MANUAL_VTY_START))
 		frr_vty_serv_start(false);
@@ -1211,7 +1218,7 @@ void frr_run(struct event_loop *master)
 		vty_stdio(frr_terminal_close);
 		if (daemon_ctl_sock != -1) {
 			set_nonblocking(daemon_ctl_sock);
-			event_add_read(master, frr_daemon_ctl, NULL,
+			event_add_read(loop, frr_daemon_ctl, NULL,
 				       daemon_ctl_sock, &daemon_ctl_thread);
 		}
 	} else if (di->daemon_mode) {
@@ -1241,8 +1248,7 @@ void frr_run(struct event_loop *master)
 	/* end fixed stderr startup logging */
 	zlog_startup_end();
 
-	struct event thread;
-	while (event_fetch(master, &thread))
+	while (event_fetch(loop, &thread))
 		event_call(&thread);
 }
 
@@ -1294,6 +1300,7 @@ void frr_fini(void)
 	frrmod_terminate();
 
 	log_memstats(di->name, debug_memstats_at_exit);
+	zlog_tmpdir_fini();
 }
 
 struct json_object *frr_daemon_state_load(void)
@@ -1492,3 +1499,10 @@ bool frr_is_daemon(void)
 
 	return false;
 }
+
+FRR_NORETURN void frr_exit_with_buffer_flush(int status)
+{
+	zlog_tls_buffer_flush();
+	exit(status);
+}
+

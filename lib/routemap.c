@@ -1019,7 +1019,7 @@ static void vty_show_route_map_entry(struct vty *vty, struct route_map *map,
 				char buf[BUFSIZ];
 
 				snprintf(buf, sizeof(buf), "%s %s",
-					 rule->cmd->str, rule->rule_str);
+					 rule->cmd->str, rule->rule_str ? rule->rule_str : "");
 				json_array_string_add(json_sets, buf);
 			}
 
@@ -1064,7 +1064,7 @@ static void vty_show_route_map_entry(struct vty *vty, struct route_map *map,
 			for (rule = index->set_list.head; rule;
 			     rule = rule->next)
 				vty_out(vty, "    %s %s\n", rule->cmd->str,
-					rule->rule_str);
+					rule->rule_str ? rule->rule_str : "");
 
 			/* Call clause */
 			vty_out(vty, "  Call clause:\n");
@@ -2418,7 +2418,7 @@ static void route_map_pentry_update(route_map_event_t event,
 	} else if (event == RMAP_EVENT_PLIST_DELETED) {
 		route_map_del_plist_entries(afi, index, plist_name, pentry);
 
-		if (plist->count == 1) {
+		if (plist == NULL || plist->count == 1) {
 			if (afi == AFI_IP) {
 				if (!route_map_is_ipv6_pfx_list_rule_present(
 					    index))

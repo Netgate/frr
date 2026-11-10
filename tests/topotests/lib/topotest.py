@@ -124,11 +124,61 @@ disassemble /m
     )
     btdump = p.stdout
 
+    # Get full backtraces for all threads
+    gdbcmds = r"""
+set print elements 1024
+echo -------------------------\n
+echo all threads backtraces\n
+echo -------------------------\n
+info threads
+"""
+    # Extract thread numbers from the info threads output
+    p = subprocess.run(
+        ["gdb", daemon_path, corefiles[0], "-q", "--batch", "-ex", "info threads"],
+        encoding="utf-8",
+        errors="ignore",
+        capture_output=True,
+    )
+    threads_output = p.stdout
+
+    # Parse thread numbers from the output - look for the actual thread IDs, not just "Thread X"
+    # The format is typically: "  Id   Target Id                           Frame"
+    # followed by lines like: "* 1    Thread 0x77295ecbea40 (LWP 1123543) ..."
+    thread_numbers = re.findall(r"^\s*(\d+)\s+Thread", threads_output, re.MULTILINE)
+
+    if thread_numbers:
+        gdbcmds += "\n"
+        # Skip the first thread since it was already dumped earlier
+        for thread_num in thread_numbers:
+            gdbcmds += f"""echo -------------------------\n
+echo Thread {thread_num} full backtrace\n
+echo -------------------------\n
+thread {thread_num}
+bt full
+"""
+        # Also add a final command to show which threads we processed
+        gdbcmds += f"""echo -------------------------\n
+echo processed threads: {thread_numbers}\n
+echo -------------------------\n
+"""
+
+    gdbcmds = [["-ex", i.strip()] for i in gdbcmds.strip().split("\n")]
+    gdbcmds = [item for sl in gdbcmds for item in sl]
+
+    daemon_path = os.path.join(obj.daemondir, daemon)
+    p = subprocess.run(
+        ["gdb", daemon_path, corefiles[0], "-q", "--batch"] + gdbcmds,
+        encoding="utf-8",
+        errors="ignore",
+        capture_output=True,
+    )
+    all_threads_dump = p.stdout
+
     # sys.stderr.write(
     #     "\n%s: %s crashed. Core file found - Backtrace follows:\n" % (obj.name, daemon)
     # )
 
-    return backtrace + btdump
+    return backtrace + btdump + all_threads_dump
 
 
 class json_cmp_result(object):
@@ -619,13 +669,13 @@ def iproute2_is_json_capable():
     """
     if is_linux():
         try:
-            subp = subprocess.Popen(
+            with subprocess.Popen(
                 ["ip", "-json", "route", "show"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 stdin=subprocess.PIPE,
-            )
-            iproute2_err = subp.communicate()[1].splitlines()[0].split()[0]
+            ) as subp:
+                iproute2_err = subp.communicate()[1].splitlines()[0].split()[0]
 
             if iproute2_err != "Error:":
                 return True
@@ -644,13 +694,13 @@ def iproute2_is_vrf_capable():
 
     if is_linux():
         try:
-            subp = subprocess.Popen(
+            with subprocess.Popen(
                 ["ip", "route", "show", "vrf"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 stdin=subprocess.PIPE,
-            )
-            iproute2_err = subp.communicate()[1].splitlines()[0].split()[0]
+            ) as subp:
+                iproute2_err = subp.communicate()[1].splitlines()[0].split()[0]
 
             if iproute2_err != "Error:":
                 return True
@@ -669,13 +719,13 @@ def iproute2_is_fdb_get_capable():
 
     if is_linux():
         try:
-            subp = subprocess.Popen(
+            with subprocess.Popen(
                 ["bridge", "fdb", "get", "help"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 stdin=subprocess.PIPE,
-            )
-            iproute2_out = subp.communicate()[1].splitlines()[0].split()[0]
+            ) as subp:
+                iproute2_out = subp.communicate()[1].splitlines()[0].split()[0]
 
             if "Usage" in str(iproute2_out):
                 return True
@@ -1472,7 +1522,8 @@ class Router(Node):
         self.ns_cmd = "sudo nsenter -a -t {} ".format(self.pid)
         try:
             # Allow escaping from running inside docker
-            cgroup = open("/proc/1/cgroup").read()
+            with open("/proc/1/cgroup") as file:
+                cgroup = file.read()
             m = re.search("[0-9]+:cpuset:/docker/([a-f0-9]+)", cgroup)
             if m:
                 self.ns_cmd = "docker exec -it {} ".format(m.group(1)) + self.ns_cmd
@@ -1821,6 +1872,36 @@ class Router(Node):
             self.run_in_window("vtysh", title="vt-%s" % self.name)
 
         if self.unified_config:
+
+            # Check that none of the datastores are locked before proceeding
+            def check_datastores_unlocked():
+                """Check that all datastores are unlocked"""
+                try:
+                    logger.info("Checking datastores on router %s", self.name)
+                    output = self.cmd("vtysh -c 'show mgmt datastore all'")
+                    # Check if any datastore is locked
+                    for line in output.splitlines():
+                        logger.info("Line: %s", line)
+                        if "Locked:" in line and "True" in line:
+                            logger.info("Datastore is locked on router %s", self.name)
+                            return False
+                    logger.info("Datastores are unlocked on router %s", self.name)
+                    return True
+                except Exception:
+                    # If command fails, assume datastores are unlocked
+                    return True
+
+            # Use run_and_expect to wait for datastores to be unlocked
+            result, _ = run_and_expect(
+                check_datastores_unlocked, True, count=30, wait=1
+            )
+            if not result:
+                logger.error(
+                    "Datastores are still locked on router %s, cannot proceed with config load",
+                    self.name,
+                )
+                return "Datastores are locked, cannot proceed with config load"
+
             self.cmd("vtysh -f /etc/frr/frr.conf")
 
         return status
@@ -1858,11 +1939,16 @@ class Router(Node):
 
         # Get global bundle data
         if not self.path_exists("/etc/frr/support_bundle_commands.conf"):
+            logger.info(
+                "No support bundle commands.conf found in %s namespace, copying them over", self.name
+            )
             # Copy global value if was covered by namespace mount
             bundle_data = ""
             if os.path.exists("/etc/frr/support_bundle_commands.conf"):
                 with open("/etc/frr/support_bundle_commands.conf", "r") as rf:
                     bundle_data = rf.read()
+            else:
+                logger.warning("No support bundle commands.conf found, please install them on this system")
             self.cmd_raises(
                 "cat > /etc/frr/support_bundle_commands.conf",
                 stdin=bundle_data,
@@ -2076,7 +2162,8 @@ class Router(Node):
                         try:
                             fname = f"{valgrind_logbase}.{p.pid}"
                             logging.info("Checking %s for valgrind launch info", fname)
-                            o = open(fname, encoding="ascii").read()
+                            with open(fname, encoding="ascii") as file:
+                                o = file.read()
                         except FileNotFoundError:
                             logging.info("%s not present yet", fname)
                         else:
@@ -2266,6 +2353,31 @@ class Router(Node):
                 )
                 time.sleep(0.5)
 
+        def _check_connected_to_zebra(self, daemon):
+            # Drop the last 'd' from daemon name for checking connection
+            if daemon == "pathd":
+                daemon = "srte"
+            elif daemon == "pim6d":
+                daemon = "pim"
+            elif daemon == "snmptrapd":
+                return True
+            else:
+                daemon = daemon[:-1]
+            output = self.cmd("vtysh -c 'show zebra client summary'")
+            return daemon in output
+
+        def _check_connected_to_mgmtd(self, daemon):
+            if (
+                daemon == "staticd"
+                or daemon == "zebra"
+                or daemon == "ripd"
+                or daemon == "ripngd"
+            ):
+                output = self.cmd("vtysh -c 'show mgmt backend-adapter all'")
+                return daemon in output
+            else:
+                return True
+
         # Start mgmtd first
         if "mgmtd" in daemons_list:
             start_daemon("mgmtd")
@@ -2276,19 +2388,47 @@ class Router(Node):
             _check_daemons_running(check_daemon_files)
 
         # Start Zebra after mgmtd
+        zebra_started = False
         if "zebra" in daemons_list:
+            zebra_started = True
             start_daemon("zebra")
             while "zebra" in daemons_list:
                 daemons_list.remove("zebra")
             # Wait till zebra is up and running to some
             # very small extent before moving on
             _check_daemons_running(check_daemon_files)
+            ok, _ = run_and_expect(
+                lambda: _check_connected_to_mgmtd(self, daemon="zebra"),
+                True,
+                count=30,
+                wait=1,
+            )
+            if not ok:
+                assert False, "zebra failed to connect to mgmtd"
 
         # Start staticd next if required
         if "staticd" in daemons_list:
             start_daemon("staticd")
             while "staticd" in daemons_list:
                 daemons_list.remove("staticd")
+
+            if zebra_started:
+                ok, _ = run_and_expect(
+                    lambda: _check_connected_to_zebra(self, daemon="staticd"),
+                    True,
+                    count=30,
+                    wait=1,
+                )
+                if not ok:
+                    assert False, "staticd failed to connect to zebra"
+                ok, _ = run_and_expect(
+                    lambda: _check_connected_to_mgmtd(self, daemon="staticd"),
+                    True,
+                    count=30,
+                    wait=1,
+                )
+                if not ok:
+                    assert False, "staticd failed to connect to mgmtd"
 
         if "snmpd" in daemons_list:
             # Give zerbra a chance to configure interface addresses that snmpd daemon
@@ -2317,12 +2457,29 @@ class Router(Node):
             else:
                 start_daemon(daemon)
 
+            if zebra_started:
+                ok, _ = run_and_expect(
+                    lambda: _check_connected_to_zebra(self, daemon=daemon),
+                    True,
+                    count=30,
+                    wait=1,
+                )
+                if not ok:
+                    assert False, f"{daemon} failed to connect to zebra"
+                ok, _ = run_and_expect(
+                    lambda: _check_connected_to_mgmtd(self, daemon=daemon),
+                    True,
+                    count=30,
+                    wait=1,
+                )
+                if not ok:
+                    assert False, f"{daemon} failed to connect to mgmtd"
         # Check if daemons are running.
         _check_daemons_running(check_daemon_files)
 
         if check_daemon_files:
-            assert False, "Timeout({}) waiting for {} to appear on {}".format(
-                wait_time, check_daemon_files[0], self.name
+            assert False, "Timeout waiting for {} to appear on {}".format(
+                check_daemon_files[0], self.name
             )
 
         # Update the permissions on the log files

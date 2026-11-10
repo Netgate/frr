@@ -1054,11 +1054,14 @@ static void zebra_evpn_acc_vl_show_entry_detail(struct vty *vty,
 static void zebra_evpn_acc_vl_show_entry(struct vty *vty,
 		struct zebra_evpn_access_bd *acc_bd, json_object *json)
 {
+	char vlan_str[22]; /* 15 for bridge name + 1 for dot + 4 for VLAN ID */
+
 	if (json) {
 		zebra_evpn_acc_vl_json_fill(acc_bd, json, false);
 	} else {
-		vty_out(vty, "%-5s.%-5u %-15s %-8d %-15s %u\n",
-			acc_bd->bridge_zif->ifp->name, acc_bd->vid,
+		snprintf(vlan_str, sizeof(vlan_str), "%s.%u", acc_bd->bridge_zif->ifp->name,
+			 acc_bd->vid);
+		vty_out(vty, "%-21s %-15s %-8d %-15s %u\n", vlan_str,
 			acc_bd->vlan_zif ? acc_bd->vlan_zif->ifp->name : "-",
 			acc_bd->zevpn ? acc_bd->zevpn->vni : 0,
 			acc_bd->vxlan_zif ? acc_bd->vxlan_zif->ifp->name : "-",
@@ -1096,8 +1099,8 @@ void zebra_evpn_acc_vl_show(struct vty *vty, bool uj)
 	wctx.detail = false;
 
 	if (!uj)
-		vty_out(vty, "%-12s %-15s %-8s %-15s %s\n", "VLAN", "SVI",
-			"L2-VNI", "VXLAN-IF", "# Members");
+		vty_out(vty, "%-21s %-15s %-8s %-15s %s\n", "VLAN", "SVI", "L2-VNI", "VXLAN-IF",
+			"# Members");
 
 	hash_iterate(zmh_info->evpn_vlan_table, zebra_evpn_acc_vl_show_hash,
 			&wctx);
@@ -2345,7 +2348,7 @@ static void zebra_evpn_es_local_info_clear(struct zebra_evpn_es **esp)
 
 	es->flags &= ~(ZEBRA_EVPNES_LOCAL | ZEBRA_EVPNES_READY_FOR_BGP);
 
-	EVENT_OFF(es->df_delay_timer);
+	event_cancel(&es->df_delay_timer);
 
 	/* clear EVPN protodown flags on the access port */
 	zebra_evpn_mh_clear_protodown_es(es);
@@ -3741,7 +3744,7 @@ static void zebra_evpn_mh_startup_delay_timer_start(const char *rc)
 	if (zmh_info->startup_delay_timer) {
 		if (IS_ZEBRA_DEBUG_EVPN_MH_ES)
 			zlog_debug("startup-delay timer cancelled");
-		EVENT_OFF(zmh_info->startup_delay_timer);
+		event_cancel(&zmh_info->startup_delay_timer);
 	}
 
 	if (zmh_info->startup_delay_time) {
@@ -3795,7 +3798,7 @@ void zebra_evpn_proc_remote_nh(ZAPI_HANDLER_ARGS)
 	memset(&dummy_prefix, 0, sizeof(dummy_prefix));
 	dummy_prefix.family = AF_EVPN;
 	dummy_prefix.prefixlen = (sizeof(struct evpn_addr) * 8);
-	dummy_prefix.prefix.route_type = 1; /* XXX - fixup to type-1 def */
+	dummy_prefix.prefix.route_type = BGP_EVPN_AD_ROUTE; /* XXX - fixup to type-1 def */
 	dummy_prefix.prefix.ead_addr.ip.ipa_type = nh.ipa_type;
 
 	if (hdr->command == ZEBRA_EVPN_REMOTE_NH_ADD) {

@@ -27,7 +27,6 @@
 %{!?with_pimd:          %global  with_pimd          1 }
 %{!?with_pim6d:         %global  with_pim6d         1 }
 %{!?with_vrrpd:         %global  with_vrrpd         1 }
-%{!?with_rtadv:         %global  with_rtadv         1 }
 %{!?with_watchfrr:      %global  with_watchfrr      1 }
 %{!?with_pathd:         %global  with_pathd         1 }
 %{!?with_grpc:          %global  with_grpc          0 }
@@ -284,16 +283,6 @@ Group: System Environment/Daemons
 Contributed python 2.7 tools which may be of use with frr.
 
 
-%package devel
-Summary: Header and object files for frr development
-Group: System Environment/Daemons
-Requires: %{name} = %{version}-%{release}
-
-%description devel
-The frr-devel package contains the header and object files necessary for
-developing OSPF-API and frr applications.
-
-
 %if %{with_rpki}
 %package rpki-rtrlib
 Summary: BGP RPKI support (rtrlib)
@@ -373,11 +362,6 @@ CFLAGS="%{optflags} -DINET_NTOP_NO_OVERRIDE"
     --enable-ospfapi \
 %else
     --disable-ospfapi \
-%endif
-%if %{with_rtadv}
-    --enable-rtadv \
-%else
-    --disable-rtadv \
 %endif
 %if %{with_ldpd}
     --enable-ldpd \
@@ -513,6 +497,10 @@ rm -f %{buildroot}%{_sbindir}/frr
 rm -vf %{buildroot}%{_libdir}/frr/modules/*.la
 rm -vf %{buildroot}%{_libdir}/*.la
 rm -vf %{buildroot}%{_libdir}/frr/libyang_plugins/*.la
+
+# Drop devel artifacts since we no longer ship frr-devel
+rm -rf %{buildroot}%{_includedir}/frr
+rm -f  %{buildroot}%{_libdir}/pkgconfig/frr.pc
 
 # install /etc sources
 %if "%{initsystem}" == "systemd"
@@ -790,6 +778,7 @@ fi
 %{_libdir}/libfrr_pb.so*
 %{_libdir}/libfrrfpm_pb.so*
 %{_libdir}/libmgmt_be_nb.so*
+%{_libdir}/libmlag_pb.so*
 %{_bindir}/*
 %config(noreplace) %{configdir}/[!v]*.conf*
 %config(noreplace) %attr(750,%{frr_user},%{frr_user}) %{configdir}/daemons
@@ -858,38 +847,84 @@ sed -i 's/ -M rpki//' %{_sysconfdir}/frr/daemons
 %endif
 
 
-%files devel
-%{_libdir}/lib*.so
-%dir %{_includedir}/%{name}
-%{_includedir}/%{name}/*.h
-%dir %{_includedir}/%{name}/ospfd
-%{_includedir}/%{name}/ospfd/*.h
-%if %{with_bfdd}
-    %dir %{_includedir}/%{name}/bfdd
-    %{_includedir}/%{name}/bfdd/bfddp_packet.h
-%endif
-%if %{with_ospfapi}
-    %dir %{_includedir}/%{name}/ospfapi
-    %{_includedir}/%{name}/ospfapi/*.h
-%endif
-%if %{with_eigrpd}
-    %dir %{_includedir}/%{name}/eigrpd
-    %{_includedir}/%{name}/eigrpd/*.h
-%endif
-
-
 %changelog
 
-* Sat Aug 02 2025 Jafar Al-Gharaibeh <jafar@atcorp.com> - %{version}
+* Fri Mar 13 2026 Jafar Al-Gharaibeh <jafar@atcorp.com> - %{version}
 
-* Sat Aug 02 2025 Donatas Abraitis <donatas@opensourcerouting.org> - 10.3.2
-- New upstream release 10.3.2
+* Fri Mar 13 2026 Donatas Abraitis <donatas@opensourcerouting.org> 10.5.3
+- bfdd
+-     Fix wrong memory free when using ttable code
+- bgpd
+-     Add missing peer_flag_send_nhc_attribute for update group flags
+-     Check if the nhc length is enough to fill tlv value + tlv header
+-     Check more during nlri parsing
+-     Fix condition when evaluating paths
+-     Fix memory leak in cluster_intern()
+-     Fix off-by-one error in flowspec operator array bounds check
+-     Fix test for open message with remote-as auto
+- eigrpd
+-     Handle the gr neighbor list safely in update_receive
+- lib
+-     Fix vty_is_closed() falsely reporting vty_shell as closed
+-     Fix zclient crash when many peers reconnect after frr restart
+- nhrpd
+-     Correct addrlen check in os_recvmsg()
+-     Fix packet and buffer handling errors
+- ospfd
+-     Harden te/sr tlv iteration against malformed lengths
+-     Reject equal cryptographic sequence numbers
+-     Use 32-bit ls update lsa count
+- pimd
+-     When address change ensure dr changes too
 
-* Fri May 30 2025 Jafar Al-Gharaibeh <jafar@atcorp.com> - 10.3.1
-- New upstream release 10.3.1
+* Tue Feb 17 2026 Jafar Al-Gharaibeh <jafar@atcorp.com> - 10.5.2
+- New upstream release FRR 10.5.2
 
-* Tue Mar 18 2025 Martin Winter <mwinter@opensourcerouting.org> 10.3.0-1
-- Change docs and rpki to conditional package builds
+* Mon Jan 05 2026 Donatas Abraitis <donatas@opensourcerouting.org> 10.5.1
+- bgpd:
+-    Allow proper shutdown of bgp dynamic peers in rare case
+-    Check length for dynamic capability (software version new encoding)
+-    Correction in json output structure for no data case
+-    Fix labeled unicast inbound policy lookup
+-    Fix labeled-unicast output
+-    Fix maximum-prefix session recovery for peers and peer-groups
+-    Fix memory leak in bgp nhc tlv processing
+-    Fix route node lock leak in nht resolved prefix marking
+-    Fix srv6-only command defaulted when 'no segment-routing ipv6'
+-    Send route-refresh and/or trigger soft reconfig on enforce-first-as
+-    Try to handle software version capability with the new encoding format
+- isisd:
+-   Use ipv6 mtid for srv6 locator tlvs when ipv6 mt is enabled
+- pimd:
+-    Add pim_debug_pim_reg protection for pim register stop debug message
+-    Crash while trying mroute_read when fd=-1
+-    Df election on zebra peer down synced to the mlag peer
+-    Fix for mc frame loss in a sequential traffic test
+-    Fix pim mlag update peer zebra status upon local mlag connection restoration
+-    Fix warnings for pimd
+-    Crash when pimreg interface not present
+-    Crashed because of indexing invalid index in an array
+-    Prevent crash on interface removal
+- vrrpd:
+-    vrrp interface delete fails to free connected route
+- zebrad:
+-    Fix crash due to lack of control of received number of srv6 sid from netlink
+
+* Sun Nov 09 2025 Jafar Al-Gharaibeh <jafar@atcorp.com> 10.5.0
+- New upstream release FRR 10.5.0
+
+* Wed Jul 16 2025 Jafar Al-Gharaibeh <jafar@atcorp.com> - 10.4
+- Major highlights:
+-   BGP BFD Strict-Mode
+-   BGP Link-Local Next Hop Capability [draft-ietf-idr-linklocal-capability]
+-   BGP Transparent mode
+-   BGP Next Hop Dependent Characteristics Attribute [draft-ietf-idr-entropy-label]
+-   IGMP and MLD group/source limits
+-   PIM dense and sparse-dense mode support [RFC3973]
+-   IGMPv2/MLDv1 immediate leave
+-   v4-via-v6 nexthop support for static routes
+-   Timeout for vtysh
+-   Discover PREF64 in Router Advertisements [RFC8781]
 
 * Mon Mar 10 2025 Jafar Al-Gharaibeh <jafar@atcorp.com> - 10.3
 - Major highlights:

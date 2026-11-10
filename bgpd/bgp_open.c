@@ -43,6 +43,7 @@ const struct message capcode_str[] = {
 	{ CAPABILITY_CODE_ROLE, "Role" },
 	{ CAPABILITY_CODE_SOFT_VERSION, "Software Version" },
 	{ CAPABILITY_CODE_PATHS_LIMIT, "Paths-Limit" },
+	{ CAPABILITY_CODE_LINK_LOCAL, "Link-Local Next Hop" },
 	{ 0 }
 };
 
@@ -63,6 +64,7 @@ const size_t cap_minsizes[] = {
 	[CAPABILITY_CODE_ROLE] = CAPABILITY_CODE_ROLE_LEN,
 	[CAPABILITY_CODE_SOFT_VERSION] = CAPABILITY_CODE_SOFT_VERSION_LEN,
 	[CAPABILITY_CODE_PATHS_LIMIT] = CAPABILITY_CODE_PATHS_LIMIT_LEN,
+	[CAPABILITY_CODE_LINK_LOCAL] = CAPABILITY_CODE_LINK_LOCAL_LEN,
 };
 
 /* value the capability must be a multiple of.
@@ -106,6 +108,7 @@ void bgp_capability_vty_out(struct vty *vty, struct peer *peer, bool use_json,
 	struct capability_mp_data mpc;
 	struct capability_header *hdr;
 	json_object *json_cap = NULL;
+	bool status_ok = true;
 
 	if (use_json)
 		json_cap = json_object_new_object();
@@ -114,12 +117,16 @@ void bgp_capability_vty_out(struct vty *vty, struct peer *peer, bool use_json,
 	end = pnt + peer->notify.length;
 
 	while (pnt < end) {
-		if (pnt + sizeof(struct capability_mp_data) + 2 > end)
-			return;
+		if (pnt + sizeof(struct capability_mp_data) + 2 > end) {
+			status_ok = false;
+			break;
+		}
 
 		hdr = (struct capability_header *)pnt;
-		if (pnt + hdr->length + 2 > end)
-			return;
+		if (pnt + hdr->length + 2 > end) {
+			status_ok = false;
+			break;
+		}
 
 		memcpy(&mpc, pnt + 2, sizeof(struct capability_mp_data));
 
@@ -281,9 +288,14 @@ void bgp_capability_vty_out(struct vty *vty, struct peer *peer, bool use_json,
 		}
 		pnt += hdr->length + 2;
 	}
-	if (use_json)
-		json_object_object_add(json_neigh, "capabilityErrors",
-				       json_cap);
+
+	if (status_ok) {
+		if (use_json)
+			json_object_object_add(json_neigh, "capabilityErrors",
+					       json_cap);
+	} else if (json_cap) {
+		json_object_free(json_cap);
+	}
 }
 
 static void bgp_capability_mp_data(struct stream *s,
@@ -554,10 +566,8 @@ static int bgp_capability_restart(struct peer *peer,
 		} else {
 			if (bgp_debug_neighbor_events(peer))
 				zlog_debug("%pBP F-bit %s for %s", peer,
-					   CHECK_FLAG(peer->af_cap[afi][safi],
-						      PEER_CAP_RESTART_AF_PRESERVE_RCV)
-						   ? "SET"
-						   : "NOT-SET",
+					   CHECK_FLAG(flag, GRACEFUL_RESTART_F_BIT) ? "SET"
+										    : "NOT-SET",
 					   get_afi_safi_str(afi, safi, false));
 
 			SET_FLAG(peer->af_cap[afi][safi],
@@ -624,7 +634,7 @@ static as_t bgp_capability_as4(struct peer *peer, struct capability_header *hdr)
 		flog_err(EC_BGP_PKT_OPEN,
 			 "%s AS4 capability has incorrect data length %d",
 			 peer->host, hdr->length);
-		return -1;
+		return 0;
 	}
 
 	as_t as4 = stream_getl(BGP_INPUT(peer));
@@ -872,7 +882,20 @@ static int bgp_capability_hostname(struct peer *peer,
 	size_t end = stream_get_getp(s) + hdr->length;
 	uint8_t len;
 
+	if (stream_get_getp(s) + 1 > end) {
+		flog_warn(EC_BGP_CAPABILITY_INVALID_DATA,
+			  "%s: Received invalid hostname len (hostname capability) from peer %s",
+			  __func__, peer->host);
+		return -1;
+	}
+
 	len = stream_getc(s);
+	if (!len) {
+		flog_warn(EC_BGP_CAPABILITY_INVALID_DATA,
+			  "%s: Received empty hostname from peer %s", __func__, peer->host);
+		return -1;
+	}
+
 	if (stream_get_getp(s) + len > end) {
 		flog_warn(
 			EC_BGP_CAPABILITY_INVALID_DATA,
@@ -885,23 +908,23 @@ static int bgp_capability_hostname(struct peer *peer,
 		stream_get(str, s, BGP_MAX_HOSTNAME);
 		stream_forward_getp(s, len - BGP_MAX_HOSTNAME);
 		len = BGP_MAX_HOSTNAME; /* to set the '\0' below */
-	} else if (len)
+	} else {
 		stream_get(str, s, len);
-
-	if (len) {
-		str[len] = '\0';
-
-		XFREE(MTYPE_BGP_PEER_HOST, peer->hostname);
-		XFREE(MTYPE_BGP_PEER_HOST, peer->domainname);
-
-		peer->hostname = XSTRDUP(MTYPE_BGP_PEER_HOST, str);
 	}
+
+	str[len] = '\0';
+
+	XFREE(MTYPE_BGP_PEER_HOST, peer->hostname);
+	XFREE(MTYPE_BGP_PEER_HOST, peer->domainname);
+
+	peer->hostname = XSTRDUP(MTYPE_BGP_PEER_HOST, str);
 
 	if (stream_get_getp(s) + 1 > end) {
 		flog_warn(
 			EC_BGP_CAPABILITY_INVALID_DATA,
 			"%s: Received invalid domain name len (hostname capability) from peer %s",
 			__func__, peer->host);
+		XFREE(MTYPE_BGP_PEER_HOST, peer->hostname);
 		return -1;
 	}
 
@@ -911,6 +934,7 @@ static int bgp_capability_hostname(struct peer *peer,
 			EC_BGP_CAPABILITY_INVALID_DATA,
 			"%s: Received runt domain name (hostname capability) from peer %s",
 			__func__, peer->host);
+		XFREE(MTYPE_BGP_PEER_HOST, peer->hostname);
 		return -1;
 	}
 
@@ -959,11 +983,22 @@ static int bgp_capability_software_version(struct peer *peer,
 					   struct capability_header *hdr)
 {
 	struct stream *s = BGP_INPUT(peer);
+	struct stream *dup = stream_dup(s);
 	char str[BGP_MAX_SOFT_VERSION + 1];
 	size_t end = stream_get_getp(s) + hdr->length;
-	uint8_t len;
+	uint8_t len = hdr->length;
+	uint8_t cap_value_len_field = stream_getc(dup) + 1;
 
-	len = stream_getc(s);
+	/* For backward compatibility.
+	 * Older draft versions defined the length field inside
+	 * the capability's value. Newer versions use just the capability's
+	 * length which is hdr->length.
+	 */
+	if (cap_value_len_field == len)
+		len = stream_getc(s);
+
+	stream_free(dup);
+
 	if (stream_get_getp(s) + len > end) {
 		flog_warn(
 			EC_BGP_CAPABILITY_INVALID_DATA,
@@ -1007,8 +1042,8 @@ static int bgp_capability_software_version(struct peer *peer,
  * @param[out] mp_capability Set to 1 on return iff one or more Multiprotocol
  *                           capabilities were encountered.
  */
-static int bgp_capability_parse(struct peer *peer, size_t length,
-				int *mp_capability, uint8_t **error)
+static int bgp_capability_parse(struct peer *peer, size_t length, int *mp_capability,
+				uint8_t **error, uint8_t *error_end)
 {
 	int ret;
 	struct stream *s = BGP_INPUT(peer);
@@ -1114,8 +1149,10 @@ static int bgp_capability_parse(struct peer *peer, size_t length,
 				/* Unsupported Capability. */
 				if (ret < 0) {
 					/* Store return data. */
-					memcpy(*error, sp, caphdr.length + 2);
-					*error += caphdr.length + 2;
+					if (*error + caphdr.length + 2 <= error_end) {
+						memcpy(*error, sp, caphdr.length + 2);
+						*error += caphdr.length + 2;
+					}
 				}
 				ret = 0; /* Don't return error for this */
 			}
@@ -1168,6 +1205,9 @@ static int bgp_capability_parse(struct peer *peer, size_t length,
 		case CAPABILITY_CODE_SOFT_VERSION:
 			ret = bgp_capability_software_version(peer, &caphdr);
 			break;
+		case CAPABILITY_CODE_LINK_LOCAL:
+			SET_FLAG(peer->cap, PEER_CAP_LINK_LOCAL_RCV);
+			break;
 		case CAPABILITY_CODE_PATHS_LIMIT:
 			ret = bgp_capability_paths_limit(peer, &caphdr);
 			break;
@@ -1185,8 +1225,10 @@ static int bgp_capability_parse(struct peer *peer, size_t length,
 					EC_BGP_CAPABILITY_UNKNOWN,
 					"%s unrecognized capability code: %d - ignored",
 					peer->host, caphdr.code);
-				memcpy(*error, sp, caphdr.length + 2);
-				*error += caphdr.length + 2;
+				if (*error + caphdr.length + 2 <= error_end) {
+					memcpy(*error, sp, caphdr.length + 2);
+					*error += caphdr.length + 2;
+				}
 			}
 		}
 
@@ -1426,8 +1468,9 @@ int bgp_open_option_parse(struct peer *peer, uint16_t length,
 
 		switch (opt_type) {
 		case BGP_OPEN_OPT_CAP:
-			ret = bgp_capability_parse(peer, opt_length,
-						   mp_capability, &error);
+			ret = bgp_capability_parse(peer, opt_length, mp_capability, &error,
+						   error_data +
+							   BGP_STANDARD_MESSAGE_MAX_PACKET_SIZE);
 			break;
 		default:
 			bgp_notify_send(peer->connection, BGP_NOTIFY_OPEN_ERR,
@@ -1630,6 +1673,8 @@ static void bgp_peer_send_gr_capability(struct stream *s, struct peer *peer,
 			bool f_bit = false;
 
 			if (!peer->afc[afi][safi])
+				continue;
+			if (!bgp_gr_supported_for_afi_safi(afi, safi))
 				continue;
 
 			/* Convert AFI, SAFI to values for
@@ -1966,6 +2011,16 @@ uint16_t bgp_open_capability(struct stream *s, struct peer *peer,
 			: stream_putc(s, CAPABILITY_CODE_DYNAMIC_LEN + 2);
 		stream_putc(s, CAPABILITY_CODE_DYNAMIC);
 		stream_putc(s, CAPABILITY_CODE_DYNAMIC_LEN);
+	}
+
+	/* Link-Local Next Hop capability. */
+	if (peergroup_flag_check(peer, PEER_FLAG_CAPABILITY_LINK_LOCAL)) {
+		SET_FLAG(peer->cap, PEER_CAP_LINK_LOCAL_ADV);
+		stream_putc(s, BGP_OPEN_OPT_CAP);
+		ext_opt_params ? stream_putw(s, CAPABILITY_CODE_LINK_LOCAL_LEN + 2)
+			       : stream_putc(s, CAPABILITY_CODE_LINK_LOCAL_LEN + 2);
+		stream_putc(s, CAPABILITY_CODE_LINK_LOCAL);
+		stream_putc(s, CAPABILITY_CODE_LINK_LOCAL_LEN);
 	}
 
 	/* FQDN capability */

@@ -123,11 +123,8 @@ static void lsp_destroy(struct isis_lsp *lsp)
 		if (!LSP_PSEUDO_ID(lsp->hdr.lsp_id))
 			isis_dynhn_remove(lsp->area->isis, lsp->hdr.lsp_id);
 
-		if (lsp->lspu.frags) {
-			lsp_remove_frags(&lsp->area->lspdb[lsp->level - 1],
-					lsp->lspu.frags);
-			list_delete(&lsp->lspu.frags);
-		}
+		if (lsp->lspu.frags)
+			lsp_remove_frags(&lsp->area->lspdb[lsp->level - 1], lsp->lspu.frags);
 	} else {
 		if (lsp->lspu.zero_lsp
 		    && lsp->lspu.zero_lsp->lspu.frags) {
@@ -137,10 +134,19 @@ static void lsp_destroy(struct isis_lsp *lsp)
 
 	isis_spf_schedule(lsp->area, lsp->level);
 
+	fabricd_lsp_free(lsp);
+	lsp_free(lsp);
+}
+
+void lsp_free(struct isis_lsp *lsp)
+{
+	if (!LSP_FRAGMENT(lsp->hdr.lsp_id))
+		if (lsp->lspu.frags)
+			list_delete(&lsp->lspu.frags);
+
 	if (lsp->pdu)
 		stream_free(lsp->pdu);
 
-	fabricd_lsp_free(lsp);
 	XFREE(MTYPE_ISIS_LSP, lsp);
 }
 
@@ -684,8 +690,6 @@ void lspid_print(uint8_t *lsp_id, char *dest, size_t dest_len, char dynhost,
 /* Convert the lsp attribute bits to attribute string */
 static const char *lsp_bits2string(uint8_t lsp_bits, char *buf, size_t buf_size)
 {
-	char *pos = buf;
-
 	if (!lsp_bits)
 		return " none";
 
@@ -693,13 +697,10 @@ static const char *lsp_bits2string(uint8_t lsp_bits, char *buf, size_t buf_size)
 		return " error";
 
 	/* we only focus on the default metric */
-	pos += snprintf(pos, buf_size, "%d/",
-			ISIS_MASK_LSP_ATT_BITS(lsp_bits) ? 1 : 0);
-
-	pos += snprintf(pos, buf_size, "%d/",
-			ISIS_MASK_LSP_PARTITION_BIT(lsp_bits) ? 1 : 0);
-
-	snprintf(pos, buf_size, "%d", ISIS_MASK_LSP_OL_BIT(lsp_bits) ? 1 : 0);
+	snprintf(buf, buf_size, "%d/%d/%d",
+		 ISIS_MASK_LSP_ATT_BITS(lsp_bits) ? 1 : 0,
+		 ISIS_MASK_LSP_PARTITION_BIT(lsp_bits) ? 1 : 0,
+		 ISIS_MASK_LSP_OL_BIT(lsp_bits) ? 1 : 0);
 
 	return buf;
 }
@@ -1125,7 +1126,6 @@ static void lsp_build(struct isis_lsp *lsp, struct isis_area *area)
 		struct isis_router_cap *rcap;
 #ifndef FABRICD
 		struct isis_router_cap_fad *rcap_fad;
-		struct listnode *node;
 		struct flex_algo *fa;
 #endif /* ifndef FABRICD */
 
@@ -1231,7 +1231,7 @@ static void lsp_build(struct isis_lsp *lsp, struct isis_area *area)
 			listnode_add(locator.srv6_sid, sid);
 		}
 
-		isis_tlvs_add_srv6_locator(lsp->tlvs, 0, &locator);
+		isis_tlvs_add_srv6_locator(lsp->tlvs, isis_area_ipv6_topology(area), &locator);
 		lsp_debug("ISIS (%s): Adding SRv6 Locator information",
 			  area->area_tag);
 
@@ -1521,7 +1521,7 @@ int lsp_generate(struct isis_area *area, int level)
 
 	refresh_time = lsp_refresh_time(newlsp, rem_lifetime);
 
-	EVENT_OFF(area->t_lsp_refresh[level - 1]);
+	event_cancel(&area->t_lsp_refresh[level - 1]);
 	area->lsp_regenerate_pending[level - 1] = 0;
 	event_add_timer(master, lsp_refresh, &area->lsp_refresh_arg[level - 1],
 			refresh_time, &area->t_lsp_refresh[level - 1]);
@@ -1730,7 +1730,7 @@ int _lsp_regenerate_schedule(struct isis_area *area, int level,
 			"ISIS (%s): Will schedule regen timer. Last run was: %lld, Now is: %lld",
 			area->area_tag, (long long)lsp->last_generated,
 			(long long)now);
-		EVENT_OFF(area->t_lsp_refresh[lvl - 1]);
+		event_cancel(&area->t_lsp_refresh[lvl - 1]);
 		diff = now - lsp->last_generated;
 		if (diff < area->lsp_gen_interval[lvl - 1]
 		    && !(area->bfd_signalled_down)) {
@@ -1916,7 +1916,7 @@ int lsp_generate_pseudo(struct isis_circuit *circuit, int level)
 	lsp_flood(lsp, NULL);
 
 	refresh_time = lsp_refresh_time(lsp, rem_lifetime);
-	EVENT_OFF(circuit->u.bc.t_refresh_pseudo_lsp[level - 1]);
+	event_cancel(&circuit->u.bc.t_refresh_pseudo_lsp[level - 1]);
 	circuit->lsp_regenerate_pending[level - 1] = 0;
 	if (level == IS_LEVEL_1)
 		event_add_timer(master, lsp_l1_refresh_pseudo, circuit,
@@ -2105,7 +2105,7 @@ int lsp_regenerate_schedule_pseudo(struct isis_circuit *circuit, int level)
 			"ISIS (%s): Will schedule PSN regen timer. Last run was: %lld, Now is: %lld",
 			area->area_tag, (long long)lsp->last_generated,
 			(long long)now);
-		EVENT_OFF(circuit->u.bc.t_refresh_pseudo_lsp[lvl - 1]);
+		event_cancel(&circuit->u.bc.t_refresh_pseudo_lsp[lvl - 1]);
 		diff = now - lsp->last_generated;
 		if (diff < circuit->area->lsp_gen_interval[lvl - 1]) {
 			timeout =

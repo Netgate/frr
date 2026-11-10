@@ -43,6 +43,8 @@ lib_libfrr_la_SOURCES = \
 	lib/grammar_sandbox.c \
 	lib/graph.c \
 	lib/hash.c \
+	lib/host_cli.c \
+	lib/host_nb.c \
 	lib/hook.c \
 	lib/id_alloc.c \
 	lib/if.c \
@@ -64,7 +66,9 @@ lib_libfrr_la_SOURCES = \
 	lib/linklist.c \
 	lib/link_state.c \
 	lib/log.c \
+	lib/log_cli.c \
 	lib/log_filter.c \
+	lib/log_nb.c \
 	lib/log_vty.c \
 	lib/md5.c \
 	lib/memory.c \
@@ -147,8 +151,10 @@ nodist_lib_libfrr_la_SOURCES = \
 	yang/frr-affinity-map.yang.c \
 	yang/frr-backend.yang.c \
 	yang/frr-filter.yang.c \
+	yang/frr-host.yang.c \
 	yang/frr-if-rmap.yang.c \
 	yang/frr-interface.yang.c \
+	yang/frr-logging.yang.c \
 	yang/frr-route-map.yang.c \
 	yang/frr-route-types.yang.c \
 	yang/frr-vrf.yang.c \
@@ -156,29 +162,14 @@ nodist_lib_libfrr_la_SOURCES = \
 	yang/frr-nexthop.yang.c \
 	yang/ietf/frr-deviations-ietf-key-chain.yang.c \
 	yang/ietf/ietf-routing-types.yang.c \
+	yang/ietf/ietf-syslog-types.yang.c \
 	yang/ietf/ietf-netconf-acm.yang.c \
 	yang/ietf/ietf-key-chain.yang.c \
 	yang/ietf/ietf-interfaces.yang.c \
 	yang/ietf/ietf-bgp-types.yang.c \
 	yang/frr-module-translator.yang.c \
+	yang/ietf/ietf-srv6-types.yang.c \
 	# end
-
-# Add logic to build mgmt.proto
-lib_libfrr_la_LIBADD += $(PROTOBUF_C_LIBS)
-
-BUILT_SOURCES += \
-	lib/mgmt.pb-c.c \
-	lib/mgmt.pb-c.h \
-	# end
-
-CLEANFILES += \
-	lib/mgmt.pb-c.h \
-	lib/mgmt.pb-c.c \
-	# end
-
-lib_libfrr_la_SOURCES += \
-	lib/mgmt.pb-c.c \
-	#end
 
 if SQLITE3
 lib_libfrr_la_LIBADD += $(SQLITE3_LIBS)
@@ -187,10 +178,12 @@ endif
 
 clippy_scan += \
 	lib/affinitymap_cli.c \
+	lib/host_cli.c \
 	lib/if.c \
 	lib/filter_cli.c \
 	lib/if_rmap.c \
 	lib/keychain_cli.c \
+	lib/log_cli.c \
 	lib/log_vty.c \
 	lib/mgmt_be_client.c \
 	lib/mgmt_fe_client.c \
@@ -204,7 +197,7 @@ clippy_scan += \
 	lib/zlog_5424_cli.c \
 	# end
 
-pkginclude_HEADERS += \
+nobase_pkginclude_HEADERS += \
 	lib/admin_group.h \
 	lib/affinitymap.h \
 	lib/agg_table.h \
@@ -242,6 +235,7 @@ pkginclude_HEADERS += \
 	lib/graph.h \
 	lib/hash.h \
 	lib/hook.h \
+	lib/host_nb.h \
 	lib/iana_afi.h \
 	lib/id_alloc.h \
 	lib/if.h \
@@ -265,13 +259,11 @@ pkginclude_HEADERS += \
 	lib/log_vty.h \
 	lib/md5.h \
 	lib/memory.h \
-	lib/mgmt.pb-c.h \
 	lib/mgmt_be_client.h \
 	lib/mgmt_defines.h \
 	lib/mgmt_fe_client.h \
 	lib/mgmt_msg.h \
 	lib/mgmt_msg_native.h \
-	lib/mgmt_pb.h \
 	lib/module.h \
 	lib/monotime.h \
 	lib/mpls.h \
@@ -345,13 +337,14 @@ pkginclude_HEADERS += \
 	# end
 
 
-nodist_pkginclude_HEADERS += \
+nobase_nodist_pkginclude_HEADERS += \
 	lib/route_types.h \
 	lib/version.h \
 	# end
 
 noinst_HEADERS += \
 	lib/clippy.h \
+	lib/frregex_real.h \
 	lib/plist_int.h \
 	lib/printf/printfcommon.h \
 	lib/printf/printflocal.h \
@@ -389,7 +382,7 @@ lib_libfrrsnmp_la_SOURCES = \
 #
 if CARES
 lib_LTLIBRARIES += lib/libfrrcares.la
-pkginclude_HEADERS += lib/resolver.h
+nobase_pkginclude_HEADERS += lib/resolver.h
 endif
 
 lib_libfrrcares_la_CFLAGS = $(AM_CFLAGS) $(CARES_CFLAGS)
@@ -404,7 +397,7 @@ lib_libfrrcares_la_SOURCES = \
 #
 if ZEROMQ
 lib_LTLIBRARIES += lib/libfrrzmq.la
-pkginclude_HEADERS += lib/frr_zmq.h
+nobase_pkginclude_HEADERS += lib/frr_zmq.h
 endif
 
 lib_libfrrzmq_la_CFLAGS = $(AM_CFLAGS) $(ZEROMQ_CFLAGS)
@@ -522,7 +515,7 @@ vtysh_cmd_split = \
 
 # dependencies added in python/makefile.py
 frr.xref:
-	$(AM_V_XRELFO) $(CLIPPY) $(top_srcdir)/python/xrelfo.py -o $@ $^ \
+	$(AM_V_XRELFO) $(CLIPPY) $(top_srcdir)/python/xrelfo.py $(WERROR) -o $@ $^ \
 		-c vtysh/vtysh_cmd.c $(vtysh_cmd_split)
 all-am: frr.xref
 

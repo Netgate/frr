@@ -318,6 +318,9 @@ struct attr {
 
 	/* AIGP Metric */
 	uint64_t aigp_metric;
+
+	/* Next-hop characteristics */
+	struct bgp_nhc *nhc;
 };
 
 /* rmap_change_flags definition */
@@ -360,11 +363,16 @@ enum bgp_attr_parse_ret {
 	BGP_ATTR_PARSE_PROCEED = 0,
 	BGP_ATTR_PARSE_ERROR = -1,
 	BGP_ATTR_PARSE_WITHDRAW = -2,
+	/* Treat as withdraw, but do not complain in the logs.
+	 * This is used in bgp_attr_ignore() when we want to
+	 * withdraw the paths having the specified attribute.
+	 */
+	BGP_ATTR_PARSE_WITHDRAW_IGNORE = -3,
 
 	/* only used internally, send notify + convert to BGP_ATTR_PARSE_ERROR
 	 */
-	BGP_ATTR_PARSE_ERROR_NOTIFYPLS = -3,
-	BGP_ATTR_PARSE_MISSING_MANDATORY = -4,
+	BGP_ATTR_PARSE_ERROR_NOTIFYPLS = -4,
+	BGP_ATTR_PARSE_MISSING_MANDATORY = -5,
 };
 
 struct bpacket_attr_vec_arr;
@@ -391,12 +399,12 @@ extern bgp_size_t bgp_packet_attribute(struct bgp *bgp, struct peer *peer, struc
 				       struct prefix *p, afi_t afi, safi_t safi, struct peer *from,
 				       struct prefix_rd *prd, mpls_label_t *label,
 				       uint8_t num_labels, bool addpath_capable,
-				       uint32_t addpath_tx_id);
+				       uint32_t addpath_tx_id, struct bgp_path_info *bpi);
 extern void bgp_dump_routes_attr(struct stream *s, struct bgp_path_info *bpi,
 				 const struct prefix *p);
 extern bool attrhash_cmp(const void *arg1, const void *arg2);
 extern unsigned int attrhash_key_make(const void *p);
-extern void attr_show_all(struct vty *vty);
+extern void attr_show_all(struct vty *vty, bool summary);
 extern unsigned long int attr_count(void);
 extern unsigned long int attr_unknown_count(void);
 extern void bgp_path_attribute_discard_vty(struct vty *vty, struct peer *peer,
@@ -584,6 +592,21 @@ static inline void bgp_attr_set_transit(struct attr *attr,
 	attr->transit = transit;
 }
 
+static inline struct bgp_nhc *bgp_attr_get_nhc(const struct attr *attr)
+{
+	return attr->nhc;
+}
+
+static inline void bgp_attr_set_nhc(struct attr *attr, struct bgp_nhc *bnc)
+{
+	attr->nhc = bnc;
+
+	if (bnc)
+		SET_FLAG(attr->flag, ATTR_FLAG_BIT(BGP_ATTR_NHC));
+	else
+		UNSET_FLAG(attr->flag, ATTR_FLAG_BIT(BGP_ATTR_NHC));
+}
+
 #define AIGP_TRANSMIT_ALLOWED(peer)                                                                \
 	(CHECK_FLAG((peer)->flags, PEER_FLAG_AIGP) || ((peer)->sub_sort == BGP_PEER_EBGP_OAD) ||   \
 	 ((peer)->sort != BGP_PEER_EBGP))
@@ -665,5 +688,6 @@ bgp_attr_set_vnc_subtlvs(struct attr *attr,
 
 extern bool route_matches_soo(struct bgp_path_info *pi, struct ecommunity *soo);
 extern void evpn_overlay_free(struct bgp_route_evpn *bre);
+extern struct bgp_route_evpn *evpn_overlay_intern(struct bgp_route_evpn *bre);
 
 #endif /* _QUAGGA_BGP_ATTR_H */

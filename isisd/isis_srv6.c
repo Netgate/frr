@@ -127,7 +127,7 @@ bool isis_srv6_locator_unset(struct isis_area *area)
 		 * and release/free the SID context if it is not yes by other protocols.
 		 */
 		ctx.behavior = ZEBRA_SEG6_LOCAL_ACTION_END;
-		isis_zebra_release_srv6_sid(&ctx);
+		isis_zebra_release_srv6_sid(&ctx, area->srv6db.config.srv6_locator_name);
 
 		listnode_delete(area->srv6db.srv6_sids, sid);
 		isis_srv6_sid_free(sid);
@@ -142,7 +142,8 @@ bool isis_srv6_locator_unset(struct isis_area *area)
 		 */
 		ctx.behavior = ZEBRA_SEG6_LOCAL_ACTION_END_X;
 		ctx.nh6 = sra->nexthop;
-		isis_zebra_release_srv6_sid(&ctx);
+		ctx.ifindex = sra->adj->circuit->interface->ifindex;
+		isis_zebra_release_srv6_sid(&ctx, area->srv6db.config.srv6_locator_name);
 
 		srv6_endx_sid_del(sra);
 	}

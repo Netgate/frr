@@ -50,10 +50,9 @@ struct nb_yang_xpath {
 	} tags[NB_MAX_NUM_XPATH_TAGS];
 };
 
-#define NB_YANG_XPATH_KEY(__xpath, __indx1, __indx2)                           \
-	((__xpath->num_tags > __indx1) &&                                      \
-			 (__xpath->tags[__indx1].num_keys > __indx2)           \
-		 ? &__xpath->tags[__indx1].keys[__indx2]                       \
+#define NB_YANG_XPATH_KEY(_xpath, _indx1, _indx2)                                                  \
+	(((_xpath)->num_tags > (_indx1)) && ((_xpath)->tags[(_indx1)].num_keys > (_indx2))         \
+		 ? &(_xpath)->tags[(_indx1)].keys[(_indx2)]                                        \
 		 : NULL)
 
 /* Northbound events. */
@@ -98,6 +97,7 @@ enum nb_cb_operation {
 	NB_CB_GET_ELEM,
 	NB_CB_GET_NEXT,
 	NB_CB_GET_KEYS,
+	NB_CB_LIST_ENTRY_DONE,
 	NB_CB_LOOKUP_ENTRY,
 	NB_CB_RPC,
 	NB_CB_NOTIFY,
@@ -518,6 +518,24 @@ struct nb_callbacks {
 	/*
 	 * Operational data callback for YANG lists.
 	 *
+	 * This callback function is called to cleanup any resources that may be
+	 * held by a backend opaque `list_entry` value (e.g., a lock). It is
+	 * called when the northbound code is done using a `list_entry` value it
+	 * obtained using the lookup_entry() callback. It is also called on the
+	 * `list_entry` returned from the get_next() or lookup_next() callbacks
+	 * if the iteration aborts before walking to the end of the list. The
+	 * intention is to allow any resources (e.g., a lock) to now be
+	 * released.
+	 *
+	 * args
+	 *    parent_list_entry - pointer to the parent list entry
+	 *    list_entry - value returned previously from `lookup_entry()`
+	 */
+	void (*list_entry_done)(const void *parent_list_entry, const void *list_entry);
+
+	/*
+	 * Operational data callback for YANG lists.
+	 *
 	 * The callback function should return a list entry based on the list
 	 * keys given as a parameter. Keyless lists don't need to implement this
 	 * callback.
@@ -674,6 +692,8 @@ struct nb_node {
 #define F_NB_NODE_KEYLESS_LIST 0x02
 /* Ignore config callbacks for this node */
 #define F_NB_NODE_IGNORE_CFG_CBS 0x04
+/* Ignore state callbacks for this node */
+#define F_NB_NODE_HAS_GET_TREE 0x08
 
 /*
  * HACK: old gcc versions (< 5.x) have a bug that prevents C99 flexible arrays
@@ -701,8 +721,24 @@ struct frr_yang_module_info {
 	 */
 	const char **features;
 
+	/*
+	 * If the module keeps its oper-state in a libyang tree
+	 * this function should return that tree (locked if multi-threading).
+	 * If this function is provided then the state callback functions
+	 * (get_elem, get_keys, get_next, lookup_entry) need not be set for a
+	 * module. The unlock_tree function if non-NULL will be called with
+	 * the returned tree and the *user_lock value.
+	 */
+	const struct lyd_node *(*get_tree_locked)(const char *xpath, void **user_lock);
+
+	/*
+	 * This function will be called following a call to get_tree_locked() in
+	 * order to unlock the tree if locking was required.
+	 */
+	void (*unlock_tree)(const struct lyd_node *tree, void *user_lock);
+
 	/* Northbound callbacks. */
-	const struct {
+	struct {
 		/* Data path of this YANG node. */
 		const char *xpath;
 
@@ -803,9 +839,9 @@ typedef int (*nb_oper_data_cb)(const struct lysc_node *snode,
 
 /**
  * nb_oper_data_finish_cb() - finish a portion or all of a oper data walk.
- * @tree - r/o copy of the tree created during this portion of the walk.
- * @arg - finish arg passed to nb_op_iterate_yielding.
- * @ret - NB_OK if done with walk, NB_YIELD if done with portion, otherwise an
+ * @tree: r/o copy of the tree created during this portion of the walk.
+ * @arg: finish arg passed to nb_op_iterate_yielding.
+ * @ret: NB_OK if done with walk, NB_YIELD if done with portion, otherwise an
  *        error.
  *
  * If nb_op_iterate_yielding() was passed with @should_batch set then this
@@ -865,6 +901,8 @@ extern int nb_callback_get_keys(const struct nb_node *nb_node,
 extern const void *nb_callback_lookup_entry(const struct nb_node *nb_node,
 					    const void *parent_list_entry,
 					    const struct yang_list_keys *keys);
+extern void nb_callback_list_entry_done(const struct nb_node *nb_node,
+					const void *parent_list_entry, const void *list_entry);
 extern const void *nb_callback_lookup_node_entry(struct lyd_node *node,
 						 const void *parent_list_entry);
 extern const void *nb_callback_lookup_next(const struct nb_node *nb_node,
@@ -1019,22 +1057,15 @@ extern bool nb_is_operation_allowed(struct nb_node *nb_node,
  * xpath
  *    XPath of the configuration node being edited.
  *
- * previous
- *    Previous value of the configuration node. Should be used only when the
- *    operation is NB_OP_MOVE, otherwise this parameter is ignored.
- *
- * data
+ * value
  *    New value of the configuration node.
  *
  * Returns:
  *    - NB_OK on success.
  *    - NB_ERR for other errors.
  */
-extern int nb_candidate_edit(struct nb_config *candidate,
-			     const struct nb_node *nb_node,
-			     enum nb_operation operation, const char *xpath,
-			     const struct yang_data *previous,
-			     const struct yang_data *data);
+extern int nb_candidate_edit(struct nb_config *candidate, const struct nb_node *nb_node,
+			     enum nb_operation operation, const char *xpath, const char *value);
 
 /*
  * Edit a candidate configuration. Value is given as JSON/XML.
@@ -1103,6 +1134,36 @@ extern void nb_config_diff_created(const struct lyd_node *dnode, uint32_t *seq,
  *    true if the candidate is outdated, false otherwise.
  */
 extern bool nb_candidate_needs_update(const struct nb_config *candidate);
+
+
+enum nb_change_result {
+	NB_CHANGE_OK,
+	NB_CHANGE_ERR,
+	NB_CHANGE_ERR_CONT,
+};
+
+/*
+ * Edit candidate configuration given single change.
+ *
+ * candidate_config
+ *    Candidate configuration to edit.
+ *
+ * operation
+ *    The type of change.
+ *
+ * xpath
+ *     Absolute xpath of the configuration node being edited.
+ *
+ * value
+ *    New value of the configuration node.
+ *
+ * in_backend
+ *    If true then ignore errors due to schema non-presence.
+ */
+extern enum nb_change_result nb_candidate_edit_config_change(struct nb_config *candidate_config,
+							     enum nb_operation operation,
+							     const char *xpath, const char *value,
+							     bool in_backend);
 
 /*
  * Edit candidate configuration changes.
@@ -1331,6 +1392,17 @@ extern int nb_candidate_commit_prepare(struct nb_context context,
 				       bool ignore_zero_change, char *errmsg,
 				       size_t errmsg_len);
 
+
+/*
+ * This function is used externally by mgmtd which has already calculated
+ * changes and just needs to run the process for itself without interacting with
+ * it's own candidate config which has all the backend client changes in it.
+ */
+extern int nb_changes_commit_prepare(struct nb_context context, struct nb_config_cbs changes,
+				     const char *comment, struct nb_config *candidate_config,
+				     struct nb_transaction **transaction, char *errmsg,
+				     size_t errmsg_len);
+
 /*
  * Abort a previously created configuration transaction, releasing all resources
  * allocated during the preparation phase.
@@ -1497,14 +1569,15 @@ extern enum nb_error nb_oper_iterate_legacy(const char *xpath,
 
 /**
  * nb_oper_walk() - walk the schema building operational state.
- * @xpath -
- * @translator -
- * @flags -
- * @should_batch - should allow yielding and processing portions of the tree.
- * @cb - callback invoked for each non-list, non-container node.
- * @arg - arg to pass to @cb.
- * @finish - function to call when done with portion or all of walk.
- * @finish_arg - arg to pass to @finish.
+ * @xpath: data path of the YANG data we want to iterate over.
+ * @translator: YANG module translator (might be NULL).
+ * @flags: NB_OPER_DATA_ITER_ flags to control how the iteration is performed.
+ * @should_batch: should allow yielding and processing portions of the tree.
+ * @cb: callback invoked for each non-list, non-container node.
+ * @arg: arg to pass to @cb.
+ * @finish: function to call when done with portion or all of walk.
+ * @finish_arg: arg to pass to @finish.
+ * @tree: if non-NULL will be used to copy state data from during the walk.
  *
  * Return: walk - a cookie that can be used to cancel the walk.
  */
@@ -1515,7 +1588,7 @@ extern void *nb_oper_walk(const char *xpath, struct yang_translator *translator,
 
 /**
  * nb_oper_cancel_walk() - cancel the in progress walk.
- * @walk - value returned from nb_op_iterate_yielding()
+ * @walk: value returned from nb_op_iterate_yielding()
  *
  * Should only be called on an in-progress walk. It is invalid to cancel and
  * already finished walk. The walks `finish` callback will not be called.
@@ -1836,6 +1909,33 @@ extern struct lyd_node *nb_op_updatef(struct lyd_node *tree, const char *path, c
 
 extern struct lyd_node *nb_op_vupdatef(struct lyd_node *tree, const char *path, const char *val_fmt,
 				       va_list ap);
+/**
+ * nb_notif_add() - Notice that the value at `path` has changed.
+ * @path: Absolute path in the state tree that has changed (either added or
+ *	  updated).
+ */
+void nb_notif_add(const char *path);
+
+/**
+ * nb_notif_addf() - Notice that the value at `path` has changed.
+ * @path: Absolute path format string in the state tree that has changed
+ *	  (either added or updated).
+ * @...: The values to substitute into `path`.
+ */
+void nb_notif_addf(const char *path, ...) PRINTFRR(1, 2);
+
+/**
+ * nb_notif_delete() - Notice that the value at `path` has been deleted.
+ * @path: Absolute path in the state tree that has been deleted.
+ */
+void nb_notif_delete(const char *path);
+
+/**
+ * nb_notif_deletef() - Notice that the value at `path` has been deleted.
+ * @path: Absolute path format string in the state tree that has been deleted.
+ * @...: The values to substitute into `path`.
+ */
+void nb_notif_deletef(const char *path, ...) PRINTFRR(1, 2);
 
 /**
  * nb_notif_set_filters() - add or replace notification filters
@@ -1845,6 +1945,24 @@ extern struct lyd_node *nb_op_vupdatef(struct lyd_node *tree, const char *path, 
  * @replace: true to replace existing set otherwise append.
  */
 extern void nb_notif_set_filters(const char **selectors, bool replace);
+
+
+/**
+ * nb_notif_get_state() - request state dump be sent to mgmtd
+ * @selectors: darr array of xpath strings to do get operations on returning
+ *		the state as notification data.
+ * @refer_id: send in the refer_id field of the returned notification data.
+ */
+extern void nb_notif_get_state(const char **selectors, uint64_t refer_id);
+
+/**
+ * nb_notif_enable_multi_thread() - enable use of multiple threads with nb_notif
+ *
+ * If the nb_notif_XXX calls will be made from multiple threads then locking is
+ * required. Call this function to enable that functionality, prior to using the
+ * nb_notif_XXX API.
+ */
+extern void nb_notif_enable_multi_thread(void);
 
 extern void nb_notif_init(struct event_loop *loop);
 extern void nb_notif_terminate(void);

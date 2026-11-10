@@ -10,7 +10,8 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
-#include "compiler.h"
+
+#include "lib/compiler.h"
 #endif /* _TYPESAFE_EXPAND_MACROS */
 
 #ifdef __cplusplus
@@ -324,7 +325,8 @@ static inline void typesafe_dlist_add(struct dlist_head *head,
 	assume(prev->next != NULL);
 
 	item->next = prev->next;
-	item->next->prev = item;
+	if (item->next)
+		item->next->prev = item;
 	item->prev = prev;
 	prev->next = item;
 	head->count++;
@@ -1170,9 +1172,9 @@ extern struct sskip_item *typesafe_skiplist_pop(struct sskip_head *head);
 }
 #endif
 
-/* this needs to stay at the end because both files include each other.
- * the resolved order is typesafe.h before typerb.h
+/* the separation between these two files is really only for documentation
+ * purposes, the are interdependent and are always included as a bundle
  */
-#include "typerb.h"
+#include "lib/typerb.h" // IWYU pragma: export
 
 #endif /* _FRR_TYPESAFE_H */

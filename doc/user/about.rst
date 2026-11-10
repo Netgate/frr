@@ -169,6 +169,10 @@ feature you're interested in, it should be supported on your platform.
 +-----------------------------------+----------------+--------------+------------+------------+
 |    MPLS                           | :mark:`>=4.5`  | :mark:`Y`    | :mark:`N`  | :mark:`N`  |
 +-----------------------------------+----------------+--------------+------------+------------+
+|    Backup Nexthops                | :mark:`N`      | :mark:`N`    | :mark:`N`  | :mark:`N`  |
++-----------------------------------+----------------+--------------+------------+------------+
+|    Nexthop Group Weight 16-bit    | :mark:`>=6.12` | :mark:`N`    | :mark:`N`  | :mark:`N`  |
++-----------------------------------+----------------+--------------+------------+------------+
 | `pbrd` (Policy Routing)           | :mark:`Y`      | :mark:`N`    | :mark:`N`  | :mark:`N`  |
 +-----------------------------------+----------------+--------------+------------+------------+
 | **WAN / Carrier protocols**       |                |              |            |            |
@@ -393,6 +397,8 @@ BGP
   :t:`Long-Lived Graceful Restart for BGP. J. Uttaro, E. Chen, B. Decraene, J. Scudder. November 2023.`
 - :rfc:`9687`
   :t:`Border Gateway Protocol 4 (BGP-4) Send Hold Timer. J. Snijders, B. Cartwright-Cox, Y. Qu. November 2024.`
+- :rfc:`9774`
+  :t:`Deprecation of AS_SET and AS_CONFED_SET in BGP. W. Kumari, K. Sriram, L. Hannachi, J. Haas. May 2025.`
 
 OSPF
 ----

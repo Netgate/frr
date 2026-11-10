@@ -431,6 +431,9 @@ lde_kernel_update(struct fec *fec)
 		return;
 
 	LIST_FOREACH(fnh, &fn->nexthops, entry) {
+		if (CHECK_FLAG(fnh->flags, F_FEC_NH_NO_LDP))
+			continue;
+
 		lde_send_change_klabel(fn, fnh);
 
 		switch (fn->fec.type) {
@@ -1008,6 +1011,8 @@ lde_wildcard_apply(struct map *wcard, struct fec *fec, struct lde_map *me)
 	default:
 		fatalx("lde_wildcard_apply: unexpected fec type");
 	}
+
+	return -1;
 }
 
 /* gabage collector timer: timer to remove dead entries from the LIB */
@@ -1044,12 +1049,12 @@ void lde_gc_timer(struct event *thread)
 void
 lde_gc_start_timer(void)
 {
-	EVENT_OFF(gc_timer);
+	event_cancel(&gc_timer);
 	event_add_timer(master, lde_gc_timer, NULL, LDE_GC_INTERVAL, &gc_timer);
 }
 
 void
 lde_gc_stop_timer(void)
 {
-	EVENT_OFF(gc_timer);
+	event_cancel(&gc_timer);
 }

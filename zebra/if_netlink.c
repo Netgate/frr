@@ -221,6 +221,8 @@ static void netlink_determine_zebra_iftype(const char *kind,
 		*zif_type = ZEBRA_IF_BOND;
 	else if (strcmp(kind, "gre") == 0)
 		*zif_type = ZEBRA_IF_GRE;
+	else if (strcmp(kind, "dummy") == 0)
+		*zif_type = ZEBRA_IF_DUMMY;
 }
 
 static void netlink_vrf_change(struct nlmsghdr *h, struct rtattr *tb,
@@ -576,6 +578,7 @@ static void netlink_interface_update_l2info(struct zebra_dplane_ctx *ctx,
 	case ZEBRA_IF_MACVLAN:
 	case ZEBRA_IF_VETH:
 	case ZEBRA_IF_BOND:
+	case ZEBRA_IF_DUMMY:
 		break;
 	}
 }
@@ -1275,8 +1278,9 @@ int netlink_link_change(struct nlmsghdr *h, ns_id_t ns_id, int startup)
 
 	if (!(h->nlmsg_type == RTM_NEWLINK || h->nlmsg_type == RTM_DELLINK)) {
 		/* If this is not link add/delete message so print warning. */
-		zlog_debug("%s: wrong kernel message %s", __func__,
-			   nl_msg_type_to_str(h->nlmsg_type));
+		if (IS_ZEBRA_DEBUG_KERNEL)
+			zlog_debug("%s: wrong kernel message %s", __func__,
+				   nl_msg_type_to_str(h->nlmsg_type));
 		return 0;
 	}
 

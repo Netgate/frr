@@ -43,8 +43,8 @@ static void nhrp_peer_check_delete(struct nhrp_peer *p)
 	debugf(NHRP_DEBUG_COMMON, "Deleting peer ref:%d remote:%pSU local:%pSU",
 	       p->ref, &p->vc->remote.nbma, &p->vc->local.nbma);
 
-	EVENT_OFF(p->t_fallback);
-	EVENT_OFF(p->t_timer);
+	event_cancel(&p->t_fallback);
+	event_cancel(&p->t_timer);
 	if (nifp->peer_hash)
 		hash_release(nifp->peer_hash, p);
 	nhrp_interface_notify_del(p->ifp, &p->ifp_notifier);
@@ -77,7 +77,7 @@ static void __nhrp_peer_check(struct nhrp_peer *p)
 
 	online = nifp->enabled && (!nifp->ipsec_profile || vc->ipsec);
 	if (p->online != online) {
-		EVENT_OFF(p->t_fallback);
+		event_cancel(&p->t_fallback);
 		if (online && notifier_active(&p->notifier_list)) {
 			/* If we requested the IPsec connection, delay
 			 * the up notification a bit to allow things
@@ -212,12 +212,8 @@ struct nhrp_peer *nhrp_peer_get(struct interface *ifp,
 	struct nhrp_peer key, *p;
 	struct nhrp_vc *vc;
 
-	if (!nifp->peer_hash) {
-		nifp->peer_hash = hash_create(nhrp_peer_key, nhrp_peer_cmp,
-					      "NHRP Peer Hash");
-		if (!nifp->peer_hash)
-			return NULL;
-	}
+	if (!nifp->peer_hash)
+		nifp->peer_hash = hash_create(nhrp_peer_key, nhrp_peer_cmp, "NHRP Peer Hash");
 
 	vc = nhrp_vc_get(&nifp->nbma, remote_nbma, 1);
 	if (!vc)
@@ -279,7 +275,7 @@ static void nhrp_peer_defer_vici_request(struct event *t)
 	struct interface *ifp = p->ifp;
 	struct nhrp_interface *nifp = ifp->info;
 
-	EVENT_OFF(p->t_timer);
+	event_cancel(&p->t_timer);
 
 	if (p->online) {
 		debugf(NHRP_DEBUG_COMMON,
@@ -567,6 +563,9 @@ static void nhrp_handle_resolution_req(struct nhrp_packet_parser *pp)
 	/* CIE payload for the reply packet */
 	cie = nhrp_cie_push(zb, NHRP_CODE_SUCCESS, &nifp->nbma,
 			    &pp->if_ad->addr);
+	if (!cie)
+		goto err;
+
 	cie->holding_time = htons(pp->if_ad->holdtime);
 	cie->mtu = htons(pp->if_ad->mtu);
 	if (pp->if_ad->network_id && pp->route_type == NHRP_ROUTE_OFF_NBMA)
@@ -722,6 +721,9 @@ static void nhrp_handle_registration_request(struct nhrp_packet_parser *p)
 				cie = nhrp_cie_push(zb, NHRP_CODE_SUCCESS,
 						    &p->peer->vc->remote.nbma,
 						    &p->src_proto);
+				if (!cie)
+					goto err;
+
 				cie->prefix_length =
 					8 * sockunion_get_addrlen(
 						    &p->if_ad->addr);
@@ -833,8 +835,10 @@ static void nhrp_handle_error_ind(struct nhrp_packet_parser *pp)
 	union sockunion src_nbma, src_proto, dst_proto;
 
 	hdr = nhrp_packet_pull(&origmsg, &src_nbma, &src_proto, &dst_proto);
-	if (!hdr)
+	if (!hdr) {
+		debugf(NHRP_DEBUG_COMMON, "Truncated Error Indication packet");
 		return;
+	}
 
 	debugf(NHRP_DEBUG_COMMON,
 	       "Error Indication from %pSU about packet to %pSU ignored",
@@ -1096,6 +1100,7 @@ static void nhrp_packet_debug(struct zbuf *zb, const char *dir)
 	union sockunion src_nbma, src_proto, dst_proto;
 	struct nhrp_packet_header *hdr;
 	struct zbuf zhdr;
+	const char *name = "Unknown";
 	int reply;
 
 	if (likely(!(debug_flags & NHRP_DEBUG_COMMON)))
@@ -1103,10 +1108,21 @@ static void nhrp_packet_debug(struct zbuf *zb, const char *dir)
 
 	zbuf_init(&zhdr, zb->buf, zb->tail - zb->buf, zb->tail - zb->buf);
 	hdr = nhrp_packet_pull(&zhdr, &src_nbma, &src_proto, &dst_proto);
+	if (!hdr) {
+		debugf(NHRP_DEBUG_COMMON, "%s Truncated packet", dir);
+		return;
+	}
+	if (hdr->type > NHRP_PACKET_MAX) {
+		debugf(NHRP_DEBUG_COMMON, "%s Unknown(%u) %pSU -> %pSU", dir,
+		       hdr->type, &src_proto, &dst_proto);
+		return;
+	}
 
 	reply = packet_types[hdr->type].type == PACKET_REPLY;
+	if (packet_types[hdr->type].name)
+		name = packet_types[hdr->type].name;
 	debugf(NHRP_DEBUG_COMMON, "%s %s(%d) %pSU -> %pSU", dir,
-	       (packet_types[hdr->type].name ? : "Unknown"),
+	       name,
 	       hdr->type, reply ? &dst_proto : &src_proto,
 	       reply ? &src_proto : &dst_proto);
 }
@@ -1270,7 +1286,7 @@ void nhrp_peer_recv(struct nhrp_peer *p, struct zbuf *zb)
 	nbma_afi = htons(hdr->afnum);
 	proto_afi = proto2afi(htons(hdr->protocol_type));
 	if (hdr->type > NHRP_PACKET_MAX || hdr->version != NHRP_VERSION_RFC2332
-	    || nbma_afi >= AFI_MAX || proto_afi == AF_UNSPEC
+	    || !IS_VALID_AFI(nbma_afi) || proto_afi == AF_UNSPEC
 	    || packet_types[hdr->type].type == PACKET_UNKNOWN
 	    || htons(hdr->packet_size) > realsize) {
 		zlog_info(
@@ -1310,13 +1326,15 @@ void nhrp_peer_recv(struct nhrp_peer *p, struct zbuf *zb)
 	/* RFC2332 5.3.4 - Authentication is always done pairwise on an NHRP
 	 * hop-by-hop basis; i.e. regenerated at each hop. */
 	nhrp_packet_debug(zb, "Recv");
-	if (nifp->auth_token &&
-	    (hdr->type != NHRP_PACKET_ERROR_INDICATION ||
-	     hdr->u.error.code != NHRP_ERROR_AUTHENTICATION_FAILURE)) {
+	if (nifp->auth_token) {
 		if (!nhrp_connection_authorized(&pp)) {
-			nhrp_packet_send_error(&pp,
-					       NHRP_ERROR_AUTHENTICATION_FAILURE,
-					       0);
+			if (!(hdr->type == NHRP_PACKET_ERROR_INDICATION &&
+			      hdr->u.error.code ==
+				      htons(NHRP_ERROR_AUTHENTICATION_FAILURE)))
+				nhrp_packet_send_error(
+					&pp,
+					NHRP_ERROR_AUTHENTICATION_FAILURE,
+					0);
 			info = "authentication failure";
 			goto drop;
 		}

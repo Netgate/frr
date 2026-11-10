@@ -128,8 +128,7 @@ static void eigrp_update_receive_GR_ask(struct eigrp *eigrp,
 
 	/* iterate over all prefixes which weren't advertised by neighbor */
 	for (ALL_LIST_ELEMENTS_RO(nbr_prefixes, node1, prefix)) {
-		zlog_debug("GR receive: Neighbor not advertised %pFX",
-			   prefix->destination);
+		zlog_debug("GR receive: Neighbor not advertised %pFX", &prefix->destination);
 
 		fsm_msg.metrics = prefix->reported_metric;
 		/* set delay to MAX */
@@ -286,6 +285,11 @@ void eigrp_update_receive(struct eigrp *eigrp, struct ip *iph,
 			stream_set_getp(s, s->getp - sizeof(uint16_t));
 
 			tlv = eigrp_read_ipv4_tlv(s);
+			if (tlv == NULL) {
+				/* Invalid TLV - how to handle? */
+				stream_forward_getp(s, STREAM_READABLE(s));
+				break;
+			}
 
 			/*searching if destination exists */
 			dest_addr.family = AF_INET;
@@ -320,9 +324,7 @@ void eigrp_update_receive(struct eigrp *eigrp, struct ip *iph,
 				/*Here comes topology information save*/
 				pe = eigrp_prefix_descriptor_new();
 				pe->serno = eigrp->serno;
-				pe->destination =
-					(struct prefix *)prefix_ipv4_new();
-				prefix_copy(pe->destination, &dest_addr);
+				prefix_copy(&pe->destination, &dest_addr);
 				pe->af = AF_INET;
 				pe->state = EIGRP_FSM_STATE_PASSIVE;
 				pe->nt = EIGRP_TOPOLOGY_TYPE_REMOTE;
@@ -377,6 +379,26 @@ void eigrp_update_receive(struct eigrp *eigrp, struct ip *iph,
 			for (length -= 4; length; length--) {
 				(void)stream_getc(s);
 			}
+
+			/* Check for reasonable TLV length */
+			if (length > 1024) {
+				zlog_warn("Malformed packet: TLV length too large (%u), skipping to end", length);
+				stream_forward_getp(s, STREAM_READABLE(s));
+				break;
+			}
+
+			/* Check if TLV extends beyond packet */
+			if (length > STREAM_READABLE(s) + 4) {
+				zlog_warn("Malformed packet: TLV length (%u) exceeds remaining data (%zu) + 4, skipping to end",
+						length, STREAM_READABLE(s));
+				stream_forward_getp(s, STREAM_READABLE(s));
+				break;
+			}
+
+			/* Skip current TLV data safely to move on to next TLV */
+			if (IS_DEBUG_EIGRP_PACKET(0, RECV))
+				zlog_debug("Skipping unknown TLV: type=0x%04x, length=%u", type, length);
+			stream_forward_getp(s, length - 4);
 		}
 	}
 
@@ -397,7 +419,7 @@ void eigrp_update_receive(struct eigrp *eigrp, struct ip *iph,
 	eigrp_query_send_all(eigrp);
 	eigrp_update_send_all(eigrp, ei);
 
-	if (nbr_prefixes)
+	if (nbr_prefixes && (nbr_prefixes != nbr->nbr_gr_prefixes))
 		list_delete(&nbr_prefixes);
 }
 
@@ -482,18 +504,17 @@ static void eigrp_update_place_on_nbr_queue(struct eigrp_neighbor *nbr,
 static void eigrp_update_send_to_all_nbrs(struct eigrp_interface *ei,
 					  struct eigrp_packet *ep)
 {
-	struct listnode *node, *nnode;
 	struct eigrp_neighbor *nbr;
 	bool packet_sent = false;
 
-	for (ALL_LIST_ELEMENTS(ei->nbrs, node, nnode, nbr)) {
+	frr_each (eigrp_nbr_hash, &ei->nbr_hash_head, nbr) {
 		struct eigrp_packet *ep_dup;
 
 		if (nbr->state != EIGRP_NEIGHBOR_UP)
 			continue;
 
 		if (packet_sent)
-			ep_dup = eigrp_packet_duplicate(ep, NULL);
+			ep_dup = eigrp_packet_duplicate(ep, nbr);
 		else
 			ep_dup = ep;
 
@@ -567,7 +588,7 @@ void eigrp_update_send_EOT(struct eigrp_neighbor *nbr)
 				}
 			}
 			/* Get destination address from prefix */
-			dest_addr = pe->destination;
+			dest_addr = &pe->destination;
 
 			/* Check if any list fits */
 			if (eigrp_update_prefix_apply(
@@ -595,7 +616,7 @@ void eigrp_update_send(struct eigrp_interface *ei)
 	uint32_t seq_no = eigrp->sequence_number;
 	uint16_t eigrp_mtu = EIGRP_PACKET_MTU(ei->ifp->mtu);
 
-	if (ei->nbrs->count == 0)
+	if (eigrp_nbr_hash_count(&ei->nbr_hash_head) == 0)
 		return;
 
 	uint16_t length = EIGRP_HEADER_LEN;
@@ -651,7 +672,7 @@ void eigrp_update_send(struct eigrp_interface *ei)
 			has_tlv = 0;
 		}
 		/* Get destination address from prefix */
-		dest_addr = pe->destination;
+		dest_addr = &pe->destination;
 
 		if (eigrp_update_prefix_apply(eigrp, ei, EIGRP_FILTER_OUT,
 					      dest_addr)) {
@@ -694,10 +715,10 @@ void eigrp_update_send_all(struct eigrp *eigrp,
 			   struct eigrp_interface *exception)
 {
 	struct eigrp_interface *iface;
-	struct listnode *node, *node2, *nnode2;
+	struct listnode *node2, *nnode2;
 	struct eigrp_prefix_descriptor *pe;
 
-	for (ALL_LIST_ELEMENTS_RO(eigrp->eiflist, node, iface)) {
+	frr_each (eigrp_interface_hash, &eigrp->eifs, iface) {
 		if (iface != exception) {
 			eigrp_update_send(iface);
 		}
@@ -799,7 +820,7 @@ static void eigrp_update_send_GR_part(struct eigrp_neighbor *nbr)
 		/*
 		 * Filtering
 		 */
-		dest_addr = pe->destination;
+		dest_addr = &pe->destination;
 
 		if (eigrp_update_prefix_apply(eigrp, ei, EIGRP_FILTER_OUT,
 					      dest_addr)) {
@@ -1001,11 +1022,10 @@ void eigrp_update_send_GR(struct eigrp_neighbor *nbr, enum GR_type gr_type,
 void eigrp_update_send_interface_GR(struct eigrp_interface *ei,
 				    enum GR_type gr_type, struct vty *vty)
 {
-	struct listnode *node;
 	struct eigrp_neighbor *nbr;
 
 	/* iterate over all neighbors on eigrp interface */
-	for (ALL_LIST_ELEMENTS_RO(ei->nbrs, node, nbr)) {
+	frr_each (eigrp_nbr_hash, &ei->nbr_hash_head, nbr) {
 		/* send GR to neighbor */
 		eigrp_update_send_GR(nbr, gr_type, vty);
 	}
@@ -1027,11 +1047,10 @@ void eigrp_update_send_interface_GR(struct eigrp_interface *ei,
 void eigrp_update_send_process_GR(struct eigrp *eigrp, enum GR_type gr_type,
 				  struct vty *vty)
 {
-	struct listnode *node;
 	struct eigrp_interface *ei;
 
 	/* iterate over all eigrp interfaces */
-	for (ALL_LIST_ELEMENTS_RO(eigrp->eiflist, node, ei)) {
+	frr_each (eigrp_interface_hash, &eigrp->eifs, ei) {
 		/* send GR to all neighbors on interface */
 		eigrp_update_send_interface_GR(ei, gr_type, vty);
 	}

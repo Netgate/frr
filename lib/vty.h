@@ -7,16 +7,6 @@
 #define _ZEBRA_VTY_H
 
 #include <sys/types.h>
-#ifdef HAVE_LIBPCRE2_POSIX
-#ifndef _FRR_PCRE2_POSIX
-#define _FRR_PCRE2_POSIX
-#include <pcre2posix.h>
-#endif /* _FRR_PCRE2_POSIX */
-#elif defined(HAVE_LIBPCREPOSIX)
-#include <pcreposix.h>
-#else
-#include <regex.h>
-#endif /* HAVE_LIBPCRE2_POSIX */
 
 #include "frrevent.h"
 #include "log.h"
@@ -33,6 +23,7 @@ extern "C" {
 #endif
 
 struct json_object;
+struct frregex;
 
 #define VTY_BUFSIZ 4096
 #define VTY_MAXHIST 20
@@ -50,6 +41,15 @@ struct vty_cfg_change {
 	char xpath[XPATH_MAXLEN];
 	enum nb_operation operation;
 	const char *value;
+};
+
+/* Current vty status. */
+enum vty_status {
+	VTY_NORMAL,
+	VTY_CLOSE,
+	VTY_MORE,
+	VTY_MORELINE,
+	VTY_PASSFD,
 };
 
 PREDECL_DLIST(vtys);
@@ -86,7 +86,7 @@ struct vty {
 
 	/* Output filer regex */
 	bool filter;
-	regex_t include;
+	struct frregex *include;
 
 	/* Line buffer */
 	struct buffer *lbuf;
@@ -170,13 +170,7 @@ struct vty {
 	unsigned char escape;
 
 	/* Current vty status. */
-	enum {
-		VTY_NORMAL,
-		VTY_CLOSE,
-		VTY_MORE,
-		VTY_MORELINE,
-		VTY_PASSFD,
-	} status;
+	enum vty_status status;
 
 	/* vtysh socket/fd passing (for terminal monitor) */
 	int pass_fd;
@@ -237,6 +231,13 @@ struct vty {
 	uintptr_t mgmt_req_pending_data;
 	bool mgmt_locked_candidate_ds;
 	bool mgmt_locked_running_ds;
+	/* Incremental write/flush limit and current accumulator. When
+	 * producing large outputs, we try to avoid buffering the entire
+	 * output, sending incremental output periodically
+	 * as the application code produces it.
+	 */
+	size_t vty_buf_threshold;
+	size_t vty_buf_size_accum;
 };
 
 static inline void vty_push_context(struct vty *vty, int node, uint64_t id)
@@ -421,11 +422,7 @@ extern bool vty_mgmt_should_process_cli_apply_changes(struct vty *vty);
 extern bool mgmt_vty_read_configs(void);
 extern int vty_mgmt_send_config_data(struct vty *vty, const char *xpath_base,
 				     bool implicit_commit);
-extern int vty_mgmt_send_commit_config(struct vty *vty, bool validate_only,
-				       bool abort);
-extern int vty_mgmt_send_get_req(struct vty *vty, bool is_config,
-				 Mgmtd__DatastoreId datastore,
-				 const char **xpath_list, int num_req);
+extern int vty_mgmt_send_commit_config(struct vty *vty, bool validate_only, bool abort, bool unlock);
 extern int vty_mgmt_send_get_data_req(struct vty *vty, uint8_t datastore,
 				      LYD_FORMAT result_type, uint8_t flags,
 				      uint8_t defaults, const char *xpath);
@@ -435,13 +432,29 @@ extern int vty_mgmt_send_edit_req(struct vty *vty, uint8_t datastore,
 				  const char *data);
 extern int vty_mgmt_send_rpc_req(struct vty *vty, LYD_FORMAT request_type,
 				 const char *xpath, const char *data);
-extern int vty_mgmt_send_lockds_req(struct vty *vty, Mgmtd__DatastoreId ds_id,
-				    bool lock, bool scok);
+extern int vty_mgmt_send_lockds_req(struct vty *vty, enum mgmt_ds_id ds_id, bool lock, bool scok);
 extern void vty_mgmt_resume_response(struct vty *vty, int ret);
 
-static inline bool vty_needs_implicit_commit(struct vty *vty)
+static inline bool vty_needs_implicit_commit(const struct vty *vty)
 {
 	return frr_get_cli_mode() == FRR_CLI_CLASSIC && !vty->pending_allowed;
+}
+
+/* Applications can check vty status */
+static inline bool vty_is_closed(const struct vty *vty)
+{
+	if (vty == NULL || vty->status == VTY_CLOSE)
+		return true;
+	/*
+	 * VTY_SHELL (vtysh) uses fd = wfd = -1 and outputs
+	 * through vty->of (stdout) instead of socket FDs. If FDs are
+	 * valid, the VTY can produce output. Otherwise, fall back to
+	 * checking the FILE output path used by VTY_SHELL.
+	 */
+	if (vty->fd >= 0 && vty->wfd >= 0)
+		return false;
+
+	return (vty->of == NULL && vty->of_saved == NULL);
 }
 
 #ifdef __cplusplus

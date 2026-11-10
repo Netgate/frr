@@ -35,6 +35,7 @@
 #include "bgpd/bgp_updgrp.h"
 #include "bgpd/bgp_advertise.h"
 #include "bgpd/bgp_addpath.h"
+#include "bgpd/bgp_nhc.h"
 
 
 /********************
@@ -423,7 +424,7 @@ static void subgroup_coalesce_timer(struct event *thread)
 			peer = PAF_PEER(paf);
 			struct peer_connection *connection = peer->connection;
 
-			EVENT_OFF(connection->t_routeadv);
+			event_cancel(&connection->t_routeadv);
 			BGP_TIMER_ON(connection->t_routeadv, bgp_routeadv_timer,
 				     0);
 		}
@@ -910,6 +911,9 @@ void subgroup_default_originate(struct update_subgroup *subgrp, bool withdraw)
 
 	bgp = peer->bgp;
 	from = bgp->peer_self;
+
+	if (bgp_update_delay_active(peer->bgp))
+		return;
 
 	bgp_attr_default_set(&attr, bgp, BGP_ORIGIN_IGP);
 

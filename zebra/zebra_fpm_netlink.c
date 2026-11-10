@@ -261,7 +261,7 @@ static int netlink_route_info_fill(struct netlink_route_info *ri, int cmd,
 	ri->prefix = rib_dest_prefix(dest);
 	ri->af = rib_dest_af(dest);
 
-	ri->nlmsg_pid = pid;
+	ri->nlmsg_pid = zebra_pid;
 
 	ri->nlmsg_type = cmd;
 	ri->rtm_protocol = RTPROT_UNSPEC;
@@ -285,7 +285,7 @@ static int netlink_route_info_fill(struct netlink_route_info *ri, int cmd,
 	ri->metric = &re->metric;
 
 	for (ALL_NEXTHOPS(re->nhe->nhg, nexthop)) {
-		if (ri->num_nhs >= zrouter.multipath_num)
+		if (ri->num_nhs >= zrouter.zav.multipath_num)
 			break;
 
 		if (CHECK_FLAG(nexthop->flags, NEXTHOP_FLAG_RECURSIVE))

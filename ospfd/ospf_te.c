@@ -1709,15 +1709,15 @@ static int ospf_te_export(uint8_t type, void *link_state)
 	switch (type) {
 	case LS_MSG_TYPE_NODE:
 		ls_vertex2msg(&msg, (struct ls_vertex *)link_state);
-		rc = ls_send_msg(zclient, &msg, NULL);
+		rc = ls_send_msg(ospf_zclient, &msg, NULL);
 		break;
 	case LS_MSG_TYPE_ATTRIBUTES:
 		ls_edge2msg(&msg, (struct ls_edge *)link_state);
-		rc = ls_send_msg(zclient, &msg, NULL);
+		rc = ls_send_msg(ospf_zclient, &msg, NULL);
 		break;
 	case LS_MSG_TYPE_PREFIX:
 		ls_subnet2msg(&msg, (struct ls_subnet *)link_state);
-		rc = ls_send_msg(zclient, &msg, NULL);
+		rc = ls_send_msg(ospf_zclient, &msg, NULL);
 		break;
 	default:
 		rc = -1;
@@ -2122,7 +2122,7 @@ static int ospf_te_parse_te(struct ls_ted *ted, struct ospf_lsa *lsa)
 	struct ls_attributes *old, attr = {};
 	struct tlv_header *tlvh;
 	void *value;
-	uint16_t len, sum;
+	uint32_t len, sum;
 	uint8_t lsa_id;
 
 	/* Initialize Attribute */
@@ -2152,10 +2152,18 @@ static int ospf_te_parse_te(struct ls_ted *ted, struct ospf_lsa *lsa)
 
 	sum = sizeof(struct tlv_header);
 	/* Browse sub-TLV and fulfill Link State Attributes */
-	for (tlvh = TLV_DATA(tlvh); sum < len; tlvh = TLV_HDR_NEXT(tlvh)) {
+	tlvh = TLV_DATA(tlvh);
+	while (sum < len) {
+		uint32_t tlv_size = TLV_SIZE(tlvh);
 		uint32_t val32, tab32[2];
 		float valf, tabf[8];
 		struct in_addr addr;
+
+		if (tlv_size > len - sum) {
+			zlog_warn("Malformed TE sub-TLV size %u (remaining %u)", tlv_size,
+				  len - sum);
+			break;
+		}
 
 		value = TLV_DATA(tlvh);
 		switch (ntohs(tlvh->type)) {
@@ -2251,7 +2259,9 @@ static int ospf_te_parse_te(struct ls_ted *ted, struct ospf_lsa *lsa)
 		default:
 			break;
 		}
-		sum += TLV_SIZE(tlvh);
+		sum += tlv_size;
+		if (sum < len)
+			tlvh = TLV_HDR_NEXT(tlvh);
 	}
 
 	/* Get corresponding Edge from Link State Data Base */
@@ -2351,7 +2361,7 @@ static int ospf_te_delete_te(struct ls_ted *ted, struct ospf_lsa *lsa)
 	struct tlv_header *tlvh;
 	struct in_addr addr;
 	struct ls_edge_key key = {.family = AF_UNSPEC};
-	uint16_t len, sum;
+	uint32_t len, sum;
 	uint8_t lsa_id;
 
 	/* Initialize TLV browsing */
@@ -2363,14 +2373,25 @@ static int ospf_te_delete_te(struct ls_ted *ted, struct ospf_lsa *lsa)
 	sum = sizeof(struct tlv_header);
 
 	/* Browse sub-TLV to find Link ID */
-	for (tlvh = TLV_DATA(tlvh); sum < len; tlvh = TLV_HDR_NEXT(tlvh)) {
+	tlvh = TLV_DATA(tlvh);
+	while (sum < len) {
+		uint32_t tlv_size = TLV_SIZE(tlvh);
+
+		if (tlv_size > len - sum) {
+			zlog_warn("Malformed TE sub-TLV size %u (remaining %u)", tlv_size,
+				  len - sum);
+			break;
+		}
+
 		if (ntohs(tlvh->type) == TE_LINK_SUBTLV_LCLIF_IPADDR) {
 			memcpy(&addr, TLV_DATA(tlvh), TE_LINK_SUBTLV_DEF_SIZE);
 			key.family = AF_INET;
 			IPV4_ADDR_COPY(&key.k.addr, &addr);
 			break;
 		}
-		sum += TLV_SIZE(tlvh);
+		sum += tlv_size;
+		if (sum < len)
+			tlvh = TLV_HDR_NEXT(tlvh);
 	}
 	if (key.family == AF_UNSPEC)
 		return 0;
@@ -2445,7 +2466,7 @@ static int ospf_te_parse_ri(struct ls_ted *ted, struct ospf_lsa *lsa)
 	struct ls_node *node;
 	struct lsa_header *lsah = lsa->data;
 	struct tlv_header *tlvh;
-	uint16_t len = 0, sum = 0;
+	uint32_t len = 0, sum = 0;
 
 	/* Get vertex / Node from LSA Advertised Router ID */
 	vertex = get_vertex(ted, lsa);
@@ -2456,12 +2477,17 @@ static int ospf_te_parse_ri(struct ls_ted *ted, struct ospf_lsa *lsa)
 
 	/* Initialize TLV browsing */
 	len = lsa->size - OSPF_LSA_HEADER_SIZE;
-	for (tlvh = TLV_HDR_TOP(lsah); sum < len && tlvh;
-	     tlvh = TLV_HDR_NEXT(tlvh)) {
+	for (tlvh = TLV_HDR_TOP(lsah); sum < len && tlvh;) {
+		uint32_t tlv_size = TLV_SIZE(tlvh);
 		struct ri_sr_tlv_sr_algorithm *algo;
 		struct ri_sr_tlv_sid_label_range *range;
 		struct ri_sr_tlv_node_msd *msd;
 		uint32_t size, lower;
+
+		if (tlv_size > len - sum) {
+			zlog_warn("Malformed RI TLV size %u (remaining %u)", tlv_size, len - sum);
+			break;
+		}
 
 		switch (ntohs(tlvh->type)) {
 		case RI_SR_TLV_SR_ALGORITHM:
@@ -2547,7 +2573,9 @@ static int ospf_te_parse_ri(struct ls_ted *ted, struct ospf_lsa *lsa)
 		default:
 			break;
 		}
-		sum += TLV_SIZE(tlvh);
+		sum += tlv_size;
+		if (sum < len)
+			tlvh = TLV_HDR_NEXT(tlvh);
 	}
 
 	/* Vertex has been created or updated: export it */
@@ -2759,7 +2787,8 @@ static int ospf_te_parse_ext_link(struct ls_ted *ted, struct ospf_lsa *lsa)
 	struct ext_tlv_link *ext;
 	struct ls_edge *edge;
 	struct ls_attributes *atr;
-	uint16_t len = 0, sum = 0, i;
+	uint32_t len = 0, sum = 0;
+	uint16_t i;
 	uint32_t label;
 
 	/* Get corresponding Edge from Link State Data Base */
@@ -2793,10 +2822,17 @@ static int ospf_te_parse_ext_link(struct ls_ted *ted, struct ospf_lsa *lsa)
 	len -= EXT_TLV_LINK_SIZE;
 	tlvh = (struct tlv_header *)((char *)(ext) + TLV_HDR_SIZE
 				     + EXT_TLV_LINK_SIZE);
-	for (; sum < len; tlvh = TLV_HDR_NEXT(tlvh)) {
+	for (; sum < len;) {
+		uint32_t tlv_size = TLV_SIZE(tlvh);
 		struct ext_subtlv_adj_sid *adj;
 		struct ext_subtlv_lan_adj_sid *ladj;
 		struct ext_subtlv_rmt_itf_addr *rmt;
+
+		if (tlv_size > len - sum) {
+			zlog_warn("Malformed Extended Link sub-TLV size %u (remaining %u)",
+				  tlv_size, len - sum);
+			break;
+		}
 
 		switch (ntohs(tlvh->type)) {
 		case EXT_SUBTLV_ADJ_SID:
@@ -2876,7 +2912,9 @@ static int ospf_te_parse_ext_link(struct ls_ted *ted, struct ospf_lsa *lsa)
 		default:
 			break;
 		}
-		sum += TLV_SIZE(tlvh);
+		sum += tlv_size;
+		if (sum < len)
+			tlvh = TLV_HDR_NEXT(tlvh);
 	}
 
 	/* Export Link State Edge if needed */
@@ -3015,7 +3053,7 @@ static int ospf_te_delete_opaque_lsa(struct ls_ted *ted, struct ospf_lsa *lsa)
 
 /**
  * Update Traffic Engineering Database Elements that correspond to the received
- * OSPF LSA. If LSA age is equal to MAX_AGE, call deletion function instead.
+ * OSPF LSA.
  *
  * @param lsa	OSPF Link State Advertisement
  *
@@ -3037,34 +3075,18 @@ static int ospf_mpls_te_lsa_update(struct ospf_lsa *lsa)
 		return -1;
 	}
 
-	/* If LSA is MAX_AGE, remove corresponding Link State element */
-	if (IS_LSA_MAXAGE(lsa)) {
-		switch (lsa->data->type) {
-		case OSPF_ROUTER_LSA:
-			rc = ospf_te_delete_router_lsa(OspfMplsTE.ted, lsa);
-			break;
-		case OSPF_OPAQUE_AREA_LSA:
-		case OSPF_OPAQUE_AS_LSA:
-			rc = ospf_te_delete_opaque_lsa(OspfMplsTE.ted, lsa);
-			break;
-		default:
-			rc = 0;
-			break;
-		}
-	} else {
-		/* Parse LSA to Update corresponding Link State element */
-		switch (lsa->data->type) {
-		case OSPF_ROUTER_LSA:
-			rc = ospf_te_parse_router_lsa(OspfMplsTE.ted, lsa);
-			break;
-		case OSPF_OPAQUE_AREA_LSA:
-		case OSPF_OPAQUE_AS_LSA:
-			rc = ospf_te_parse_opaque_lsa(OspfMplsTE.ted, lsa);
-			break;
-		default:
-			rc = 0;
-			break;
-		}
+	/* Parse LSA to Update corresponding Link State element */
+	switch (lsa->data->type) {
+	case OSPF_ROUTER_LSA:
+		rc = ospf_te_parse_router_lsa(OspfMplsTE.ted, lsa);
+		break;
+	case OSPF_OPAQUE_AREA_LSA:
+	case OSPF_OPAQUE_AS_LSA:
+		rc = ospf_te_parse_opaque_lsa(OspfMplsTE.ted, lsa);
+		break;
+	default:
+		rc = 0;
+		break;
 	}
 
 	return rc;
@@ -3095,19 +3117,6 @@ static int ospf_mpls_te_lsa_delete(struct ospf_lsa *lsa)
 			  __func__);
 		return -1;
 	}
-
-	/*
-	 * Process only self LSAs that reach MAX_AGE. Indeed, when the router
-	 * need to update or refresh an LSA, it first removes the old LSA from
-	 * the LSDB and then insert the new one. Thus, to avoid removing
-	 * corresponding Link State element and loosing some parameters
-	 * instead of just updating it, only self LSAs that reach MAX_AGE are
-	 * processed here. Other LSAs are processed by ospf_mpls_te_lsa_update()
-	 * and eventually removed when LSA age is MAX_AGE i.e. LSA is flushed
-	 * by the originator.
-	 */
-	if (!IS_LSA_SELF(lsa) || !IS_LSA_MAXAGE(lsa))
-		return 0;
 
 	/* Parse Link State information */
 	switch (lsa->data->type) {
@@ -3142,7 +3151,7 @@ int ospf_te_sync_ted(struct zapi_opaque_reg_info dst)
 	if (!OspfMplsTE.enabled || !OspfMplsTE.export)
 		return rc;
 
-	rc = ls_sync_ted(OspfMplsTE.ted, zclient, &dst);
+	rc = ls_sync_ted(OspfMplsTE.ted, ospf_zclient, &dst);
 
 	return rc;
 }
@@ -4335,7 +4344,7 @@ DEFUN (ospf_mpls_te_export,
 	VTY_DECLVAR_INSTANCE_CONTEXT(ospf, ospf);
 
 	if (OspfMplsTE.enabled) {
-		if (ls_register(zclient, true) != 0) {
+		if (ls_register(ospf_zclient, true) != 0) {
 			vty_out(vty, "Unable to register Link State\n");
 			return CMD_WARNING;
 		}
@@ -4359,7 +4368,7 @@ DEFUN (no_ospf_mpls_te_export,
 	VTY_DECLVAR_INSTANCE_CONTEXT(ospf, ospf);
 
 	if (OspfMplsTE.export) {
-		if (ls_unregister(zclient, true) != 0) {
+		if (ls_unregister(ospf_zclient, true) != 0) {
 			vty_out(vty, "Unable to unregister Link State\n");
 			return CMD_WARNING;
 		}

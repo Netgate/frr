@@ -44,7 +44,6 @@ static void if_set_name(struct interface *ifp, const char *name);
 static struct interface *if_lookup_by_ifindex(ifindex_t ifindex,
 					      vrf_id_t vrf_id);
 static struct interface *if_lookup_by_index_all_vrf(ifindex_t ifindex);
-static int if_cmp_func(const struct interface *, const struct interface *);
 static int if_cmp_index_func(const struct interface *ifp1,
 			     const struct interface *ifp2);
 RB_GENERATE(if_name_head, interface, name_entry, if_cmp_func);
@@ -136,8 +135,7 @@ int if_cmp_name_func(const char *p1, const char *p2)
 	return 0;
 }
 
-static int if_cmp_func(const struct interface *ifp1,
-		       const struct interface *ifp2)
+int if_cmp_func(const struct interface *ifp1, const struct interface *ifp2)
 {
 	return if_cmp_name_func(ifp1->name, ifp2->name);
 }
@@ -606,9 +604,9 @@ struct connected *if_lookup_address(const void *matchaddr, int family,
 
 	FOR_ALL_INTERFACES (vrf, ifp) {
 		frr_each (if_connected, ifp->connected, c) {
-			if (c->address && (c->address->family == AF_INET)
-			    && prefix_match(CONNECTED_PREFIX(c), &addr)
-			    && (c->address->prefixlen > bestlen)) {
+			if (c->address && (c->address->family == family) &&
+			    prefix_match(CONNECTED_PREFIX(c), &addr) &&
+			    (c->address->prefixlen > bestlen)) {
 				bestlen = c->address->prefixlen;
 				match = c;
 			}

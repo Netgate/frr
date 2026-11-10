@@ -88,7 +88,7 @@ def get_exabgp_cmd(commander=None):
 
     def exacmd_version_ok(exacmd):
         logger.debug("checking %s for exabgp version >= 4.2.11", exacmd)
-        _, stdout, _ = commander.cmd_status(exacmd + " -v", warn=False)
+        _, stdout, _ = commander.cmd_status(exacmd + " --version", warn=False)
         m = re.search(r"ExaBGP\s*:\s*((\d+)\.(\d+)(?:\.(\d+))?)", stdout)
         if not m:
             return False
@@ -919,6 +919,7 @@ class TopoRouter(TopoGear):
         for daemon, enabled in nrouter.daemons.items():
             if (
                 enabled
+                and not self.net.unified_config
                 and daemon != "snmpd"
                 and daemon != "snmptrapd"
                 and daemon != "fpm_listener"
@@ -972,7 +973,13 @@ class TopoRouter(TopoGear):
         # and set them to the start dir.
         for daemon in daemons:
             enabled = nrouter.daemons[daemon]
-            if enabled and daemon != "snmpd" and daemon != "fpm_listener":
+            if (
+                enabled
+                and not self.net.unified_config
+                and daemon != "snmpd"
+                and daemon != "snmptrapd"
+                and daemon != "fpm_listener"
+            ):
                 self.vtysh_cmd(
                     "\n".join(
                         [

@@ -88,7 +88,6 @@ enum bgp_show_adj_route_type {
 #define BGP_NLRI_PARSE_ERROR_EVPN_TYPE4_SIZE -9
 #define BGP_NLRI_PARSE_ERROR_EVPN_TYPE5_SIZE -10
 #define BGP_NLRI_PARSE_ERROR_FLOWSPEC_IPV6_NOT_SUPPORTED -11
-#define BGP_NLRI_PARSE_ERROR_FLOWSPEC_NLRI_SIZELIMIT -12
 #define BGP_NLRI_PARSE_ERROR_FLOWSPEC_BAD_FORMAT -13
 #define BGP_NLRI_PARSE_ERROR_ADDRESS_FAMILY -14
 #define BGP_NLRI_PARSE_ERROR_EVPN_TYPE1_SIZE -15
@@ -752,6 +751,7 @@ DECLARE_HOOK(bgp_route_update,
 #define BGP_SHOW_OPT_JSON_DETAIL (1 << 7)
 #define BGP_SHOW_OPT_TERSE (1 << 8)
 #define BGP_SHOW_OPT_ROUTES_DETAIL (1 << 9)
+#define BGP_SHOW_OPT_INTERNAL_DATA (1 << 10)
 
 /* Prototypes. */
 extern void bgp_rib_remove(struct bgp_dest *dest, struct bgp_path_info *pi,
@@ -778,6 +778,9 @@ extern void bgp_soft_reconfig_table_task_cancel(const struct bgp *bgp,
 extern bool bgp_soft_reconfig_in(struct peer *peer, afi_t afi, safi_t safi);
 extern void bgp_clear_route(struct peer *, afi_t, safi_t);
 extern void bgp_clear_route_all(struct peer *);
+/* Clear routes for a batch of peers */
+void bgp_clear_route_batch(struct bgp_clearing_info *cinfo);
+
 extern void bgp_clear_adj_in(struct peer *, afi_t, safi_t);
 extern void bgp_clear_stale_route(struct peer *, afi_t, safi_t);
 extern void bgp_set_stale_route(struct peer *peer, afi_t afi, safi_t safi);
@@ -797,8 +800,7 @@ extern void bgp_path_info_add(struct bgp_dest *dest, struct bgp_path_info *pi);
 extern void bgp_path_info_extra_free(struct bgp_path_info_extra **extra);
 extern struct bgp_dest *bgp_path_info_reap(struct bgp_dest *dest,
 					   struct bgp_path_info *pi);
-extern void bgp_path_info_delete(struct bgp_dest *dest,
-				 struct bgp_path_info *pi);
+extern void bgp_path_info_mark_for_delete(struct bgp_dest *dest, struct bgp_path_info *pi);
 extern struct bgp_path_info_extra *
 bgp_path_info_extra_get(struct bgp_path_info *path);
 extern struct bgp_path_info_extra *bgp_evpn_path_info_extra_get(struct bgp_path_info *path);
@@ -854,6 +856,11 @@ extern void bgp_withdraw(struct peer *peer, const struct prefix *p,
 			 uint32_t addpath_id, afi_t afi, safi_t safi, int type,
 			 int sub_type, struct prefix_rd *prd,
 			 mpls_label_t *label, uint8_t num_labels);
+extern void bgp_update_check_valid_flags(struct bgp *bgp, struct peer *peer, struct bgp_dest *dest,
+					 const struct prefix *p, afi_t afi, safi_t safi,
+					 struct bgp_path_info *pi, struct attr *attr_new,
+					 const struct prefix *bgp_nht_param_prefix,
+					 bool accept_own);
 
 /*
  * Add a route to be processed for bgp bestpath through the bgp
@@ -934,9 +941,6 @@ extern bool subgroup_announce_check(struct bgp_dest *dest,
 				    const struct prefix *p, struct attr *attr,
 				    struct attr *post_attr);
 
-extern void bgp_peer_clear_node_queue_drain_immediate(struct peer *peer);
-extern void bgp_process_queues_drain_immediate(void);
-
 /* for encap/vpn */
 extern struct bgp_dest *bgp_safi_node_lookup(struct bgp_table *table,
 					     safi_t safi,
@@ -970,12 +974,15 @@ extern void route_vty_out_detail_header(struct vty *vty, struct bgp *bgp,
 extern void route_vty_out_detail(struct vty *vty, struct bgp *bgp, struct bgp_dest *bn,
 				 const struct prefix *p, struct bgp_path_info *path, afi_t afi,
 				 safi_t safi, enum rpki_states, json_object *json_paths,
-				 struct attr *attr);
+				 struct attr *attr, uint16_t show_opts);
 extern int bgp_show_table_rd(struct vty *vty, struct bgp *bgp, afi_t afi, safi_t safi,
 			     struct bgp_table *table, struct prefix_rd *prd,
 			     enum bgp_show_type type, void *output_arg,
 			     uint16_t show_flags);
-extern void bgp_best_path_select_defer(struct bgp *bgp, afi_t afi, safi_t safi);
+extern void bgp_do_deferred_path_selection(struct bgp *bgp, afi_t afi, safi_t safi);
+extern void bgp_dest_increment_gr_fib_install_pending_count(struct bgp_dest *dest);
+extern void bgp_dest_decrement_gr_fib_install_pending_count(struct bgp_dest *dest);
+extern void bgp_process_gr_deferral_complete(struct bgp *bgp, afi_t afi, safi_t safi);
 extern bool bgp_update_martian_nexthop(struct bgp *bgp, afi_t afi, safi_t safi,
 				       uint8_t type, uint8_t stype,
 				       struct attr *attr, struct bgp_dest *dest);

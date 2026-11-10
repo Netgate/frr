@@ -384,12 +384,29 @@ is in a vrf, enter the interface command with the vrf keyword at the end.
 
    Set the pim hello and hold interval for a interface.
 
-.. clicmd:: ip pim
+.. clicmd:: ip pim [sm | dm | sm-dm]
 
-   Tell pim that we would like to use this interface to form pim neighbors
-   over. Please note that this command does not enable the reception of IGMP
+   Enable pim on this interface. pim will use this interface to form pim neighbors,
+   and start exchaning pim protocol messages with those neighbors. The optional argument
+   determines what mode pim will use this interface for. ``sm`` enables sparse mode,
+   ``dm`` enables dense mode, while ``sm-dm`` enables sparse-dense mode.
+
+   Please note that this command does not enable the reception of IGMP
    reports on the interface. Refer to the next `ip igmp` command for IGMP
    management.
+
+.. clicmd:: ip pim ssm prefix-list PREFIX_LIST
+
+   Configure the Source-Specific-Multicast group range. Defaults to 232.0.0.0/8.
+
+.. clicmd:: ip pim dm prefix-list PREFIX_LIST
+
+   Limit dense mode multicast to the range configured with prefix-list. By default
+   there is no limit.
+
+.. clicmd:: ip pim allowed-neighbors prefix-list PREFIX_LIST
+
+   Only establish sessions with PIM neighbors allowed by the prefix-list.
 
 .. clicmd:: ip pim use-source A.B.C.D
 
@@ -405,6 +422,10 @@ is in a vrf, enter the interface command with the vrf keyword at the end.
 
    Tell pim to receive IGMP reports and Query on this interface. The default
    version is v3. This command is useful on a LHR.
+
+.. clicmd:: ip igmp require-router-alert
+
+   Only accept IGMP reports with the router-alert IP option.
 
 .. clicmd:: ip igmp join-group A.B.C.D [A.B.C.D]
 
@@ -424,6 +445,10 @@ is in a vrf, enter the interface command with the vrf keyword at the end.
    interfaces on this interface. Join-groups on other interfaces will
    also be proxied. The default version is v3.
 
+.. clicmd:: ip igmp immediate-leave
+
+   Immediately leaves an IGMP group when receiving a IGMPv2 Leave packet.
+
 .. clicmd:: ip igmp query-interval (1-65535)
 
    Set the IGMP query interval that PIM will use.
@@ -436,6 +461,14 @@ is in a vrf, enter the interface command with the vrf keyword at the end.
 .. clicmd:: ip igmp version (2-3)
 
    Set the IGMP version used on this interface. The default value is 3.
+
+.. clicmd:: ip igmp max-groups (0-4294967295)
+
+   Set the maximum number of IGMP groups that the can be joined on an interface.
+
+.. clicmd:: ip igmp max-sources (0-4294967295)
+
+   Set the maximum number of IGMP sources to learn per group.
 
 .. clicmd:: ip multicast boundary oil WORD
 
@@ -496,6 +529,21 @@ is in a vrf, enter the interface command with the vrf keyword at the end.
    be forwarded on the given interface if the traffic matches the group address
    and optionally the source address.
 
+.. clicmd:: ip igmp route-map ROUTE-MAP
+
+   Apply the indicated route map to filter incoming IGMP joins.
+
+   The following match statements can be used:
+
+   * match ip multicast-group A.B.C.D
+
+   * match ip multicast-group prefix-list IPV4-PREFIX-LIST
+
+   * match ip multicast-source A.B.C.D
+
+   * match ip multicast-source prefix-list IPV4-PREFIX-LIST
+
+   * match multicast-interface INTERFACE-NAME
 
 .. seealso::
 
@@ -558,9 +606,24 @@ Commands available for MSDP
    Create or update a mesh group to set the source address used to connect to
    peers.
 
-.. clicmd:: msdp peer A.B.C.D source A.B.C.D
+.. clicmd:: msdp peer A.B.C.D source A.B.C.D [as AS_NUMBER]
 
    Create a regular MSDP session with peer using the specified source address.
+
+   Optionally the Autonomous Number (AS) can be provided for eBGP assisted
+   loop detection (see RFC 4611 Section 2.1. Peering between PIM Border
+   Routers).
+
+   .. note::
+
+      The BGP configuration must be enabled in order for this feature to work:
+
+      ::
+
+         bgp send-extra-data zebra
+
+      This knob causes BGP to send the AS Path information to ``zebra`` so
+      MSDP can use that information.
 
 .. clicmd:: msdp peer A.B.C.D sa-filter ACL_NAME <in|out>
 
@@ -884,6 +947,16 @@ the config was written out.
    This turns on debugging for PIM nexthop in detail. This is not enabled
    by default.
 
+.. clicmd:: debug pim graft
+
+   This turns on debugging for PIM graft message processing. Graft messages are similar to PIM joins
+   but are specifically used for PIM dense mode. This is not enabled by default.
+
+.. clicmd:: debug pim state-refresh
+
+   This turns on debugging for PIM state-refresh message processing. State-refresh messages are used
+   in PIM dense mode. This is not enabled by default.
+
 .. clicmd:: debug pim packet-dump
 
    This turns on an extraordinary amount of data. Each pim packet sent and
@@ -952,6 +1025,10 @@ Clear commands reset various variables.
    Reset MSDP peer connection.
 
    Use this command to set/unset MD5 authentication.
+
+.. clicmd:: clear ip msdp [vrf all|vrf VRF_NAME] peer [A.B.C.D] counters
+
+   Reset the MSDP peer(s) statistic counters.
 
 
 PIM EVPN configuration

@@ -15,6 +15,7 @@
 #include "jhash.h"
 #include "queue.h"
 #include "filter.h"
+#include "frregex_real.h"
 
 #include "bgpd/bgpd.h"
 #include "bgpd/bgp_aspath.h"
@@ -424,8 +425,12 @@ static unsigned int aspath_count_hops_internal(const struct aspath *aspath)
 /* Check if aspath has AS_SET or AS_CONFED_SET */
 bool aspath_check_as_sets(struct aspath *aspath)
 {
-	struct assegment *seg = aspath->segments;
+	struct assegment *seg;
 
+	if (!aspath || !aspath->segments)
+		return false;
+
+	seg = aspath->segments;
 	while (seg) {
 		if (seg->type == AS_SET || seg->type == AS_CONFED_SET)
 			return true;
@@ -580,7 +585,7 @@ static void aspath_make_str_count(struct aspath *as, bool make_json)
 			as->str_len = 0;
 			json_object_free(as->json);
 			as->json = NULL;
-
+			json_object_free(jaspath_segments);
 			return;
 		}
 
@@ -1261,7 +1266,7 @@ struct aspath *aspath_replace_regex_asn(struct aspath *aspath,
 
 	while (cur_seg) {
 		cur_as_list = acl_list;
-		while (cur_as_list) {
+		if (cur_as_list) {
 			cur_as_filter = cur_as_list->head;
 			while (cur_as_filter) {
 				for (i = 0; i < cur_seg->length; i++) {
@@ -1269,13 +1274,11 @@ struct aspath *aspath_replace_regex_asn(struct aspath *aspath,
 						   ASPATH_STR_DEFAULT_LEN,
 						   ASN_FORMAT(new->asnotation),
 						   &cur_seg->as[i]);
-					if (!regexec(cur_as_filter->reg,
-						     str_buf, 0, NULL, 0))
+					if (!regexec(&cur_as_filter->reg->real, str_buf, 0, NULL, 0))
 						cur_seg->as[i] = our_asn;
 				}
 				cur_as_filter = cur_as_filter->next;
 			}
-			cur_as_list = cur_as_list->next;
 		}
 		cur_seg = cur_seg->next;
 	}
@@ -1747,8 +1750,8 @@ struct aspath *aspath_filter_exclude_acl(struct aspath *source,
 						   ASPATH_STR_DEFAULT_LEN,
 						   ASN_FORMAT(source->asnotation),
 						   &cur_seg->as[i]);
-					if (!regexec(cur_as_filter->reg,
-						     str_buf, 0, NULL, 0)) {
+					if (!regexec(&cur_as_filter->reg->real, str_buf, 0, NULL,
+						     0)) {
 						cur_seg->as[i] = 0;
 						nb_as_del++;
 					}
@@ -1906,20 +1909,17 @@ struct aspath *aspath_reconcile_as4(struct aspath *aspath,
 	seg = aspath->segments;
 
 	/* CONFEDs should get reconciled too.. */
-	hops = (aspath_count_hops(aspath) + aspath_count_confeds(aspath))
-	       - aspath_count_hops(as4path);
+	hops = (aspath_count_hops(aspath) + aspath_count_confeds(aspath)) -
+	       (aspath_count_hops(as4path) + aspath_count_confeds(as4path));
 
 	if (hops < 0) {
-		if (BGP_DEBUG(as4, AS4))
-			flog_warn(
-				EC_BGP_ASPATH_FEWER_HOPS,
-				"[AS4] Fewer hops in AS_PATH than NEW_AS_PATH");
-		/* Something's gone wrong. The RFC says we should now ignore
-		 * AS4_PATH,
-		 * which is daft behaviour - it contains vital loop-detection
-		 * information which must have been removed from AS_PATH.
+		flog_warn(EC_BGP_ASPATH_FEWER_HOPS,
+			  "[AS4] Fewer hops in AS_PATH than AS4_PATH, ignoring AS4_PATH (RFC 6793)");
+		/* RFC 6793 4.1.3:
+		 * if AS_PATH < AS4_PATH, AS4_PATH SHALL be ignored and
+		 * AS_PATH SHALL be taken as-is.
 		 */
-		hops = aspath_count_hops(aspath);
+		return aspath_dup(aspath);
 	}
 
 	if (!hops) {
@@ -2512,3 +2512,39 @@ void bgp_remove_aspath_from_aggregate_hash(struct bgp_aggregate *aggregate,
 	}
 }
 
+struct aspath *aspath_delete_as_set_seq(struct aspath *aspath)
+{
+	struct assegment *seg, *prev, *next;
+	bool removed = false;
+
+	if (!(aspath && aspath->segments))
+		return aspath;
+
+	seg = aspath->segments;
+	next = NULL;
+	prev = NULL;
+
+	while (seg) {
+		next = seg->next;
+
+		if (seg->type == AS_SET || seg->type == AS_CONFED_SET) {
+			if (aspath->segments == seg)
+				aspath->segments = seg->next;
+			else
+				prev->next = seg->next;
+
+			assegment_free(seg);
+			removed = true;
+		} else
+			prev = seg;
+
+		seg = next;
+	}
+
+	if (removed) {
+		aspath_str_update(aspath, false);
+		aspath->count = aspath_count_hops_internal(aspath);
+	}
+
+	return aspath;
+}
